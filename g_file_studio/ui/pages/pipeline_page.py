@@ -4,17 +4,19 @@ from PySide6.QtWidgets import QCheckBox, QFormLayout, QGroupBox, QLineEdit, QVBo
 
 from g_file_studio.models import (
     FrameSettings,
+    InputMode,
     MergeSettings,
     PersonSettings,
-    InputMode,
     PipelineSettings,
     TemplateMode,
 )
 from g_file_studio.processors.pipeline_processor import run_pipeline
 from g_file_studio.services.paths import default_workspace
 from g_file_studio.services.temp_workspace_service import TempWorkspaceService
+from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.help_content import APP_HELP, FIELD_HELP
 from g_file_studio.ui.pages.base_page import BasePage
+from g_file_studio.ui.path_validation import validate_existing_directory, validate_input_source
 from g_file_studio.ui.widgets import (
     BasicRulesEditor,
     FileOrderEditor,
@@ -30,8 +32,14 @@ from g_file_studio.ui.widgets import (
 
 
 class PipelinePage(BasePage):
-    def __init__(self, temp_workspace: TempWorkspaceService, parent=None) -> None:
+    def __init__(
+        self,
+        temp_workspace: TempWorkspaceService,
+        user_settings: UserSettingsService,
+        parent=None,
+    ) -> None:
         self.temp_workspace = temp_workspace
+        self.user_settings = user_settings
         help_title, help_html = APP_HELP["pipeline"]
         super().__init__(
             "一键处理",
@@ -50,8 +58,18 @@ class PipelinePage(BasePage):
         path_layout = QVBoxLayout(path_box)
         path_layout.setContentsMargins(12, 18, 12, 12)
         path_layout.setSpacing(10)
-        self.source = InputSourceSelector()
-        self.output = PathRow()
+        self.source = InputSourceSelector(
+            default_directory=default_workspace() / "input",
+            settings_prefix="pipeline",
+            settings_service=self.user_settings,
+        )
+        self.output = PathRow(
+            directory=True,
+            dialog_title="选择一键处理最终输出目录",
+            recent_directory_key="recent_paths/pipeline/output_directory",
+            location_name="一键处理最终输出目录",
+            settings_service=self.user_settings,
+        )
         self.output.set_path(default_workspace() / "output")
         self.output.set_tooltip(FIELD_HELP["output_dir"])
         path_layout.addWidget(self.source)
@@ -112,7 +130,10 @@ class PipelinePage(BasePage):
         frame_layout = QVBoxLayout(self.frame_box)
         frame_layout.setContentsMargins(12, 18, 12, 12)
         frame_layout.setSpacing(12)
-        self.template_selector = TemplateSelector()
+        self.template_selector = TemplateSelector(
+            settings_prefix="pipeline",
+            settings_service=self.user_settings,
+        )
         frame_layout.addWidget(self.template_selector)
 
         self.frame_content_box = QGroupBox("内置模板：标题与签字栏")
@@ -178,10 +199,7 @@ class PipelinePage(BasePage):
         self.basic_rules.set_input_dir(self.source.path())
 
     def _update_merge_enabled(self) -> None:
-        enabled = (
-            self.source.mode() == InputMode.DIRECTORY
-            and self.run_merge.isChecked()
-        )
+        enabled = self.source.mode() == InputMode.DIRECTORY and self.run_merge.isChecked()
         self.merge_box.setEnabled(enabled)
 
     def _template_mode_changed(self, mode_value: str) -> None:
@@ -192,6 +210,10 @@ class PipelinePage(BasePage):
         output = self.output.path()
         mode = self.source.mode()
 
+        if not validate_input_source(self, self.source, display_name="一键处理原始输入"):
+            return
+        if not validate_existing_directory(self, output, "一键处理最终输出目录"):
+            return
         if self.run_frame.isChecked() and not self.template_selector.validate_selection():
             return
         if mode == InputMode.DIRECTORY and self.run_merge.isChecked():

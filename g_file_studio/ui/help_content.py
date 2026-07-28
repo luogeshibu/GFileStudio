@@ -77,8 +77,11 @@ APP_HELP: dict[str, tuple[str, str]] = {
 </ol>
 <h3>单独运行</h3>
 <p>基础处理、G 文件合并和添加图框页面仍可独立运行，适合只处理某一个阶段。</p>
-<h3>发布</h3>
-<p>PyInstaller 文件夹模式打包后，需要把 dist/GFileStudio 整个目录压缩成 ZIP 分享，不能只发送 GFileStudio.exe。</p>
+<h3>最近目录</h3>
+<p>每个页面会分别记住单文件、目录输入、输出目录以及客户模板目录。下次点击浏览时会从上次目录打开；若目录已被删除或移动，程序会提示并要求重新选择。</p>
+<h3>程序图标与发布</h3>
+<p>项目内置绿色 app.ico/app.png。PyInstaller 打包脚本使用 app.ico 设置 EXE 图标，App 启动时使用同一图标设置窗口和任务栏图标。</p>
+<p>文件夹模式打包后，需要把 dist/GFileStudio 整个目录压缩成 ZIP 分享，不能只发送 GFileStudio.exe。</p>
 """,
     ),
 }

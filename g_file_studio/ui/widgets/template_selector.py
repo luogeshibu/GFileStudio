@@ -22,6 +22,7 @@ from g_file_studio.services.template_service import (
     get_builtin_template,
     load_builtin_templates,
 )
+from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.widgets.help_widgets import set_secondary
 from g_file_studio.ui.widgets.path_row import PathRow
 from g_file_studio.ui.widgets.wheel_safe_combo_box import WheelSafeComboBox
@@ -33,8 +34,16 @@ class TemplateSelector(QWidget):
     modeChanged = Signal(str)
     templateChanged = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        settings_prefix: str = "frame",
+        settings_service: UserSettingsService | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
+        self.settings_prefix = settings_prefix
+        self.settings_service = settings_service or UserSettingsService()
         self._templates: dict[str, BuiltinTemplate] = {}
 
         root = QVBoxLayout(self)
@@ -66,6 +75,10 @@ class TemplateSelector(QWidget):
         self.custom_path = PathRow(
             directory=False,
             file_filter="SLD G Files (*.sln.pic.g);;G Files (*.g)",
+            dialog_title="选择客户自定义图框模板",
+            recent_directory_key=f"recent_paths/{settings_prefix}/custom_template_directory",
+            location_name="客户自定义模板所在目录",
+            settings_service=self.settings_service,
         )
         self.custom_path.set_tooltip(
             "选择客户自己的图框模板。程序只调整外框尺寸和组件位置，不修改模板中的任何文字或签字信息。"
@@ -148,10 +161,21 @@ class TemplateSelector(QWidget):
         item = self.current_builtin_template()
         if item is None:
             return
+
+        key = f"recent_paths/{self.settings_prefix}/export_template_directory"
+        resolved = self.settings_service.resolve_directory(key)
+        if resolved.missing_saved_directory is not None:
+            QMessageBox.warning(
+                self,
+                "上次目录不存在",
+                f"上次导出模板使用的目录已经不存在：\n"
+                f"{resolved.missing_saved_directory}\n\n请重新选择。",
+            )
+        suggested = resolved.directory / item.file_name
         destination, _ = QFileDialog.getSaveFileName(
             self,
             "导出内置图框模板",
-            item.file_name,
+            str(suggested),
             "SLD G Files (*.sln.pic.g);;G Files (*.g)",
         )
         if not destination:
@@ -161,11 +185,16 @@ class TemplateSelector(QWidget):
         except (OSError, TemplateServiceError) as exc:
             QMessageBox.critical(self, "导出失败", str(exc))
             return
+        self.settings_service.set_directory(key, exported.parent)
         QMessageBox.information(self, "导出成功", f"内置模板已导出到：\n{exported}")
 
     def validate_selection(self) -> bool:
         path = self.resolved_template_path()
         if not path.is_file():
-            QMessageBox.warning(self, "模板无效", f"图框模板不存在：\n{path}")
+            QMessageBox.warning(
+                self,
+                "模板无效",
+                f"图框模板不存在：\n{path}\n\n请重新选择模板，或恢复使用程序内置模板。",
+            )
             return False
         return True

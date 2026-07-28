@@ -17,14 +17,20 @@ from PySide6.QtWidgets import (
 
 from g_file_studio import __version__
 from g_file_studio.services.temp_workspace_service import TempWorkspaceService
+from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.pages import BasicPage, FramePage, HelpPage, MergePage, PipelinePage
 from g_file_studio.ui.theme import build_app_style
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, temp_workspace: TempWorkspaceService) -> None:
+    def __init__(
+        self,
+        temp_workspace: TempWorkspaceService,
+        user_settings: UserSettingsService,
+    ) -> None:
         super().__init__()
         self.temp_workspace = temp_workspace
+        self.user_settings = user_settings
         self.setWindowTitle("G File Studio")
         self.resize(1280, 860)
         self.setMinimumSize(1040, 720)
@@ -39,10 +45,10 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.setObjectName("contentRoot")
         self.pages = [
-            PipelinePage(self.temp_workspace),
-            BasicPage(),
-            MergePage(),
-            FramePage(),
+            PipelinePage(self.temp_workspace, self.user_settings),
+            BasicPage(self.user_settings),
+            MergePage(self.user_settings),
+            FramePage(self.user_settings),
             HelpPage(),
         ]
         for page in self.pages:

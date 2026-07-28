@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -16,8 +17,10 @@ from PySide6.QtWidgets import (
 from g_file_studio.models import FrameSettings, PersonSettings, TemplateMode
 from g_file_studio.processors.frame_processor import add_drawing_frames
 from g_file_studio.services.paths import default_workspace
+from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.help_content import APP_HELP, FIELD_HELP
 from g_file_studio.ui.pages.base_page import BasePage
+from g_file_studio.ui.path_validation import validate_existing_directory, validate_input_source
 from g_file_studio.ui.widgets import (
     HelpLabel,
     InfoBanner,
@@ -32,7 +35,8 @@ from g_file_studio.ui.widgets.help_widgets import set_secondary
 
 
 class FramePage(BasePage):
-    def __init__(self, parent=None) -> None:
+    def __init__(self, user_settings: UserSettingsService, parent=None) -> None:
+        self.user_settings = user_settings
         help_title, help_html = APP_HELP["frame"]
         super().__init__(
             "添加图框",
@@ -55,13 +59,21 @@ class FramePage(BasePage):
             file_filter="G Files (*.sln.pic.g *.g)",
             file_tooltip="选择一个需要添加图框的 G 文件。",
             directory_tooltip="选择包含多个待添加图框 G 文件的目录；程序只扫描目录第一层。",
+            settings_prefix="frame",
+            settings_service=self.user_settings,
         )
         path_layout.addWidget(self.source)
 
         output_form = QFormLayout()
         output_form.setHorizontalSpacing(16)
         output_form.setVerticalSpacing(10)
-        self.output_path = PathRow()
+        self.output_path = PathRow(
+            directory=True,
+            dialog_title="选择添加图框输出目录",
+            recent_directory_key="recent_paths/frame/output_directory",
+            location_name="添加图框输出目录",
+            settings_service=self.user_settings,
+        )
         self.output_path.set_path(default_workspace() / "output")
         self.output_path.set_tooltip(FIELD_HELP["output_dir"])
         output_form.addRow(HelpLabel("输出目录", FIELD_HELP["output_dir"]), self.output_path)
@@ -71,7 +83,10 @@ class FramePage(BasePage):
         template_box = QGroupBox("图框模板")
         template_layout = QVBoxLayout(template_box)
         template_layout.setContentsMargins(12, 18, 12, 12)
-        self.template_selector = TemplateSelector()
+        self.template_selector = TemplateSelector(
+            settings_prefix="frame",
+            settings_service=self.user_settings,
+        )
         self.template_selector.modeChanged.connect(self._template_mode_changed)
         template_layout.addWidget(self.template_selector)
         self.layout.addWidget(template_box)
@@ -168,9 +183,22 @@ class FramePage(BasePage):
             output_suffix=self.suffix.text().strip(),
         )
 
+    def _config_dialog_directory(self) -> Path:
+        key = "recent_paths/frame/config_directory"
+        resolved = self.user_settings.resolve_directory(key)
+        if resolved.missing_saved_directory is not None:
+            QMessageBox.warning(
+                self,
+                "上次目录不存在",
+                f"上次使用的图框配置目录已经不存在：\n"
+                f"{resolved.missing_saved_directory}\n\n请重新选择。",
+            )
+        return resolved.directory
+
     def save_json(self) -> None:
+        start = self._config_dialog_directory() / "drawing_frame_config.json"
         path, _ = QFileDialog.getSaveFileName(
-            self, "保存图框配置", "drawing_frame_config.json", "JSON Files (*.json)"
+            self, "保存图框配置", str(start), "JSON Files (*.json)"
         )
         if not path:
             return
@@ -180,10 +208,17 @@ class FramePage(BasePage):
         except OSError as exc:
             QMessageBox.critical(self, "保存失败", str(exc))
             return
+        self.user_settings.set_directory("recent_paths/frame/config_directory", Path(path).parent)
         QMessageBox.information(self, "保存成功", f"配置已保存到：\n{path}")
 
     def load_json(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "载入图框配置", "", "JSON Files (*.json)")
+        start = self._config_dialog_directory()
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "载入图框配置",
+            str(start),
+            "JSON Files (*.json)",
+        )
         if not path:
             return
         try:
@@ -193,6 +228,7 @@ class FramePage(BasePage):
             QMessageBox.critical(self, "载入失败", str(exc))
             return
 
+        self.user_settings.set_directory("recent_paths/frame/config_directory", Path(path).parent)
         data = root.get("default", root)
         if not isinstance(data, dict):
             QMessageBox.warning(self, "配置无效", "配置文件 default 必须是 JSON 对象。")
@@ -208,6 +244,10 @@ class FramePage(BasePage):
                 editor.set_values(str(row.get("name", "")), str(row.get("date", "")))
 
     def run(self) -> None:
+        if not validate_input_source(self, self.source, display_name="添加图框输入"):
+            return
+        if not validate_existing_directory(self, self.output_path.path(), "添加图框输出目录"):
+            return
         if not self.template_selector.validate_selection():
             return
         settings = self.settings()

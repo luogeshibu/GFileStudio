@@ -7,12 +7,13 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QStackedWidget, QVBoxLayout, 
 
 from g_file_studio.models import InputMode
 from g_file_studio.services.paths import default_workspace
+from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.widgets.path_row import PathRow
 from g_file_studio.ui.widgets.wheel_safe_combo_box import WheelSafeComboBox
 
 
 class InputSourceSelector(QWidget):
-    """可复用的单文件 / 目录输入选择器。"""
+    """可复用的单文件 / 目录输入选择器，并分别记住两种模式的最近目录。"""
 
     modeChanged = Signal(str)
     pathChanged = Signal(str)
@@ -27,9 +28,12 @@ class InputSourceSelector(QWidget):
         directory_label: str = "G 文件目录",
         file_tooltip: str = "选择一个 G 文件。",
         directory_tooltip: str = "选择包含一个或多个 G 文件的目录。",
+        settings_prefix: str = "common",
+        settings_service: UserSettingsService | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self.settings_service = settings_service or UserSettingsService()
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
@@ -44,8 +48,21 @@ class InputSourceSelector(QWidget):
         root.addLayout(mode_row)
 
         self.stack = QStackedWidget()
-        self.file_row = PathRow(directory=False, file_filter=file_filter)
-        self.dir_row = PathRow(directory=True)
+        self.file_row = PathRow(
+            directory=False,
+            file_filter=file_filter,
+            dialog_title="选择单个 G 文件",
+            recent_directory_key=f"recent_paths/{settings_prefix}/single_file_directory",
+            location_name="单个 G 文件所在目录",
+            settings_service=self.settings_service,
+        )
+        self.dir_row = PathRow(
+            directory=True,
+            dialog_title="选择 G 文件目录",
+            recent_directory_key=f"recent_paths/{settings_prefix}/input_directory",
+            location_name="G 文件输入目录",
+            settings_service=self.settings_service,
+        )
         self.dir_row.set_path(default_directory or (default_workspace() / "input"))
         self.file_row.set_tooltip(file_tooltip)
         self.dir_row.set_tooltip(directory_tooltip)

@@ -5,8 +5,10 @@ from PySide6.QtWidgets import QFormLayout, QGroupBox, QLineEdit
 from g_file_studio.models import MergeSettings
 from g_file_studio.processors.merge_processor import merge_feeders
 from g_file_studio.services.paths import default_workspace
+from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.help_content import APP_HELP, FIELD_HELP
 from g_file_studio.ui.pages.base_page import BasePage
+from g_file_studio.ui.path_validation import validate_existing_directory
 from g_file_studio.ui.widgets import (
     FileOrderEditor,
     HelpLabel,
@@ -18,7 +20,8 @@ from g_file_studio.ui.widgets import (
 
 
 class MergePage(BasePage):
-    def __init__(self, parent=None) -> None:
+    def __init__(self, user_settings: UserSettingsService, parent=None) -> None:
+        self.user_settings = user_settings
         help_title, help_html = APP_HELP["merge"]
         super().__init__(
             "G 文件合并",
@@ -37,8 +40,20 @@ class MergePage(BasePage):
         path_form = QFormLayout(path_box)
         path_form.setHorizontalSpacing(16)
         path_form.setVerticalSpacing(10)
-        self.input_path = PathRow()
-        self.output_path = PathRow()
+        self.input_path = PathRow(
+            directory=True,
+            dialog_title="选择待合并 G 文件目录",
+            recent_directory_key="recent_paths/merge/input_directory",
+            location_name="G 文件合并输入目录",
+            settings_service=self.user_settings,
+        )
+        self.output_path = PathRow(
+            directory=True,
+            dialog_title="选择合并结果输出目录",
+            recent_directory_key="recent_paths/merge/output_directory",
+            location_name="G 文件合并输出目录",
+            settings_service=self.user_settings,
+        )
         self.input_path.set_path(default_workspace() / "processed")
         self.output_path.set_path(default_workspace() / "merged")
         self.input_path.set_tooltip(FIELD_HELP["merge_input_dir"])
@@ -106,6 +121,10 @@ class MergePage(BasePage):
         )
 
     def run(self) -> None:
+        if not validate_existing_directory(self, self.input_path.path(), "G 文件合并输入目录"):
+            return
+        if not validate_existing_directory(self, self.output_path.path(), "G 文件合并输出目录"):
+            return
         self.file_order.set_input_dir(self.input_path.path())
         if not self.file_order.ensure_ready():
             return
