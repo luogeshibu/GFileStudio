@@ -1,4 +1,4 @@
-# G File Studio 设计说明（v1.5.0）
+# G File Studio 设计说明（v1.6.0）
 
 ## 1. 总体架构
 
@@ -27,7 +27,7 @@ g_file_studio/ui/widgets/basic_rules_editor.py
 1. 替换元素属性值；
 2. 删除匹配元素。
 
-两条规则都默认关闭，输入框默认为空，仅提供占位提示。
+两条规则都默认关闭。元素标签和属性名使用可编辑下拉框，选项来自输入目录中直属 Layer 直接子元素的动态扫描；旧值、新值和删除匹配值仍由用户手动输入。
 
 ### 2.1 替换规则
 
@@ -69,6 +69,18 @@ G
 ```
 
 删除后仅在当前 Layer 内清理 `link`、`node_area`、`p_FatherObjId`。
+
+### 2.4 G 文件结构扫描
+
+`g_file_studio/services/g_schema_service.py` 负责扫描输入目录：
+
+```text
+G
+└── 直属 Layer
+    └── 直接子元素：统计标签和属性
+```
+
+扫描结果按“元素标签 → 属性名集合”保存，并用于基础处理规则的可编辑下拉框。选择标签时，属性下拉框动态更新。扫描过程只读，不修改文件。
 
 ## 3. 合并顺序
 
@@ -171,10 +183,12 @@ Bus 必须满足：
 
 ## 6. 日期输入控件
 
-`OptionalDateEdit` 基于 `QDateEdit`：
+`CurrentDateEdit` 基于 `QDateEdit`：
 
 - 启用日历弹窗；
-- 支持空日期；
+- 默认值为 `QDate.currentDate()`；
+- 打开日历时定位到当前已选日期；
+- 配置日期为空或无效时回退到当前日期；
 - 输出 `yyyy-MM-dd`；
 - 忽略鼠标滚轮。
 

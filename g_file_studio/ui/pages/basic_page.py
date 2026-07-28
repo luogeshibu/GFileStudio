@@ -45,6 +45,8 @@ class BasicPage(BasePage):
         rules_layout.setContentsMargins(12, 18, 12, 12)
         rules_layout.setSpacing(12)
         self.rules_editor = BasicRulesEditor()
+        self.rules_editor.set_input_dir(self.input_path.path())
+        self.input_path.pathChanged.connect(self.rules_editor.set_input_dir)
         rules_layout.addWidget(self.rules_editor)
         self.layout.addWidget(rules_box)
 

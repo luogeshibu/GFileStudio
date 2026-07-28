@@ -85,6 +85,7 @@ class PipelinePage(BasePage):
         basic_layout = QVBoxLayout(basic_box)
         basic_layout.setContentsMargins(12, 18, 12, 12)
         self.basic_rules = BasicRulesEditor()
+        self.basic_rules.set_input_dir(self.source.path())
         basic_layout.addWidget(self.basic_rules)
         self.layout.addWidget(basic_box)
         self.basic_box = basic_box
@@ -150,6 +151,7 @@ class PipelinePage(BasePage):
 
     def _source_path_changed(self, text: str) -> None:
         self.merge_order.set_input_dir(text)
+        self.basic_rules.set_input_dir(text)
 
     @staticmethod
     def spin(value: int) -> IntegerInput:

@@ -2,33 +2,17 @@
   "default": {
     "title": "",
     "draw": {
-      "name": "SOA_test",
-      "date": "2025-5-18"
+      "name": "",
+      "date": ""
     },
     "approve": {
-      "name": "SOA_test",
-      "date": "2025-5-18"
+      "name": "",
+      "date": ""
     },
     "issue": {
-      "name": "SOA_test",
-      "date": "2025-5-18"
+      "name": "",
+      "date": ""
     }
   },
-  "files": {
-    "JED-CTL-ADF.sln.pic.g": {
-      "title": "JED-CTL-ADF",
-      "draw": {
-        "name": "Draw Name",
-        "date": "2026-07-28"
-      },
-      "approve": {
-        "name": "Approve Name",
-        "date": "2026-07-28"
-      },
-      "issue": {
-        "name": "Issue Name",
-        "date": "2026-07-28"
-      }
-    }
-  }
+  "files": {}
 }

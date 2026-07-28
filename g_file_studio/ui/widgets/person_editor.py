@@ -5,51 +5,46 @@ from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import QDateEdit, QHBoxLayout, QLineEdit, QWidget
 
 
-class OptionalDateEdit(QDateEdit):
-    """支持日历选择并允许保持为空的日期输入框。"""
-
-    EMPTY_DATE = QDate(1900, 1, 1)
+class CurrentDateEdit(QDateEdit):
+    """日历日期输入框，默认使用运行当天日期。"""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setCalendarPopup(True)
         self.setDisplayFormat("yyyy-MM-dd")
-        self.setMinimumDate(self.EMPTY_DATE)
+        self.setMinimumDate(QDate(1900, 1, 1))
         self.setMaximumDate(QDate(2999, 12, 31))
-        self.setSpecialValueText("选择日期")
-        self.setDate(self.EMPTY_DATE)
-        self.setToolTip("点击右侧日历按钮选择日期；显示“选择日期”时表示未填写。")
+        self.setDate(QDate.currentDate())
+        self.setToolTip("默认使用当前日期；点击右侧日历按钮可选择其他日期。")
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802 - Qt API
         """忽略鼠标滚轮，避免滚动页面时意外改变日期。"""
         event.ignore()
 
     def text_value(self) -> str:
-        if self.date() == self.EMPTY_DATE:
-            return ""
         return self.date().toString("yyyy-MM-dd")
 
     def set_text_value(self, value: str) -> None:
         text = (value or "").strip()
         if not text:
-            self.setDate(self.EMPTY_DATE)
+            self.setDate(QDate.currentDate())
             return
 
         parsed = QDate.fromString(text, "yyyy-MM-dd")
         if not parsed.isValid():
             # 兼容早期配置中可能使用的 yyyy-M-d 格式。
             parsed = QDate.fromString(text, "yyyy-M-d")
-        self.setDate(parsed if parsed.isValid() else self.EMPTY_DATE)
+        self.setDate(parsed if parsed.isValid() else QDate.currentDate())
 
 
 class PersonEditor(QWidget):
     def __init__(self, role: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.name_edit = QLineEdit()
-        self.date_edit = OptionalDateEdit()
+        self.date_edit = CurrentDateEdit()
         self.name_edit.setPlaceholderText(f"{role} 姓名")
         self.name_edit.setToolTip(f"填写 {role} 姓名")
-        self.date_edit.setToolTip(f"选择 {role} 日期；未选择时保持为空。")
+        self.date_edit.setToolTip(f"{role} 日期默认是当前日期；点击日历按钮可修改。")
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
