@@ -39,13 +39,16 @@ class HelpPage(BasePage):
 <li>没有母线时按最高图元对齐。</li>
 <li>输入文件不能包含外框架图，外框必须在合并后统一添加。</li>
 </ul>
-<h3>4. 添加图框</h3>
-<p>适合给已经合并完成的文件添加 SLD 图框、标题和签字信息。</p>
+<h3>4. 图形边距调整</h3>
+<p>主体图形默认距离画布四边各 500；识别到已有完整外框时，保留并同步调整外框，不修改其文字和签字内容。</p>
+<h3>5. 添加图框</h3>
+<p>适合给没有图框的文件添加 SLD 图框、标题和签字信息。</p>
 <h3>目录建议</h3>
 <pre>
 workspace/input      原始输入
 workspace/processed  基础处理结果
 workspace/merged     合并结果
+workspace/adjusted   图形边距调整结果
 workspace/work       一键流程中间文件
 workspace/output     最终输出
 workspace/logs       日志
@@ -56,6 +59,8 @@ workspace/logs       日志
 <li>输出写入临时文件后会重新解析 XML，验证通过再保存。</li>
 <li>建议使用 Git 管理源码，不要提交 .venv 和 workspace 中的业务文件。</li>
 </ul>
+<h3>路径记忆</h3>
+<p>完整路径保存在 AppData 下的独立 user_settings.ini。程序会恢复单文件/目录模式、输入路径、输出目录和客户模板路径；失效路径会提示并清除。</p>
 <h3>未来扩展</h3>
 <p>基础处理页和一键处理页复用同一个规则编辑组件。新增基础规则时只需扩展该组件、设置模型和 Processor。</p>
 """

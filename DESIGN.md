@@ -1,132 +1,93 @@
-# G File Studio 2.0.0 设计说明
+# G File Studio v2.2.0 设计说明
 
-## 分层结构
+## 架构
 
 ```text
 PySide6 UI
     ↓
-Processors
+Processor 业务层
     ↓
-XML Engines
+Engine XML 算法层
+    ↓
+ElementTree
 ```
 
-UI 负责参数收集、文件选择、路径记忆、输入校验、后台任务和日志展示；处理器与 XML 引擎不依赖界面控件。
+UI 不直接修改 XML。所有处理逻辑均可由界面、测试或后续命令行入口复用。
 
-## 程序图标
-
-资源：
+## 核心模块
 
 ```text
-resources/icons/app.ico
-resources/icons/app.png
+g_file_studio/
+├── engines/
+│   ├── merge_engine.py
+│   ├── frame_engine.py
+│   └── margin_engine.py
+├── processors/
+│   ├── basic_processor.py
+│   ├── merge_processor.py
+│   ├── margin_processor.py
+│   ├── frame_processor.py
+│   └── pipeline_processor.py
+├── services/
+│   ├── user_settings_service.py
+│   ├── temp_workspace_service.py
+│   ├── template_service.py
+│   └── paths.py
+└── ui/
+    ├── pages/
+    └── widgets/
 ```
 
-源码运行和 PyInstaller 打包运行均通过 `services.paths.resource_path()` 定位资源。
+## 独立 INI 设置
 
-应用启动流程：
+`UserSettingsService` 使用 `configparser` 和 `platformdirs`，不依赖程序安装目录或临时 QSettings 注册表配置。
+
+配置路径：
 
 ```text
-设置 Windows AppUserModelID
-→ 创建 QApplication
-→ 设置组织名与应用名
-→ 加载 app.ico / app.png
-→ app.setWindowIcon
-→ window.setWindowIcon
+AppData/Local/NARI/GFileStudio/Config/user_settings.ini
 ```
 
-PyInstaller 使用 `--icon resources\icons\app.ico` 设置 EXE 图标，并使用 `--add-data resources;resources` 打包全部资源。
+路径控件同时保存：
 
-## 最近目录服务
+- 完整文件路径；
+- 完整目录路径；
+- 最近浏览目录；
+- 当前输入模式；
+- 模板模式和客户模板路径。
 
-文件：
+## 图形边距算法
 
-```text
-g_file_studio/services/user_settings_service.py
-```
+1. 读取 G 画布尺寸和直属 Layer；
+2. 尝试识别由四条长 `line` 构成、覆盖画布大部分区域的矩形外框；
+3. 以外框线为种子，通过几何邻接识别标题栏、签字栏等图框组件；
+4. 图框组件从主体图形边界计算中排除；
+5. 计算主体图形子树边界，包含 `x/y/w/h`、端点、圆心半径和 `d` 坐标；
+6. 平移主体到用户指定左、上边距；
+7. 根据主体宽高和右、下边距计算新画布；
+8. 已有图框保持原四边距，外框线拉伸，组件按最近边或角锚定平移；
+9. 原子写出并重新解析验证。
 
-使用 `QSettings` 保存最近目录。目录 key 按模块和用途隔离，单文件与目录模式不会互相覆盖。
+## 一键流程已有图框策略
 
-示例：
+- 图形边距调整检测到旧图框：保留并适配；
+- 添加图框阶段：跳过这些文件，避免重复图框；
+- 未检测到旧图框：正常使用内置或客户模板添加图框。
 
-```text
-recent_paths/basic/single_file_directory
-recent_paths/basic/input_directory
-recent_paths/basic/output_directory
-recent_paths/frame/custom_template_directory
-recent_paths/pipeline/output_directory
-```
+## 合并文件子集与顺序
 
-`PathRow` 在文件对话框打开前执行：
+`FileOrderEditor` 维护两个集合：
 
-```text
-读取最近目录
-→ 存在：作为文件对话框初始目录
-→ 不存在：清除失效记录并提示用户
-→ 使用当前有效路径或系统文档目录作为回退
-```
+- `_rows`：当前保留、实际参与合并的文件及顺序；
+- `_excluded_names`：用户从本次合并列表排除的文件名。
 
-选择成功后：
+“删除所选”只修改这两个内存集合，不执行文件系统删除。重新扫描时保留排除集合和用户顺序，新发现文件追加到末尾；“恢复全部并排序”清空排除集合。
 
-```text
-选择文件 → 保存文件所在目录
-选择目录 → 保存所选目录
-```
+`merge_engine.discover_files(..., allow_subset=True)` 允许有序列表只包含输入目录中的文件子集，同时继续校验：
 
-## 路径校验
+- 顺序项必须只是文件名；
+- 后缀必须是 `.sln.pic.g`；
+- 不允许重复；
+- 所选文件必须真实存在。
 
-文件：
-
-```text
-g_file_studio/ui/path_validation.py
-```
-
-每个处理页面在启动后台任务前检查：
-
-- 单文件是否存在且为文件；
-- 文件后缀是否合法；
-- 输入目录是否存在且为目录；
-- 输出目录是否存在且为目录；
-- 自定义模板是否存在。
-
-路径无效时在 UI 中直接提示，不启动后台任务。
-
-## 默认工作目录
-
-App 启动时调用 `ensure_default_workspace()` 创建：
-
-```text
-workspace/input
-workspace/processed
-workspace/merged
-workspace/work
-workspace/output
-workspace/logs
-```
-
-这样首次运行时默认目录就是有效目录。
-
-## 中间文件
-
-一键处理的中间文件由 `TempWorkspaceService` 放入用户缓存目录：
-
-```text
-AppData/Local/NARI/GFileStudio/Cache/session_xxx
-```
-
-清理时机：
-
-- App 启动；
-- 新任务开始；
-- 正常关闭；
-- 异常退出后的下一次启动。
-
-## 可扩展性
-
-新增模块时应：
-
-1. 新建 Processor；
-2. 增加独立最近路径 key；
-3. 使用 `PathRow` 或 `InputSourceSelector`；
-4. 使用 `path_validation` 做执行前校验；
-5. 使用后台 Worker 执行；
-6. 增加自动测试。
+`merge_processor` 在用户提供有序列表时启用子集模式，因此最终合并集合与界面剩余行完全一致。

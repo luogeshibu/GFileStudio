@@ -83,6 +83,9 @@ workspace/processed/*
 workspace/merged/*
 !workspace/merged/.gitkeep
 
+workspace/adjusted/*
+!workspace/adjusted/.gitkeep
+
 workspace/work/**
 !workspace/work/.gitkeep
 

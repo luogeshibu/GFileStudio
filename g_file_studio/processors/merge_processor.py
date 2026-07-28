@@ -27,6 +27,7 @@ def merge_feeders(
     infos = merge_engine.discover_files(
         settings.input_dir,
         ordered_file_names=settings.ordered_file_names or None,
+        allow_subset=bool(settings.ordered_file_names),
     )
     output_path = (
         settings.output_dir / settings.output_name

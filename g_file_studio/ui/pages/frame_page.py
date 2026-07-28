@@ -71,10 +71,11 @@ class FramePage(BasePage):
             directory=True,
             dialog_title="选择添加图框输出目录",
             recent_directory_key="recent_paths/frame/output_directory",
+            persistent_path_key="frame/output_directory",
+            default_path=default_workspace() / "output",
             location_name="添加图框输出目录",
             settings_service=self.user_settings,
         )
-        self.output_path.set_path(default_workspace() / "output")
         self.output_path.set_tooltip(FIELD_HELP["output_dir"])
         output_form.addRow(HelpLabel("输出目录", FIELD_HELP["output_dir"]), self.output_path)
         path_layout.addLayout(output_form)
@@ -243,6 +244,11 @@ class FramePage(BasePage):
             if isinstance(row, dict):
                 editor.set_values(str(row.get("name", "")), str(row.get("date", "")))
 
+    def save_state(self) -> None:
+        self.source.persist_all_text()
+        self.output_path.persist_current_text()
+        self.template_selector.persist_current()
+
     def run(self) -> None:
         if not validate_input_source(self, self.source, display_name="添加图框输入"):
             return
@@ -250,6 +256,9 @@ class FramePage(BasePage):
             return
         if not self.template_selector.validate_selection():
             return
+        self.source.persist_current()
+        self.output_path.persist_valid_path()
+        self.template_selector.persist_current()
         settings = self.settings()
         self.task.start(
             lambda log, progress: add_drawing_frames(settings, log, progress),

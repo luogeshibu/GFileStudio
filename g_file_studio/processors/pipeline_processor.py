@@ -7,6 +7,7 @@ from g_file_studio.models import InputMode, PipelineSettings, ProcessingResult
 from g_file_studio.processors.basic_processor import process_basic
 from g_file_studio.processors.common import LogCallback, ProgressCallback
 from g_file_studio.processors.frame_processor import add_drawing_frames
+from g_file_studio.processors.margin_processor import adjust_graph_margins
 from g_file_studio.processors.merge_processor import merge_feeders
 
 
@@ -41,6 +42,13 @@ def _is_sln_pic_g(path: Path) -> bool:
     return path.is_file() and path.name.lower().endswith(G_SUFFIX)
 
 
+def _discover_stage_files(path: Path) -> list[Path]:
+    return sorted(
+        (item for item in path.iterdir() if _is_sln_pic_g(item)),
+        key=lambda item: item.name.casefold(),
+    )
+
+
 def _prepare_source(
     settings: PipelineSettings,
     stage_source: Path,
@@ -62,10 +70,7 @@ def _prepare_source(
     source_dir = settings.source_path
     if not source_dir.is_dir():
         raise NotADirectoryError(f"原始输入目录不存在：{source_dir}")
-    files = sorted(
-        (path for path in source_dir.iterdir() if _is_sln_pic_g(path)),
-        key=lambda path: path.name.casefold(),
-    )
+    files = _discover_stage_files(source_dir)
     if not files:
         raise FileNotFoundError(f"目录中没有以 {G_SUFFIX} 结尾的文件：{source_dir}")
 
@@ -78,21 +83,53 @@ def _prepare_source(
     return outputs
 
 
-def _copy_final_files(source_dir: Path, output_dir: Path, log: LogCallback) -> list[Path]:
+def _name_with_suffix(input_name: str, suffix: str) -> str:
+    if not suffix:
+        return input_name
+    if input_name.lower().endswith(G_SUFFIX):
+        return input_name[: -len(G_SUFFIX)] + suffix + G_SUFFIX
+    if input_name.lower().endswith(".g"):
+        return input_name[:-2] + suffix + ".g"
+    return input_name + suffix
+
+
+def _copy_final_files(
+    source_dir: Path,
+    output_dir: Path,
+    log: LogCallback,
+    *,
+    suffix: str = "",
+    selected_names: set[str] | None = None,
+) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    files = sorted(
-        (path for path in source_dir.iterdir() if _is_sln_pic_g(path)),
-        key=lambda path: path.name.casefold(),
-    )
+    files = _discover_stage_files(source_dir)
+    if selected_names is not None:
+        files = [item for item in files if item.name in selected_names]
     if not files:
-        raise FileNotFoundError(f"没有可写入最终输出的 {G_SUFFIX} 文件：{source_dir}")
+        return []
 
     outputs: list[Path] = []
     for source in files:
-        target = output_dir / source.name
+        target = output_dir / _name_with_suffix(source.name, suffix)
         shutil.copy2(source, target)
         outputs.append(target)
         log(f"最终输出：{target}")
+    return outputs
+
+
+def _copy_selected_to_stage(
+    source_dir: Path,
+    target_dir: Path,
+    selected_names: set[str],
+) -> list[Path]:
+    _clear_directory(target_dir)
+    outputs: list[Path] = []
+    for source in _discover_stage_files(source_dir):
+        if source.name not in selected_names:
+            continue
+        target = target_dir / source.name
+        shutil.copy2(source, target)
+        outputs.append(target)
     return outputs
 
 
@@ -101,16 +138,14 @@ def run_pipeline(
     log: LogCallback = print,
     progress: ProgressCallback | None = None,
 ) -> ProcessingResult:
-    """执行一键流程。
-
-    用户只提供原始输入和最终输出。所有阶段目录均位于 AppData 缓存中的
-    temp_work_dir，由应用在任务开始、退出和下次启动时自动清理。
-    """
+    """执行一键流程，所有中间目录均位于 AppData 临时工作区。"""
     work = settings.temp_work_dir
     _clear_directory(work)
     stage_source = work / "00_source"
     stage_basic = work / "01_basic_processed"
     stage_merged = work / "02_merged"
+    stage_adjusted = work / "03_adjusted"
+    stage_frame_input = work / "04_frame_input"
     settings.output_dir.mkdir(parents=True, exist_ok=True)
 
     source_files = _prepare_source(settings, stage_source, log)
@@ -125,12 +160,18 @@ def run_pipeline(
         warnings.append(message)
         log(message)
 
-    enabled_stages = [settings.run_basic, effective_merge, settings.run_frame]
+    enabled_stages = [
+        settings.run_basic,
+        effective_merge,
+        settings.run_margin,
+        settings.run_frame,
+    ]
     stage_count = max(1, sum(enabled_stages))
     stage_index = 0
     current_input = stage_source
     completed_names: list[str] = []
     outputs: list[Path] = []
+    existing_frame_names: set[str] = set()
 
     if settings.run_basic:
         log("\n=== 阶段 1：基础处理 ===")
@@ -166,22 +207,73 @@ def run_pipeline(
         outputs = result.output_files
         completed_names.append("G 文件合并")
 
-    if settings.run_frame:
-        log("\n=== 阶段 3：添加图框 ===")
-        frame = settings.frame.model_copy(
+    if settings.run_margin:
+        log("\n=== 阶段 3：图形边距调整 ===")
+        margin = settings.margin.model_copy(
             update={
                 "source_path": current_input,
                 "input_mode": InputMode.DIRECTORY,
-                "output_dir": settings.output_dir,
+                "output_dir": stage_adjusted,
+                # 一键流程内部保持文件名，最终命名由添加图框或最终输出阶段决定。
+                "output_suffix": "",
             }
         )
-        result = add_drawing_frames(
-            frame,
+        result = adjust_graph_margins(
+            margin,
             log=log,
             progress=_stage_progress(progress, stage_index, stage_count),
         )
+        stage_index += 1
+        current_input = stage_adjusted
         outputs = result.output_files
-        completed_names.append("添加图框")
+        existing_frame_names = set(
+            result.statistics.get("files_with_existing_frame", [])
+        )
+        completed_names.append("图形边距调整")
+
+    if settings.run_frame:
+        log("\n=== 阶段 4：添加图框 ===")
+        current_names = {item.name for item in _discover_stage_files(current_input)}
+        skip_names = existing_frame_names & current_names
+        frame_names = current_names - skip_names
+
+        outputs = []
+        if skip_names:
+            log(
+                f"检测到 {len(skip_names)} 个文件已包含完整图框；图形边距调整已保留并同步适配，"
+                "为避免重复图框，本阶段将直接输出这些文件。"
+            )
+            outputs.extend(
+                _copy_final_files(
+                    current_input,
+                    settings.output_dir,
+                    log,
+                    suffix=settings.frame.output_suffix,
+                    selected_names=skip_names,
+                )
+            )
+
+        if frame_names:
+            _copy_selected_to_stage(current_input, stage_frame_input, frame_names)
+            frame = settings.frame.model_copy(
+                update={
+                    "source_path": stage_frame_input,
+                    "input_mode": InputMode.DIRECTORY,
+                    "output_dir": settings.output_dir,
+                }
+            )
+            result = add_drawing_frames(
+                frame,
+                log=log,
+                progress=_stage_progress(progress, stage_index, stage_count),
+            )
+            outputs.extend(result.output_files)
+        elif progress:
+            stage_callback = _stage_progress(progress, stage_index, stage_count)
+            if stage_callback:
+                stage_callback(100)
+
+        completed_names.append("添加图框/保留已有图框")
     else:
         outputs = _copy_final_files(current_input, settings.output_dir, log)
         if not completed_names:
@@ -199,6 +291,7 @@ def run_pipeline(
             "stages_completed": len(completed_names),
             "stage_names": " → ".join(completed_names),
             "output_count": len(outputs),
+            "files_with_existing_frame": sorted(existing_frame_names),
             "temporary_workspace": str(work),
         },
     )

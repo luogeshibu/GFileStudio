@@ -86,6 +86,25 @@ class MergeSettings(BaseModel):
         return value + MERGED_FILE_SUFFIX
 
 
+class MarginSettings(BaseModel):
+    """主体图形四边距调整参数。
+
+    已有完整外框会被识别、排除在主体边界计算之外，并在新画布上保留原四边距、
+    同步拉伸外框和移动其附属组件；图框文字及业务内容保持不变。
+    """
+
+    source_path: Path
+    input_mode: InputMode = InputMode.DIRECTORY
+    output_dir: Path
+    left_margin: int = Field(default=500, ge=0)
+    top_margin: int = Field(default=500, ge=0)
+    right_margin: int = Field(default=500, ge=0)
+    bottom_margin: int = Field(default=500, ge=0)
+    preserve_existing_frame: bool = True
+    output_suffix: str = "-ADJUSTED"
+    overwrite: bool = True
+
+
 class PersonSettings(BaseModel):
     name: str = ""
     date: str = ""
@@ -143,9 +162,11 @@ class PipelineSettings(BaseModel):
     output_dir: Path
     run_basic: bool = True
     run_merge: bool = True
+    run_margin: bool = True
     run_frame: bool = True
     basic: BasicSettings
     merge: MergeSettings
+    margin: MarginSettings
     frame: FrameSettings
 
 

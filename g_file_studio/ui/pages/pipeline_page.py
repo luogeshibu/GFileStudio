@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QCheckBox, QFormLayout, QGroupBox, QLineEdit, QVBo
 from g_file_studio.models import (
     FrameSettings,
     InputMode,
+    MarginSettings,
     MergeSettings,
     PersonSettings,
     PipelineSettings,
@@ -67,10 +68,11 @@ class PipelinePage(BasePage):
             directory=True,
             dialog_title="选择一键处理最终输出目录",
             recent_directory_key="recent_paths/pipeline/output_directory",
+            persistent_path_key="pipeline/output_directory",
+            default_path=default_workspace() / "output",
             location_name="一键处理最终输出目录",
             settings_service=self.user_settings,
         )
-        self.output.set_path(default_workspace() / "output")
         self.output.set_tooltip(FIELD_HELP["output_dir"])
         path_layout.addWidget(self.source)
         output_form = QFormLayout()
@@ -84,12 +86,11 @@ class PipelinePage(BasePage):
         stage_layout.setSpacing(9)
         self.run_basic = QCheckBox("1. 基础处理：执行通用属性替换和元素删除规则")
         self.run_merge = QCheckBox("2. G 文件合并：目录模式下按用户定义顺序合并")
-        self.run_frame = QCheckBox("3. 添加图框：使用内置模板或客户自定义模板")
-        for check in (self.run_basic, self.run_merge, self.run_frame):
+        self.run_margin = QCheckBox("3. 图形边距调整：主体默认距离画布四边各 500")
+        self.run_frame = QCheckBox("4. 添加图框：使用内置模板或客户自定义模板")
+        for check in (self.run_basic, self.run_merge, self.run_margin, self.run_frame):
             check.setChecked(True)
-        stage_layout.addWidget(self.run_basic)
-        stage_layout.addWidget(self.run_merge)
-        stage_layout.addWidget(self.run_frame)
+            stage_layout.addWidget(check)
         self.layout.addWidget(stage_box)
 
         self.basic_box = QGroupBox("基础处理规则")
@@ -116,15 +117,41 @@ class PipelinePage(BasePage):
         self.bottom_margin = self.spin(300)
         merge_form.addRow(HelpLabel("合并输出文件名", FIELD_HELP["output_name"]), self.merge_output_name)
         merge_form.addRow(HelpLabel("图形间隔", FIELD_HELP["feeder_gap"]), self.gap)
-        merge_form.addRow(HelpLabel("左边距", FIELD_HELP["merge_margin"]), self.left_margin)
-        merge_form.addRow(HelpLabel("上边距", FIELD_HELP["merge_margin"]), self.top_margin)
-        merge_form.addRow(HelpLabel("右边距", FIELD_HELP["merge_margin"]), self.right_margin)
-        merge_form.addRow(HelpLabel("下边距", FIELD_HELP["merge_margin"]), self.bottom_margin)
+        merge_form.addRow(HelpLabel("合并左边距", FIELD_HELP["merge_margin"]), self.left_margin)
+        merge_form.addRow(HelpLabel("合并上边距", FIELD_HELP["merge_margin"]), self.top_margin)
+        merge_form.addRow(HelpLabel("合并右边距", FIELD_HELP["merge_margin"]), self.right_margin)
+        merge_form.addRow(HelpLabel("合并下边距", FIELD_HELP["merge_margin"]), self.bottom_margin)
         merge_layout.addLayout(merge_form)
         self.merge_order = FileOrderEditor()
         self.merge_order.set_input_dir(self.source.path())
         merge_layout.addWidget(self.merge_order)
         self.layout.addWidget(self.merge_box)
+
+        self.margin_box = QGroupBox("图形边距调整参数")
+        margin_form = QFormLayout(self.margin_box)
+        margin_form.setHorizontalSpacing(16)
+        margin_form.setVerticalSpacing(10)
+        self.content_left = self.spin(500)
+        self.content_top = self.spin(500)
+        self.content_right = self.spin(500)
+        self.content_bottom = self.spin(500)
+        for widget in (
+            self.content_left,
+            self.content_top,
+            self.content_right,
+            self.content_bottom,
+        ):
+            widget.setToolTip(FIELD_HELP["content_margin"])
+        margin_form.addRow(HelpLabel("主体左边距", FIELD_HELP["content_margin"]), self.content_left)
+        margin_form.addRow(HelpLabel("主体上边距", FIELD_HELP["content_margin"]), self.content_top)
+        margin_form.addRow(HelpLabel("主体右边距", FIELD_HELP["content_margin"]), self.content_right)
+        margin_form.addRow(HelpLabel("主体下边距", FIELD_HELP["content_margin"]), self.content_bottom)
+        self.layout.addWidget(self.margin_box)
+        self.layout.addWidget(
+            InfoBanner(
+                "图形边距调整若检测到已有完整外框，会保留外框原四边距并同步拉伸、移动附属组件；后续自动跳过重复添加图框。"
+            )
+        )
 
         self.frame_box = QGroupBox("图框模板与输出参数")
         frame_layout = QVBoxLayout(self.frame_box)
@@ -160,12 +187,13 @@ class PipelinePage(BasePage):
         frame_form.addRow(HelpLabel("图框上边距", FIELD_HELP["frame_margin"]), self.frame_top)
         frame_form.addRow(HelpLabel("图框右边距", FIELD_HELP["frame_margin"]), self.frame_right)
         frame_form.addRow(HelpLabel("图框下边距", FIELD_HELP["frame_margin"]), self.frame_bottom)
-        frame_form.addRow(HelpLabel("输出后缀", FIELD_HELP["output_suffix"]), self.output_suffix)
+        frame_form.addRow(HelpLabel("最终输出后缀", FIELD_HELP["output_suffix"]), self.output_suffix)
         frame_layout.addLayout(frame_form)
         self.layout.addWidget(self.frame_box)
 
         self.run_basic.toggled.connect(self.basic_box.setEnabled)
         self.run_merge.toggled.connect(self._update_merge_enabled)
+        self.run_margin.toggled.connect(self.margin_box.setEnabled)
         self.run_frame.toggled.connect(self.frame_box.setEnabled)
         self.source.pathChanged.connect(self._source_path_changed)
         self.source.modeChanged.connect(self._input_mode_changed)
@@ -191,7 +219,6 @@ class PipelinePage(BasePage):
         directory = InputMode(mode_value) == InputMode.DIRECTORY
         self.run_merge.setEnabled(directory)
         if directory:
-            self.run_merge.setChecked(True)
             self.merge_order.set_input_dir(self.source.path())
         else:
             self.run_merge.setChecked(False)
@@ -205,12 +232,22 @@ class PipelinePage(BasePage):
     def _template_mode_changed(self, mode_value: str) -> None:
         self.frame_content_box.setEnabled(TemplateMode(mode_value) == TemplateMode.BUILTIN)
 
+    def save_state(self) -> None:
+        self.source.persist_all_text()
+        self.output.persist_current_text()
+        self.template_selector.persist_current()
+
     def run(self) -> None:
         source = self.source.path()
         output = self.output.path()
         mode = self.source.mode()
 
-        if not validate_input_source(self, self.source, display_name="一键处理原始输入"):
+        if not validate_input_source(
+            self,
+            self.source,
+            display_name="一键处理原始输入",
+            require_compound_suffix=True,
+        ):
             return
         if not validate_existing_directory(self, output, "一键处理最终输出目录"):
             return
@@ -220,6 +257,10 @@ class PipelinePage(BasePage):
             self.merge_order.set_input_dir(source)
             if not self.merge_order.ensure_ready():
                 return
+
+        self.source.persist_current()
+        self.output.persist_valid_path()
+        self.template_selector.persist_current()
 
         task_work = self.temp_workspace.reset_task_workspace()
         basic = self.basic_rules.build_settings(
@@ -242,8 +283,19 @@ class PipelinePage(BasePage):
             right_margin=self.right_margin.value(),
             bottom_margin=self.bottom_margin.value(),
         )
-        frame = FrameSettings(
+        margin = MarginSettings(
             source_path=task_work / "02_merged",
+            input_mode=InputMode.DIRECTORY,
+            output_dir=task_work / "03_adjusted",
+            left_margin=self.content_left.value(),
+            top_margin=self.content_top.value(),
+            right_margin=self.content_right.value(),
+            bottom_margin=self.content_bottom.value(),
+            preserve_existing_frame=True,
+            output_suffix="",
+        )
+        frame = FrameSettings(
+            source_path=task_work / "03_adjusted",
             input_mode=InputMode.DIRECTORY,
             output_dir=output,
             template_file=self.template_selector.resolved_template_path(),
@@ -266,9 +318,11 @@ class PipelinePage(BasePage):
             output_dir=output,
             run_basic=self.run_basic.isChecked(),
             run_merge=self.run_merge.isChecked(),
+            run_margin=self.run_margin.isChecked(),
             run_frame=self.run_frame.isChecked(),
             basic=basic,
             merge=merge,
+            margin=margin,
             frame=frame,
         )
         self.task.start(

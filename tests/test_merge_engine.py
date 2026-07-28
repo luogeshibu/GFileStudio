@@ -209,3 +209,56 @@ def test_alignment_uses_topmost_valid_bus_and_ignores_busdis(tmp_path: Path):
     assert parsed.alignment_mode == "顶部水平 <Bus>"
     # BusDis 的 Y=10 不参与；零长度 Bus 的 Y=40 也不是有效水平母线。
     assert parsed.alignment_y == Decimal("80")
+
+
+def test_user_defined_subset_is_allowed_when_enabled(tmp_path: Path):
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    _write_g(input_dir / "a.sln.pic.g", '<Text id="1" x="1" y="1" />')
+    _write_g(input_dir / "b.sln.pic.g", '<Text id="2" x="2" y="2" />')
+    _write_g(input_dir / "c.sln.pic.g", '<Text id="3" x="3" y="3" />')
+
+    infos = merge_engine.discover_files(
+        input_dir,
+        ordered_file_names=["c.sln.pic.g", "a.sln.pic.g"],
+        allow_subset=True,
+    )
+
+    assert [info.path.name for info in infos] == [
+        "c.sln.pic.g",
+        "a.sln.pic.g",
+    ]
+    assert [info.order for info in infos] == [1, 2]
+
+
+def test_merge_processor_merges_only_selected_subset(tmp_path: Path):
+    from g_file_studio.models import MergeSettings
+    from g_file_studio.processors.merge_processor import merge_feeders
+
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    _write_g(input_dir / "a.sln.pic.g", '<Text id="1" x="10" y="20" w="10" h="10" />')
+    _write_g(input_dir / "b.sln.pic.g", '<Text id="2" x="20" y="20" w="10" h="10" />')
+    _write_g(input_dir / "c.sln.pic.g", '<Text id="3" x="30" y="20" w="10" h="10" />')
+
+    result = merge_feeders(
+        MergeSettings(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            output_name="selected.sln.pic.g",
+            ordered_file_names=["c.sln.pic.g", "a.sln.pic.g"],
+        ),
+        log=lambda _line: None,
+    )
+
+    assert result.success
+    assert result.statistics["input_count"] == 2
+    assert result.statistics["input_order"] == ["c.sln.pic.g", "a.sln.pic.g"]
+
+    root = ET.parse(result.output_files[0]).getroot()
+    layer = root.find("Layer")
+    assert layer is not None
+    source_ids = {element.get("id") for element in list(layer)}
+    # b 文件未参与合并，因此不会出现其唯一 ID=2。
+    assert "2" not in source_ids

@@ -13,7 +13,7 @@ from g_file_studio.ui.widgets.wheel_safe_combo_box import WheelSafeComboBox
 
 
 class InputSourceSelector(QWidget):
-    """可复用的单文件 / 目录输入选择器，并分别记住两种模式的最近目录。"""
+    """单文件/目录输入选择器，分别恢复并保存完整路径和输入模式。"""
 
     modeChanged = Signal(str)
     pathChanged = Signal(str)
@@ -33,6 +33,7 @@ class InputSourceSelector(QWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self.settings_prefix = settings_prefix
         self.settings_service = settings_service or UserSettingsService()
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -47,37 +48,51 @@ class InputSourceSelector(QWidget):
         mode_row.addStretch(1)
         root.addLayout(mode_row)
 
+        default_dir = default_directory or (default_workspace() / "input")
         self.stack = QStackedWidget()
         self.file_row = PathRow(
             directory=False,
             file_filter=file_filter,
             dialog_title="选择单个 G 文件",
             recent_directory_key=f"recent_paths/{settings_prefix}/single_file_directory",
-            location_name="单个 G 文件所在目录",
+            persistent_path_key=f"{settings_prefix}/single_file_path",
+            location_name="单个 G 文件",
             settings_service=self.settings_service,
         )
         self.dir_row = PathRow(
             directory=True,
             dialog_title="选择 G 文件目录",
             recent_directory_key=f"recent_paths/{settings_prefix}/input_directory",
+            persistent_path_key=f"{settings_prefix}/directory_path",
+            default_path=default_dir,
             location_name="G 文件输入目录",
             settings_service=self.settings_service,
         )
-        self.dir_row.set_path(default_directory or (default_workspace() / "input"))
         self.file_row.set_tooltip(file_tooltip)
         self.dir_row.set_tooltip(directory_tooltip)
         self.stack.addWidget(self.file_row)
         self.stack.addWidget(self.dir_row)
         root.addWidget(self.stack)
 
+        saved_mode = self.settings_service.get_value(
+            f"{settings_prefix}/input_mode",
+            default_mode.value,
+        )
+        try:
+            initial_mode = InputMode(saved_mode)
+        except ValueError:
+            initial_mode = default_mode
+
         self.mode_combo.currentIndexChanged.connect(self._mode_changed)
         self.file_row.pathChanged.connect(self.pathChanged)
         self.dir_row.pathChanged.connect(self.pathChanged)
-        self.set_mode(default_mode)
+        self.set_mode(initial_mode, persist=False)
 
     def _mode_changed(self, *_args: object) -> None:
-        self.stack.setCurrentIndex(0 if self.mode() == InputMode.SINGLE_FILE else 1)
-        self.modeChanged.emit(self.mode().value)
+        mode = self.mode()
+        self.stack.setCurrentIndex(0 if mode == InputMode.SINGLE_FILE else 1)
+        self.settings_service.set_value(f"{self.settings_prefix}/input_mode", mode.value)
+        self.modeChanged.emit(mode.value)
         self.pathChanged.emit(str(self.path()))
 
     def mode(self) -> InputMode:
@@ -87,8 +102,24 @@ class InputSourceSelector(QWidget):
     def path(self) -> Path:
         return self.file_row.path() if self.mode() == InputMode.SINGLE_FILE else self.dir_row.path()
 
-    def set_mode(self, mode: InputMode) -> None:
+    def set_mode(self, mode: InputMode, *, persist: bool = True) -> None:
         target = self.mode_combo.findData(mode.value)
         if target >= 0:
+            self.mode_combo.blockSignals(True)
             self.mode_combo.setCurrentIndex(target)
+            self.mode_combo.blockSignals(False)
         self.stack.setCurrentIndex(0 if mode == InputMode.SINGLE_FILE else 1)
+        if persist:
+            self.settings_service.set_value(f"{self.settings_prefix}/input_mode", mode.value)
+
+    def persist_current(self) -> None:
+        self.settings_service.set_value(f"{self.settings_prefix}/input_mode", self.mode().value)
+        if self.mode() == InputMode.SINGLE_FILE:
+            self.file_row.persist_valid_path()
+        else:
+            self.dir_row.persist_valid_path()
+
+    def persist_all_text(self) -> None:
+        self.file_row.persist_current_text()
+        self.dir_row.persist_current_text()
+        self.settings_service.set_value(f"{self.settings_prefix}/input_mode", self.mode().value)

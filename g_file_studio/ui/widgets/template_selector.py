@@ -29,7 +29,7 @@ from g_file_studio.ui.widgets.wheel_safe_combo_box import WheelSafeComboBox
 
 
 class TemplateSelector(QWidget):
-    """内置模板 / 客户自定义模板选择器。"""
+    """内置模板/客户自定义模板选择器，持久保存模式和完整模板路径。"""
 
     modeChanged = Signal(str)
     templateChanged = Signal(str)
@@ -53,7 +53,6 @@ class TemplateSelector(QWidget):
         mode_row = QHBoxLayout()
         self.builtin_radio = QRadioButton("使用程序内置模板")
         self.custom_radio = QRadioButton("使用客户自定义模板")
-        self.builtin_radio.setChecked(True)
         mode_row.addWidget(self.builtin_radio)
         mode_row.addWidget(self.custom_radio)
         mode_row.addStretch(1)
@@ -77,7 +76,8 @@ class TemplateSelector(QWidget):
             file_filter="SLD G Files (*.sln.pic.g);;G Files (*.g)",
             dialog_title="选择客户自定义图框模板",
             recent_directory_key=f"recent_paths/{settings_prefix}/custom_template_directory",
-            location_name="客户自定义模板所在目录",
+            persistent_path_key=f"{settings_prefix}/custom_template_path",
+            location_name="客户自定义图框模板",
             settings_service=self.settings_service,
         )
         self.custom_path.set_tooltip(
@@ -97,7 +97,8 @@ class TemplateSelector(QWidget):
         self.export_button.clicked.connect(self.export_current_builtin)
 
         self._load_templates()
-        self._update_mode()
+        self._restore_selection()
+        self._update_mode(save=False)
 
     def _load_templates(self) -> None:
         try:
@@ -107,6 +108,7 @@ class TemplateSelector(QWidget):
             return
 
         self._templates = {item.template_id: item for item in templates}
+        self.builtin_combo.blockSignals(True)
         self.builtin_combo.clear()
         default_index = 0
         for index, item in enumerate(templates):
@@ -114,18 +116,46 @@ class TemplateSelector(QWidget):
             if item.template_id == default_id:
                 default_index = index
         self.builtin_combo.setCurrentIndex(default_index)
-        self._builtin_changed()
+        self.builtin_combo.blockSignals(False)
+        self._builtin_changed(save=False)
 
-    def _builtin_changed(self, *_args: object) -> None:
+    def _restore_selection(self) -> None:
+        saved_id = self.settings_service.get_value(
+            f"{self.settings_prefix}/builtin_template_id",
+            "",
+        )
+        if saved_id:
+            index = self.builtin_combo.findData(saved_id)
+            if index >= 0:
+                self.builtin_combo.setCurrentIndex(index)
+
+        saved_mode = self.settings_service.get_value(
+            f"{self.settings_prefix}/template_mode",
+            TemplateMode.BUILTIN.value,
+        )
+        try:
+            mode = TemplateMode(saved_mode)
+        except ValueError:
+            mode = TemplateMode.BUILTIN
+        self.builtin_radio.setChecked(mode == TemplateMode.BUILTIN)
+        self.custom_radio.setChecked(mode == TemplateMode.CUSTOM)
+        self._builtin_changed(save=False)
+
+    def _builtin_changed(self, *_args: object, save: bool = True) -> None:
         item = self.current_builtin_template()
         if item is None:
             self.version_label.setText("")
             return
         self.version_label.setText(f"版本 {item.version}")
         self.builtin_combo.setToolTip(item.description or item.name)
+        if save:
+            self.settings_service.set_value(
+                f"{self.settings_prefix}/builtin_template_id",
+                item.template_id,
+            )
         self.templateChanged.emit(str(item.path))
 
-    def _update_mode(self, *_args: object) -> None:
+    def _update_mode(self, *_args: object, save: bool = True) -> None:
         builtin = self.builtin_radio.isChecked()
         self.builtin_combo.setEnabled(builtin)
         self.version_label.setEnabled(builtin)
@@ -138,6 +168,11 @@ class TemplateSelector(QWidget):
         else:
             self.note.setText(
                 "客户模板：会按四边距调整外框和锚定组件位置，但不会修改任何文字、姓名、日期、字体、颜色或表格内容。"
+            )
+        if save:
+            self.settings_service.set_value(
+                f"{self.settings_prefix}/template_mode",
+                self.mode().value,
             )
         self.modeChanged.emit(self.mode().value)
         self.templateChanged.emit(str(self.resolved_template_path()))
@@ -156,6 +191,19 @@ class TemplateSelector(QWidget):
             return self.custom_path.path()
         item = self.current_builtin_template()
         return item.path if item is not None else get_builtin_template().path
+
+    def persist_current(self) -> None:
+        self.settings_service.set_value(
+            f"{self.settings_prefix}/template_mode",
+            self.mode().value,
+        )
+        self.settings_service.set_value(
+            f"{self.settings_prefix}/builtin_template_id",
+            self.builtin_template_id(),
+        )
+        self.custom_path.persist_current_text()
+        if self.mode() == TemplateMode.CUSTOM and self.custom_path.path().is_file():
+            self.custom_path.persist_valid_path()
 
     def export_current_builtin(self) -> None:
         item = self.current_builtin_template()
@@ -197,4 +245,5 @@ class TemplateSelector(QWidget):
                 f"图框模板不存在：\n{path}\n\n请重新选择模板，或恢复使用程序内置模板。",
             )
             return False
+        self.persist_current()
         return True

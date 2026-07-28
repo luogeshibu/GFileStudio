@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 from g_file_studio import __version__
 from g_file_studio.services.temp_workspace_service import TempWorkspaceService
 from g_file_studio.services.user_settings_service import UserSettingsService
-from g_file_studio.ui.pages import BasicPage, FramePage, HelpPage, MergePage, PipelinePage
+from g_file_studio.ui.pages import BasicPage, FramePage, HelpPage, MarginPage, MergePage, PipelinePage
 from g_file_studio.ui.theme import build_app_style
 
 
@@ -48,6 +48,7 @@ class MainWindow(QMainWindow):
             PipelinePage(self.temp_workspace, self.user_settings),
             BasicPage(self.user_settings),
             MergePage(self.user_settings),
+            MarginPage(self.user_settings),
             FramePage(self.user_settings),
             HelpPage(),
         ]
@@ -106,6 +107,7 @@ class MainWindow(QMainWindow):
             ("一键处理", "运行完整或自定义处理流程"),
             ("基础处理", "执行通用属性替换和元素删除规则"),
             ("G 文件合并", "合并任意命名的未加外框 .sln.pic.g 文件"),
+            ("图形边距调整", "调整主体图形四边距并同步适配已有外框"),
             ("添加图框", "添加 SLD 外框、标题和签字栏"),
             ("帮助中心", "查看使用说明和目录建议"),
         ]
@@ -135,11 +137,15 @@ class MainWindow(QMainWindow):
 
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
+        for page in self.pages:
+            save_state = getattr(page, "save_state", None)
+            if callable(save_state):
+                save_state()
         self.temp_workspace.cleanup()
         super().closeEvent(event)
 
     def _install_help_shortcut(self) -> None:
         action = QAction(self)
         action.setShortcut(QKeySequence.StandardKey.HelpContents)
-        action.triggered.connect(lambda: self.nav.setCurrentRow(4))
+        action.triggered.connect(lambda: self.nav.setCurrentRow(5))
         self.addAction(action)

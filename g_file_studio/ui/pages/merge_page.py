@@ -32,7 +32,7 @@ class MergePage(BasePage):
         )
         self.layout.addWidget(
             InfoBanner(
-                "输入文件名不解析站点或馈线号。扫描后可自由定义合并顺序，第一行文件是基准。垂直对齐只识别有效水平 <Bus>，不会把 <BusDis> 当作 Bus；无 Bus 时使用最高图元。输入不能包含外框架图。"
+                "输入文件名不解析站点或馈线号。扫描后可删除不需要参与合并的文件，并自由定义剩余文件顺序；第一行文件是基准。删除只影响本次列表，不会删除磁盘文件。垂直对齐只识别有效水平 <Bus>，不会把 <BusDis> 当作 Bus；无 Bus 时使用最高图元。输入不能包含外框架图。"
             )
         )
 
@@ -44,6 +44,8 @@ class MergePage(BasePage):
             directory=True,
             dialog_title="选择待合并 G 文件目录",
             recent_directory_key="recent_paths/merge/input_directory",
+            persistent_path_key="merge/input_directory",
+            default_path=default_workspace() / "processed",
             location_name="G 文件合并输入目录",
             settings_service=self.user_settings,
         )
@@ -51,11 +53,11 @@ class MergePage(BasePage):
             directory=True,
             dialog_title="选择合并结果输出目录",
             recent_directory_key="recent_paths/merge/output_directory",
+            persistent_path_key="merge/output_directory",
+            default_path=default_workspace() / "merged",
             location_name="G 文件合并输出目录",
             settings_service=self.user_settings,
         )
-        self.input_path.set_path(default_workspace() / "processed")
-        self.output_path.set_path(default_workspace() / "merged")
         self.input_path.set_tooltip(FIELD_HELP["merge_input_dir"])
         self.output_path.set_tooltip(FIELD_HELP["output_dir"])
         self.output_name = QLineEdit()
@@ -120,11 +122,17 @@ class MergePage(BasePage):
             bottom_margin=self.bottom.value(),
         )
 
+    def save_state(self) -> None:
+        self.input_path.persist_current_text()
+        self.output_path.persist_current_text()
+
     def run(self) -> None:
         if not validate_existing_directory(self, self.input_path.path(), "G 文件合并输入目录"):
             return
         if not validate_existing_directory(self, self.output_path.path(), "G 文件合并输出目录"):
             return
+        self.input_path.persist_valid_path()
+        self.output_path.persist_valid_path()
         self.file_order.set_input_dir(self.input_path.path())
         if not self.file_order.ensure_ready():
             return

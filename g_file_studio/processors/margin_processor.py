@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from g_file_studio.engines.margin_engine import adjust_one_file, make_output_path
+from g_file_studio.models import MarginSettings, ProcessingResult
+from g_file_studio.processors.common import LogCallback, ProgressCallback, discover_g_inputs
+
+
+def adjust_graph_margins(
+    settings: MarginSettings,
+    log: LogCallback = print,
+    progress: ProgressCallback | None = None,
+) -> ProcessingResult:
+    settings.output_dir.mkdir(parents=True, exist_ok=True)
+    files = discover_g_inputs(settings.source_path, settings.input_mode)
+
+    outputs: list[Path] = []
+    files_with_frame: list[str] = []
+    files_without_frame: list[str] = []
+
+    for index, input_path in enumerate(files, 1):
+        output_path = make_output_path(
+            settings.output_dir,
+            input_path,
+            settings.output_suffix,
+        )
+        try:
+            same_as_input = output_path.resolve() == input_path.resolve()
+        except OSError:
+            same_as_input = output_path.absolute() == input_path.absolute()
+        if same_as_input:
+            raise ValueError(
+                "图形边距调整不会覆盖原始文件。请更换输出目录，或设置非空输出后缀。"
+            )
+        if output_path.exists() and not settings.overwrite:
+            raise FileExistsError(f"输出文件已存在且不允许覆盖：{output_path}")
+
+        result = adjust_one_file(
+            input_path,
+            output_path,
+            left_margin=settings.left_margin,
+            top_margin=settings.top_margin,
+            right_margin=settings.right_margin,
+            bottom_margin=settings.bottom_margin,
+            preserve_existing_frame=settings.preserve_existing_frame,
+        )
+        outputs.append(output_path)
+        if result.had_existing_frame:
+            files_with_frame.append(output_path.name)
+            frame_text = (
+                f"；已有图框保持边距 左={result.frame_left_margin:g}、"
+                f"上={result.frame_top_margin:g}、右={result.frame_right_margin:g}、"
+                f"下={result.frame_bottom_margin:g}"
+            )
+        else:
+            files_without_frame.append(output_path.name)
+            frame_text = "；未检测到完整外框"
+
+        log(
+            f"✓ {input_path.name}：画布 "
+            f"{result.old_canvas_width}×{result.old_canvas_height} → "
+            f"{result.new_canvas_width}×{result.new_canvas_height}；"
+            f"主体边距 左={result.body_left_margin:g}、上={result.body_top_margin:g}、"
+            f"右={result.body_right_margin:g}、下={result.body_bottom_margin:g}"
+            f"{frame_text}"
+        )
+        if progress:
+            progress(round(index * 100 / len(files)))
+
+    return ProcessingResult(
+        success=True,
+        output_files=outputs,
+        statistics={
+            "input_mode": settings.input_mode.value,
+            "source_path": str(settings.source_path),
+            "file_count": len(outputs),
+            "files_with_existing_frame": files_with_frame,
+            "files_without_existing_frame": files_without_frame,
+            "existing_frame_count": len(files_with_frame),
+            "left_margin": settings.left_margin,
+            "top_margin": settings.top_margin,
+            "right_margin": settings.right_margin,
+            "bottom_margin": settings.bottom_margin,
+        },
+    )

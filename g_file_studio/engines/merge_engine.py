@@ -211,12 +211,14 @@ def discover_files(
     input_dir: Path,
     pattern: str = "*.sln.pic.g",
     ordered_file_names: Iterable[str] | None = None,
+    *,
+    allow_subset: bool = False,
 ) -> list[GFileInfo]:
     """发现输入文件，并按用户顺序或默认自然排序返回。
 
-    ``ordered_file_names`` 只接收文件名，不接收目录。指定后必须完整包含
-    输入目录中所有 ``.sln.pic.g`` 文件，且每个文件只能出现一次，避免
-    用户误漏文件或重复合并。
+    ``ordered_file_names`` 只接收文件名，不接收目录，且每个文件只能出现一次。
+    默认要求完整包含输入目录中的全部 ``.sln.pic.g`` 文件；当
+    ``allow_subset=True`` 时，允许只选择目录中的一部分文件参与合并。
     """
     if not input_dir.is_dir():
         raise NotADirectoryError(f"输入目录不存在：{input_dir}")
@@ -281,14 +283,14 @@ def discover_files(
                 for path in natural_candidates
                 if path.name.casefold() not in requested_set
             ]
-            if missing or omitted:
+            if missing or (omitted and not allow_subset):
                 messages: list[str] = []
                 if missing:
                     messages.append(
                         "顺序列表中找不到这些文件：\n"
                         + "\n".join(f"  - {name}" for name in missing)
                     )
-                if omitted:
+                if omitted and not allow_subset:
                     messages.append(
                         "顺序列表遗漏了这些输入文件：\n"
                         + "\n".join(f"  - {name}" for name in omitted)
