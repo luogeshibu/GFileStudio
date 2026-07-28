@@ -8,6 +8,7 @@ from g_file_studio.ui.widgets.person_editor import PersonEditor
 from g_file_studio.ui.widgets.rule_card import RuleCard
 from g_file_studio.ui.widgets.task_panel import TaskPanel
 from g_file_studio.ui.widgets.template_selector import TemplateSelector
+from g_file_studio.ui.widgets.wheel_safe_combo_box import WheelSafeComboBox
 
 __all__ = [
     "BasicRulesEditor",
@@ -23,4 +24,5 @@ __all__ = [
     "RuleCard",
     "TaskPanel",
     "TemplateSelector",
+    "WheelSafeComboBox",
 ]

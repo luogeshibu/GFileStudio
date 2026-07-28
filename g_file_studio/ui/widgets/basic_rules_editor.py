@@ -4,7 +4,6 @@ from pathlib import Path
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
-    QComboBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -20,6 +19,7 @@ from g_file_studio.services.g_schema_service import (
     scan_direct_layer_schema,
 )
 from g_file_studio.ui.widgets.help_widgets import HelpLabel, set_secondary
+from g_file_studio.ui.widgets.wheel_safe_combo_box import WheelSafeComboBox
 from g_file_studio.ui.widgets.rule_card import RuleCard
 
 
@@ -142,10 +142,10 @@ class BasicRulesEditor(QWidget):
         root.addWidget(self.delete_element_rule)
 
     @staticmethod
-    def _create_combo(placeholder: str) -> QComboBox:
-        combo = QComboBox()
+    def _create_combo(placeholder: str) -> WheelSafeComboBox:
+        combo = WheelSafeComboBox()
         combo.setEditable(True)
-        combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        combo.setInsertPolicy(WheelSafeComboBox.InsertPolicy.NoInsert)
         combo.setMaxVisibleItems(24)
         combo.setCurrentIndex(-1)
         if combo.lineEdit() is not None:
@@ -193,7 +193,7 @@ class BasicRulesEditor(QWidget):
             )
         self.scan_status.setToolTip("\n".join(result.warnings))
 
-    def _populate_tag_combo(self, combo: QComboBox) -> None:
+    def _populate_tag_combo(self, combo: WheelSafeComboBox) -> None:
         current = combo.currentText().strip()
         combo.blockSignals(True)
         combo.clear()
@@ -204,7 +204,7 @@ class BasicRulesEditor(QWidget):
             combo.setCurrentIndex(-1)
         combo.blockSignals(False)
 
-    def _update_attribute_combo(self, combo: QComboBox, tag: str) -> None:
+    def _update_attribute_combo(self, combo: WheelSafeComboBox, tag: str) -> None:
         current = combo.currentText().strip()
         attributes = self._schema.tag_attributes.get(tag.strip(), ())
         combo.blockSignals(True)

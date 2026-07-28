@@ -1,4 +1,4 @@
-# G File Studio 1.8.0
+# G File Studio 1.9.0
 
 G File Studio 是一个基于 **PySide6** 的 Windows 桌面应用，用于处理 XML 格式的 `.g` / `.sln.pic.g` 文件。
 
@@ -9,6 +9,15 @@ G File Studio 是一个基于 **PySide6** 的 Windows 桌面应用，用于处�
 - 添加图框：支持单个文件或目录，支持 App 内置模板和客户自定义模板。
 - 一键处理：支持单个文件或目录，只选择原始输入和最终输出。
 - 隐藏中间目录：中间结果自动保存在 Windows AppData 缓存中并自动清理。
+
+## 下拉选择框防误操作
+
+程序中的输入方式、元素标签、属性名和内置模板等下拉选择框均采用防滚轮控件：
+
+- 下拉框收起时，鼠标滚轮只滚动页面，不会改变已经选中的值；
+- 只有主动展开下拉列表后，滚轮才用于浏览列表；
+- 可编辑下拉框仍可直接输入新的元素标签或属性名。
+
 
 ## 三个独立模块的输入方式
 
@@ -144,7 +153,7 @@ dist\GFileStudio\
 同时生成：
 
 ```text
-release\GFileStudio_v1.8.0_Windows_x64.zip
+release\GFileStudio_v1.9.0_Windows_x64.zip
 ```
 
 分享给别人时，请发送完整 ZIP，不能只发送 `GFileStudio.exe`。

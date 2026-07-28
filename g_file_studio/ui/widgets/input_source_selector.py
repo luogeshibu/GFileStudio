@@ -3,11 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QStackedWidget, QVBoxLayout, QWidget
 
 from g_file_studio.models import InputMode
 from g_file_studio.services.paths import default_workspace
 from g_file_studio.ui.widgets.path_row import PathRow
+from g_file_studio.ui.widgets.wheel_safe_combo_box import WheelSafeComboBox
 
 
 class InputSourceSelector(QWidget):
@@ -35,7 +36,7 @@ class InputSourceSelector(QWidget):
 
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("输入方式"))
-        self.mode_combo = QComboBox()
+        self.mode_combo = WheelSafeComboBox()
         self.mode_combo.addItem(single_label, InputMode.SINGLE_FILE.value)
         self.mode_combo.addItem(directory_label, InputMode.DIRECTORY.value)
         mode_row.addWidget(self.mode_combo)

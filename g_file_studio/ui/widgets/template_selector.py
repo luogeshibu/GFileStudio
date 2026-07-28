@@ -5,7 +5,6 @@ from pathlib import Path
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QFileDialog,
-    QComboBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -25,6 +24,7 @@ from g_file_studio.services.template_service import (
 )
 from g_file_studio.ui.widgets.help_widgets import set_secondary
 from g_file_studio.ui.widgets.path_row import PathRow
+from g_file_studio.ui.widgets.wheel_safe_combo_box import WheelSafeComboBox
 
 
 class TemplateSelector(QWidget):
@@ -51,7 +51,7 @@ class TemplateSelector(QWidget):
         root.addLayout(mode_row)
 
         builtin_row = QHBoxLayout()
-        self.builtin_combo = QComboBox()
+        self.builtin_combo = WheelSafeComboBox()
         self.builtin_combo.setToolTip("选择随 App 一起发布的内置图框模板。")
         self.version_label = QLabel()
         self.version_label.setObjectName("mutedText")
