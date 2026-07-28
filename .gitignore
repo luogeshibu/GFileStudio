@@ -1,0 +1,102 @@
+# ============================================================
+# Python virtual environments
+# ============================================================
+.venv/
+venv/
+env/
+ENV/
+
+# ============================================================
+# Python bytecode and caches
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyright/
+.cache/
+
+# ============================================================
+# Test and coverage output
+# ============================================================
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+pytest-report.xml
+
+# ============================================================
+# Packaging / PyInstaller output
+# ============================================================
+build/
+dist/
+*.spec
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# ============================================================
+# IDE and editor files
+# ============================================================
+.vscode/
+.idea/
+*.code-workspace
+*.swp
+*.swo
+*~
+
+# ============================================================
+# Operating-system files
+# ============================================================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ============================================================
+# Logs, temporary files and backup files
+# ============================================================
+*.log
+*.tmp
+*.temp
+*.bak
+*.old
+*.orig
+*.rej
+~$*
+*.g.tmp
+*.tmp.g
+
+# ============================================================
+# G File Studio runtime data
+# Keep the directory structure through .gitkeep files, but do
+# not commit project input, intermediate output or generated files.
+# ============================================================
+workspace/input/*
+!workspace/input/.gitkeep
+
+workspace/processed/*
+!workspace/processed/.gitkeep
+
+workspace/merged/*
+!workspace/merged/.gitkeep
+
+workspace/work/**
+!workspace/work/.gitkeep
+
+workspace/output/*
+!workspace/output/.gitkeep
+
+workspace/logs/*
+!workspace/logs/.gitkeep
+
+# ============================================================
+# User-specific runtime configuration
+# The default drawing_frame_config.json remains tracked.
+# ============================================================
+config/user_settings.json
+config/recent_projects.json
+config/session.json
+config/app_state.json
