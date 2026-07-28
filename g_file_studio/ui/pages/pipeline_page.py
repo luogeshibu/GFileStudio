@@ -5,7 +5,6 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QLineEdit,
-    QSpinBox,
     QVBoxLayout,
 )
 
@@ -19,6 +18,7 @@ from g_file_studio.ui.widgets import (
     FileOrderEditor,
     HelpLabel,
     InfoBanner,
+    IntegerInput,
     PathRow,
     PersonEditor,
     TaskPanel,
@@ -37,7 +37,7 @@ class PipelinePage(BasePage):
         )
         self.layout.addWidget(
             InfoBanner(
-                "合并阶段只接收以 .sln.pic.g 结尾、且不包含外框架图的输入文件。扫描后可自由调整顺序，第一行文件作为合并基准。"
+                "合并阶段只接收以 .sln.pic.g 结尾且不包含外框架图的输入文件。可自由调整顺序，第一行作为基准；只识别有效水平 <Bus>，不把 <BusDis> 当作 Bus，无 Bus 时使用最高图元。"
             )
         )
 
@@ -152,12 +152,8 @@ class PipelinePage(BasePage):
         self.merge_order.set_input_dir(text)
 
     @staticmethod
-    def spin(value: int) -> QSpinBox:
-        widget = QSpinBox()
-        widget.setRange(0, 100000)
-        widget.setSingleStep(10)
-        widget.setValue(value)
-        return widget
+    def spin(value: int) -> IntegerInput:
+        return IntegerInput(value=value, minimum=0, maximum=100000)
 
     def run(self) -> None:
         source = self.source.path()

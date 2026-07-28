@@ -31,13 +31,18 @@ class BasicRulesEditor(QWidget):
 <p>例如：把直属 ZhaiWaiJieDiDaoZha 的 p_NameString 从 YcccD 替换为 Q1D。</p>
 """,
         )
+        self.replace_attribute_rule.enabled.setChecked(False)
         replace_form = QFormLayout()
         replace_form.setHorizontalSpacing(16)
         replace_form.setVerticalSpacing(8)
-        self.replace_tag = QLineEdit("ZhaiWaiJieDiDaoZha")
-        self.replace_attribute_name = QLineEdit("p_NameString")
-        self.replace_old_value = QLineEdit("YcccD")
-        self.replace_new_value = QLineEdit("Q1D")
+        self.replace_tag = QLineEdit()
+        self.replace_tag.setPlaceholderText("例如 ZhaiWaiJieDiDaoZha")
+        self.replace_attribute_name = QLineEdit()
+        self.replace_attribute_name.setPlaceholderText("例如 p_NameString")
+        self.replace_old_value = QLineEdit()
+        self.replace_old_value.setPlaceholderText("例如 YcccD")
+        self.replace_new_value = QLineEdit()
+        self.replace_new_value.setPlaceholderText("例如 Q1D")
         replace_form.addRow(HelpLabel("元素标签", "需要匹配的 XML 元素标签名。"), self.replace_tag)
         replace_form.addRow(
             HelpLabel("属性名", "需要检查并修改的 XML 属性名。"),

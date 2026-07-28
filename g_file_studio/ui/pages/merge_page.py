@@ -1,13 +1,20 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QFormLayout, QGroupBox, QLineEdit, QSpinBox
+from PySide6.QtWidgets import QFormLayout, QGroupBox, QLineEdit
 
 from g_file_studio.models import MergeSettings
 from g_file_studio.processors.merge_processor import merge_feeders
 from g_file_studio.services.paths import default_workspace
 from g_file_studio.ui.help_content import APP_HELP, FIELD_HELP
 from g_file_studio.ui.pages.base_page import BasePage
-from g_file_studio.ui.widgets import FileOrderEditor, HelpLabel, InfoBanner, PathRow, TaskPanel
+from g_file_studio.ui.widgets import (
+    FileOrderEditor,
+    HelpLabel,
+    InfoBanner,
+    IntegerInput,
+    PathRow,
+    TaskPanel,
+)
 
 
 class MergePage(BasePage):
@@ -22,7 +29,7 @@ class MergePage(BasePage):
         )
         self.layout.addWidget(
             InfoBanner(
-                "输入文件名不解析站点或馈线号。扫描后可用上移、下移、置顶和置底自由定义合并顺序；第一行文件是基准。输入不能包含外框架图。"
+                "输入文件名不解析站点或馈线号。扫描后可自由定义合并顺序，第一行文件是基准。垂直对齐只识别有效水平 <Bus>，不会把 <BusDis> 当作 Bus；无 Bus 时使用最高图元。输入不能包含外框架图。"
             )
         )
 
@@ -82,12 +89,8 @@ class MergePage(BasePage):
         self.file_order.set_input_dir(text)
 
     @staticmethod
-    def spin(value: int) -> QSpinBox:
-        widget = QSpinBox()
-        widget.setRange(0, 100000)
-        widget.setSingleStep(10)
-        widget.setValue(value)
-        return widget
+    def spin(value: int) -> IntegerInput:
+        return IntegerInput(value=value, minimum=0, maximum=100000)
 
     def settings(self) -> MergeSettings:
         return MergeSettings(

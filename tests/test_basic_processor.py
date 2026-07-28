@@ -18,6 +18,11 @@ def test_replace_attribute_and_generic_delete(tmp_path: Path):
     settings = BasicSettings(
         input_dir=source,
         output_dir=output,
+        replace_attribute=True,
+        replace_target_tag="ZhaiWaiJieDiDaoZha",
+        replace_target_attribute="p_NameString",
+        replace_old_value="YcccD",
+        replace_new_value="Q1D",
         delete_matching_element=True,
         delete_target_tag="ConnectLine",
         delete_target_attribute="w",
@@ -99,6 +104,11 @@ def test_basic_rules_only_touch_direct_children_of_direct_layer(tmp_path: Path):
     settings = BasicSettings(
         input_dir=source,
         output_dir=output,
+        replace_attribute=True,
+        replace_target_tag="ZhaiWaiJieDiDaoZha",
+        replace_target_attribute="p_NameString",
+        replace_old_value="YcccD",
+        replace_new_value="Q1D",
         delete_matching_element=True,
         delete_target_tag="Disconnector",
         delete_target_attribute="p_NameString",
@@ -134,7 +144,9 @@ def test_rule_validation_requires_tag_and_attribute(tmp_path: Path):
     settings = BasicSettings(
         input_dir=source,
         output_dir=output,
+        replace_attribute=True,
         replace_target_tag="",
+        replace_target_attribute="p_NameString",
     )
 
     try:
@@ -143,3 +155,27 @@ def test_rule_validation_requires_tag_and_attribute(tmp_path: Path):
         assert "元素标签不能为空" in str(error)
     else:
         raise AssertionError("空元素标签应当触发校验错误")
+
+
+def test_replace_rule_is_disabled_by_default(tmp_path: Path):
+    source = tmp_path / "in"
+    output = tmp_path / "out"
+    source.mkdir()
+    (source / "a.g").write_text(
+        '<G><Layer><Device p_NameString="OLD" /></Layer></G>',
+        encoding="utf-8",
+    )
+
+    settings = BasicSettings(
+        input_dir=source,
+        output_dir=output,
+        replace_target_tag="Device",
+        replace_target_attribute="p_NameString",
+        replace_old_value="OLD",
+        replace_new_value="NEW",
+    )
+    result = process_basic(settings)
+    assert result.statistics["replaced_attribute_count"] == 0
+    device = ET.parse(output / "a.g").getroot().find("Layer/Device")
+    assert device is not None
+    assert device.get("p_NameString") == "OLD"

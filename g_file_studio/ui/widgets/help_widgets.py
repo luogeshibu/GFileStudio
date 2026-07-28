@@ -112,6 +112,7 @@ class InfoBanner(QFrame):
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label = QLabel(text)
         label.setObjectName("infoText")
+        label.setTextFormat(Qt.TextFormat.PlainText)
         label.setWordWrap(True)
         layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
         layout.addWidget(label, 1)

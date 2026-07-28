@@ -38,7 +38,7 @@ def test_arbitrary_names_are_naturally_sorted_and_no_bus_uses_top_element(tmp_pa
     second = merge_engine.parse_g_file(infos[1])
     assert first.alignment_mode.startswith("最高图元")
     assert first.alignment_y == Decimal("40")
-    assert second.alignment_mode == "顶部水平母线"
+    assert second.alignment_mode == "顶部水平 <Bus>"
 
     output_path = output_dir / "MERGED.sln.pic.g"
     merge_engine.merge_g_files(
@@ -189,3 +189,23 @@ def test_merge_processor_accepts_log_callback_that_uses_print(tmp_path: Path):
     assert result.success
     assert result.statistics["input_order"] == ["b.sln.pic.g", "a.sln.pic.g"]
     assert messages
+
+
+def test_alignment_uses_topmost_valid_bus_and_ignores_busdis(tmp_path: Path):
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    _write_g(
+        input_dir / "bus-check.sln.pic.g",
+        """
+<BusDis id="1" x="10" y="10" x1="10" y1="10" x2="200" y2="10" d="10,10 200,10" />
+<Bus id="2" x="10" y="150" x1="10" y1="150" x2="210" y2="150" d="10,150 210,150" />
+<Bus id="3" x="10" y="80" x1="10" y1="80" x2="180" y2="80" d="10,80 180,80" />
+<Bus id="4" x="10" y="40" x1="10" y1="40" x2="10" y2="40" d="10,40 10,40" />
+""",
+    )
+
+    info = merge_engine.discover_files(input_dir)[0]
+    parsed = merge_engine.parse_g_file(info)
+    assert parsed.alignment_mode == "顶部水平 <Bus>"
+    # BusDis 的 Y=10 不参与；零长度 Bus 的 Y=40 也不是有效水平母线。
+    assert parsed.alignment_y == Decimal("80")

@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -20,7 +19,14 @@ from g_file_studio.processors.frame_processor import add_drawing_frames
 from g_file_studio.services.paths import default_template, default_workspace
 from g_file_studio.ui.help_content import APP_HELP, FIELD_HELP
 from g_file_studio.ui.pages.base_page import BasePage
-from g_file_studio.ui.widgets import HelpLabel, InfoBanner, PathRow, PersonEditor, TaskPanel
+from g_file_studio.ui.widgets import (
+    HelpLabel,
+    InfoBanner,
+    IntegerInput,
+    PathRow,
+    PersonEditor,
+    TaskPanel,
+)
 from g_file_studio.ui.widgets.help_widgets import set_secondary
 
 
@@ -116,12 +122,8 @@ class FramePage(BasePage):
         self.layout.addWidget(self.task, 1)
 
     @staticmethod
-    def spin(value: int) -> QSpinBox:
-        widget = QSpinBox()
-        widget.setRange(0, 100000)
-        widget.setSingleStep(10)
-        widget.setValue(value)
-        return widget
+    def spin(value: int) -> IntegerInput:
+        return IntegerInput(value=value, minimum=0, maximum=100000)
 
     def settings(self) -> FrameSettings:
         return FrameSettings(

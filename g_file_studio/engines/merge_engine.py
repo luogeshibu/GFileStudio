@@ -9,7 +9,7 @@ r"""
 3. 每个文件必须只有一个直属 Layer，且不能包含外框架图。
 4. 合并前删除负坐标图元并清理相关真实引用，再统一取整位置坐标。
 5. 用户顺序中的第一个文件完整作为基准，后续文件只复制 Layer 子图元。
-6. 有有效水平 Bus 时使用顶部 Bus 对齐；没有 Bus 时使用最高图元 Y 对齐。
+6. 只识别标签名严格等于 <Bus> 的有效非零长度水平母线（不把 <BusDis> 当作 Bus）；有 Bus 时使用最顶部 Bus 对齐，没有 Bus 时使用最高图元 Y 对齐。
 7. 相邻输入图按真实坐标边界严格保持指定水平间隔。
 8. 处理重复 ID、虚拟拓扑 ID，并同步更新 link、node_area、p_FatherObjId。
 9. 最终统一处理四周边距、根节点尺寸和 XML 合法性校验。
@@ -508,7 +508,7 @@ def get_bus_line(element: ET.Element) -> tuple[Decimal, Decimal, Decimal, Decima
 
 
 def find_top_horizontal_bus_y(layer: ET.Element, filename: str) -> Decimal | None:
-    """查找最上面的有效水平 Bus；没有时返回 None。"""
+    """查找最上面的有效非零长度水平 <Bus>；严格排除 <BusDis>。"""
     candidates: list[tuple[Decimal, Decimal, str]] = []
 
     for element in iter_graph_elements(layer):
@@ -533,13 +533,13 @@ def find_top_horizontal_bus_y(layer: ET.Element, filename: str) -> Decimal | Non
 
 
 def resolve_alignment_y(layer: ET.Element, filename: str) -> tuple[Decimal, str]:
-    """优先使用顶部水平母线；没有母线时使用整张图最高元素的 Y。"""
+    """优先使用顶部有效水平 <Bus>；没有 <Bus> 时使用整张图最高元素的 Y。"""
     bus_y = find_top_horizontal_bus_y(layer, filename)
     if bus_y is not None:
-        return bus_y, "顶部水平母线"
+        return bus_y, "顶部水平 <Bus>"
 
     _min_x, min_y, _max_x, _max_y = get_position_coordinate_extents(layer, filename)
-    return min_y, "最高图元（未找到水平母线）"
+    return min_y, "最高图元（未找到有效水平 <Bus>）"
 
 
 def contains_outer_frame(
@@ -1317,8 +1317,9 @@ def merge_g_files(
             get_position_coordinate_extents(copied_children, source.info.path.name)
         )
 
-        # 有水平母线时使用母线；没有母线时使用最高图元。
-        # 所有输入图的对齐基准最终位于同一 Y。
+        # 仅把标签名严格等于 Bus 的有效非零长度水平母线作为母线，BusDis 不参与。
+        # 没有有效水平 Bus 时使用该文件所有位置坐标中的最小 Y（最高图元）。
+        # 所有输入图最终都与第一张基准图的统一对齐 Y 对齐。
         offset_y = base_alignment_y - source.alignment_y
 
         # 使用当前图的最小 X，严格保证相邻馈线坐标范围间隔为 gap。

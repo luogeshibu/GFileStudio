@@ -23,11 +23,11 @@ class BasicSettings(BaseModel):
     output_dir: Path
 
     # 规则 1：替换匹配元素的属性值。
-    replace_attribute: bool = True
-    replace_target_tag: str = "ZhaiWaiJieDiDaoZha"
-    replace_target_attribute: str = "p_NameString"
-    replace_old_value: str = "YcccD"
-    replace_new_value: str = "Q1D"
+    replace_attribute: bool = False
+    replace_target_tag: str = ""
+    replace_target_attribute: str = ""
+    replace_old_value: str = ""
+    replace_new_value: str = ""
 
     # 规则 2：标签、属性名、属性值全部匹配时，删除整个直属图元子树。
     delete_matching_element: bool = False
