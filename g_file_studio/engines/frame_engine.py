@@ -448,57 +448,114 @@ def identify_outer_frame_lines(
     elements: Sequence[ET.Element],
     template_width: int,
     template_height: int,
-) -> Dict[str, ET.Element]:
-    expected = {
-        "top": (TEMPLATE_FRAME_MARGIN_LEFT, TEMPLATE_FRAME_MARGIN_TOP, template_width - TEMPLATE_FRAME_MARGIN_RIGHT, TEMPLATE_FRAME_MARGIN_TOP),
-        "right": (
-            template_width - TEMPLATE_FRAME_MARGIN_RIGHT,
-            TEMPLATE_FRAME_MARGIN_TOP,
-            template_width - TEMPLATE_FRAME_MARGIN_RIGHT,
-            template_height - TEMPLATE_FRAME_MARGIN_BOTTOM,
-        ),
-        "bottom": (
-            template_width - TEMPLATE_FRAME_MARGIN_RIGHT,
-            template_height - TEMPLATE_FRAME_MARGIN_BOTTOM,
-            TEMPLATE_FRAME_MARGIN_LEFT,
-            template_height - TEMPLATE_FRAME_MARGIN_BOTTOM,
-        ),
-        "left": (
-            TEMPLATE_FRAME_MARGIN_LEFT,
-            template_height - TEMPLATE_FRAME_MARGIN_BOTTOM,
-            TEMPLATE_FRAME_MARGIN_LEFT,
-            TEMPLATE_FRAME_MARGIN_TOP,
-        ),
-    }
+) -> Tuple[Dict[str, ET.Element], Box]:
+    """自动识别模板中构成最大外框的四条轴对齐 line。
 
-    candidates: List[Tuple[ET.Element, Tuple[float, float, float, float]]] = []
+    不依赖固定的 50 像素模板边距，因此内置模板升级或客户模板采用其他
+    原始边距时仍可识别。外框线应当是模板中跨度最大的水平/垂直线之一。
+    """
+    horizontals: List[Tuple[ET.Element, float, float, float, float]] = []
+    verticals: List[Tuple[ET.Element, float, float, float, float]] = []
+
     for element in elements:
         if element.tag.lower() != "line":
             continue
         points = line_endpoints(element)
-        if points is not None:
-            candidates.append((element, points))
+        if points is None:
+            continue
+        x1, y1, x2, y2 = points
+        if abs(y1 - y2) <= 1e-6 and abs(x2 - x1) > 1e-6:
+            left, right = sorted((x1, x2))
+            horizontals.append((element, left, right, (y1 + y2) / 2.0, right - left))
+        elif abs(x1 - x2) <= 1e-6 and abs(y2 - y1) > 1e-6:
+            top, bottom = sorted((y1, y2))
+            verticals.append((element, (x1 + x2) / 2.0, top, bottom, bottom - top))
 
-    found: Dict[str, ET.Element] = {}
-    tolerance = 5.0
-    for name, target in expected.items():
-        best: Optional[Tuple[float, ET.Element]] = None
-        tx1, ty1, tx2, ty2 = target
-        for element, points in candidates:
-            x1, y1, x2, y2 = points
-            direct = abs(x1 - tx1) + abs(y1 - ty1) + abs(x2 - tx2) + abs(y2 - ty2)
-            reverse = abs(x2 - tx1) + abs(y2 - ty1) + abs(x1 - tx2) + abs(y1 - ty2)
-            score = min(direct, reverse)
-            if best is None or score < best[0]:
-                best = (score, element)
-        if best is None or best[0] > tolerance * 4:
-            raise FrameError(f"模板中无法识别最外层{name}边框线。")
-        found[name] = best[1]
+    if len(horizontals) < 2 or len(verticals) < 2:
+        raise FrameError("模板中无法识别完整的四条矩形外框线。")
 
+    max_h_span = max(item[4] for item in horizontals)
+    max_v_span = max(item[4] for item in verticals)
+    min_h_span = max(20.0, max_h_span * 0.70, template_width * 0.30)
+    min_v_span = max(20.0, max_v_span * 0.70, template_height * 0.30)
+
+    long_h = [item for item in horizontals if item[4] >= min_h_span]
+    long_v = [item for item in verticals if item[4] >= min_v_span]
+    if len(long_h) < 2 or len(long_v) < 2:
+        raise FrameError("模板中的外框线跨度不足，无法识别完整矩形外框。")
+
+    top_item = min(long_h, key=lambda item: (item[3], -item[4]))
+    bottom_item = max(long_h, key=lambda item: (item[3], item[4]))
+    left_item = min(long_v, key=lambda item: (item[1], -item[4]))
+    right_item = max(long_v, key=lambda item: (item[1], item[4]))
+
+    found = {
+        "top": top_item[0],
+        "right": right_item[0],
+        "bottom": bottom_item[0],
+        "left": left_item[0],
+    }
     if len({id(value) for value in found.values()}) != 4:
         raise FrameError("模板最外层四条边框线识别结果发生重复。")
-    return found
 
+    frame = Box(
+        left=left_item[1],
+        top=top_item[3],
+        right=right_item[1],
+        bottom=bottom_item[3],
+    )
+    if frame.width <= 0 or frame.height <= 0:
+        raise FrameError("模板外框尺寸无效。")
+
+    tolerance = max(12.0, min(template_width, template_height) * 0.02)
+    corner_checks = (
+        abs(top_item[1] - frame.left),
+        abs(top_item[2] - frame.right),
+        abs(bottom_item[1] - frame.left),
+        abs(bottom_item[2] - frame.right),
+        abs(left_item[2] - frame.top),
+        abs(left_item[3] - frame.bottom),
+        abs(right_item[2] - frame.top),
+        abs(right_item[3] - frame.bottom),
+    )
+    if max(corner_checks) > tolerance:
+        raise FrameError(
+            "模板中识别到的四条长线不能组成闭合矩形外框，请检查客户模板。"
+        )
+    return found, frame
+
+
+def _shift_custom_template_components(
+    elements: Sequence[ET.Element],
+    outer_lines: Mapping[str, ET.Element],
+    old_frame: Box,
+    new_frame: Box,
+) -> None:
+    """按最近的水平/垂直边锚定客户模板组件并整体平移。
+
+    只改变组件坐标，不修改文字、属性内容、字体、颜色、线宽或组件尺寸。
+    左上组件跟随左/上边，右下签字栏跟随右/下边。
+    """
+    outer_ids = {id(element) for element in outer_lines.values()}
+    for element in elements:
+        if id(element) in outer_ids:
+            continue
+        box = element_box(element)
+        if box is None:
+            continue
+
+        left_gap = abs(box.left - old_frame.left)
+        right_gap = abs(old_frame.right - box.right)
+        top_gap = abs(box.top - old_frame.top)
+        bottom_gap = abs(old_frame.bottom - box.bottom)
+
+        dx = (new_frame.left - old_frame.left) if left_gap <= right_gap else (
+            new_frame.right - old_frame.right
+        )
+        dy = (new_frame.top - old_frame.top) if top_gap <= bottom_gap else (
+            new_frame.bottom - old_frame.bottom
+        )
+        shift_element(element, dx, dy)
 
 def identify_rectangles(elements: Sequence[ET.Element]) -> Tuple[ET.Element, ET.Element]:
     rects = [element for element in elements if element.tag.lower() == "rect"]
@@ -712,49 +769,64 @@ def prepare_template_elements(
     target_width: int,
     target_height: int,
     config: FileFrameConfig,
+    *,
+    edit_content: bool = True,
 ) -> List[ET.Element]:
     template_width, template_height = read_canvas_size(template_root, "图框模板")
     template_layer = require_single_direct_layer(template_root, "图框模板")
     elements = [copy.deepcopy(element) for element in list(template_layer)]
 
-    outer_lines = identify_outer_frame_lines(elements, template_width, template_height)
-    title_rect, info_rect = identify_rectangles(elements)
-    title_text = identify_title_text(elements, title_rect)
-    info_elements = identify_info_block_elements(elements, info_rect)
+    outer_lines, old_frame = identify_outer_frame_lines(
+        elements, template_width, template_height
+    )
 
     target_left = float(FRAME_MARGIN_LEFT)
     target_top = float(FRAME_MARGIN_TOP)
     target_right = float(target_width - FRAME_MARGIN_RIGHT)
     target_bottom = float(target_height - FRAME_MARGIN_BOTTOM)
+    new_frame = Box(target_left, target_top, target_right, target_bottom)
 
-    if target_right <= target_left or target_bottom <= target_top:
+    if new_frame.width <= 0 or new_frame.height <= 0:
         raise FrameError(
             f"目标画布 {target_width}×{target_height} 太小，无法放置当前配置的图框边距。"
         )
 
     set_line_geometry(outer_lines["top"], target_left, target_top, target_right, target_top)
-    set_line_geometry(outer_lines["right"], target_right, target_top, target_right, target_bottom)
-    set_line_geometry(outer_lines["bottom"], target_right, target_bottom, target_left, target_bottom)
-    set_line_geometry(outer_lines["left"], target_left, target_bottom, target_left, target_top)
+    set_line_geometry(
+        outer_lines["right"], target_right, target_top, target_right, target_bottom
+    )
+    set_line_geometry(
+        outer_lines["bottom"], target_right, target_bottom, target_left, target_bottom
+    )
+    set_line_geometry(
+        outer_lines["left"], target_left, target_bottom, target_left, target_top
+    )
 
-    # 左上标题栏保留模板相对于外框左上角的位置。
-    old_template_left = float(TEMPLATE_FRAME_MARGIN_LEFT)
-    old_template_top = float(TEMPLATE_FRAME_MARGIN_TOP)
+    if not edit_content:
+        # 客户模板：外框适配目标画布，其他组件按最近边锚定移动；
+        # 不修改任何 Text.ts、签字人、日期、颜色、字体、线宽或组件尺寸。
+        _shift_custom_template_components(elements, outer_lines, old_frame, new_frame)
+        return elements
+
+    # 内置模板：识别并更新标题与签字栏。
+    title_rect, info_rect = identify_rectangles(elements)
+    title_text = identify_title_text(elements, title_rect)
+    info_elements = identify_info_block_elements(elements, info_rect)
+
     title_rect_box = element_box(title_rect)
     if title_rect_box is None:
         raise FrameError("模板左上标题框坐标无效。")
-    desired_title_left = target_left + (title_rect_box.left - old_template_left)
-    desired_title_top = target_top + (title_rect_box.top - old_template_top)
+    desired_title_left = target_left + (title_rect_box.left - old_frame.left)
+    desired_title_top = target_top + (title_rect_box.top - old_frame.top)
     title_dx = desired_title_left - title_rect_box.left
     title_dy = desired_title_top - title_rect_box.top
 
-    # 左上标题相关元素：所有与标题矩形相交的元素。
     title_group = [
         element
         for element in elements
         if (box := element_box(element)) is not None
         and boxes_intersect(box, title_rect_box, tolerance=4.0)
-        and element not in outer_lines.values()
+        and id(element) not in {id(value) for value in outer_lines.values()}
     ]
     for element in title_group:
         shift_element(element, title_dx, title_dy)
@@ -764,16 +836,11 @@ def prepare_template_elements(
         raise FrameError("移动后的标题框坐标无效。")
     fit_text_in_cell(title_text, config.title, shifted_title_box, horizontal_padding=12.0)
 
-    # 右下信息框保持模板尺寸和距外框右/下的相对间距。
     info_box = element_box(info_rect)
     if info_box is None:
         raise FrameError("模板右下信息框坐标无效。")
-
-    template_frame_right = float(template_width - TEMPLATE_FRAME_MARGIN_RIGHT)
-    template_frame_bottom = float(template_height - TEMPLATE_FRAME_MARGIN_BOTTOM)
-    gap_right = template_frame_right - info_box.right
-    gap_bottom = template_frame_bottom - info_box.bottom
-
+    gap_right = old_frame.right - info_box.right
+    gap_bottom = old_frame.bottom - info_box.bottom
     desired_info_right = target_right - gap_right
     desired_info_bottom = target_bottom - gap_bottom
     info_dx = desired_info_right - info_box.right
@@ -885,6 +952,8 @@ def process_one_file(
     output_path: Path,
     template_tree: ET.ElementTree,
     all_config: Mapping[str, object],
+    *,
+    edit_content: bool = True,
 ) -> None:
     try:
         target_tree = ET.parse(input_path)
@@ -904,6 +973,7 @@ def process_one_file(
         target_width=width,
         target_height=height,
         config=file_config,
+        edit_content=edit_content,
     )
 
     used_ids = collect_used_ids_and_tokens(target_layer)
@@ -932,10 +1002,14 @@ def process_one_file(
         raise FrameError(f"输出文件写出后校验失败：{output_path.name}：{exc}") from exc
 
     print(f"处理完成：{input_path.name}")
-    print(f"  标题：{file_config.title}")
-    print(f"  Draw：{file_config.draw.name} / {file_config.draw.date}")
-    print(f"  Approve：{file_config.approve.name} / {file_config.approve.date}")
-    print(f"  Issue：{file_config.issue.name} / {file_config.issue.date}")
+    if edit_content:
+        print(f"  模式：内置模板（已更新标题与签字栏）")
+        print(f"  标题：{file_config.title}")
+        print(f"  Draw：{file_config.draw.name} / {file_config.draw.date}")
+        print(f"  Approve：{file_config.approve.name} / {file_config.approve.date}")
+        print(f"  Issue：{file_config.issue.name} / {file_config.issue.date}")
+    else:
+        print("  模式：客户自定义模板（仅调整图框几何，不修改任何内容）")
     print(f"  画布：{width} × {height}")
     print(f"  输出：{output_path}")
 

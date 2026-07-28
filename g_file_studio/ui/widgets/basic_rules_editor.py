@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from g_file_studio.models import BasicSettings
+from g_file_studio.models import BasicSettings, InputMode
 from g_file_studio.services.g_schema_service import (
     LayerSchemaScanResult,
     scan_direct_layer_schema,
@@ -50,10 +50,10 @@ class BasicRulesEditor(QWidget):
         self.scan_button = QPushButton("扫描元素与属性")
         set_secondary(self.scan_button)
         self.scan_button.setToolTip(
-            "扫描输入目录内 G 文件的直属 Layer 直接子元素，生成元素标签和属性名下拉选项。"
+            "扫描输入文件或目录内 G 文件的直属 Layer 直接子元素，生成元素标签和属性名下拉选项。"
         )
         self.scan_button.clicked.connect(self.refresh_schema)
-        self.scan_status = QLabel("请选择输入目录后扫描元素与属性")
+        self.scan_status = QLabel("请选择输入文件或目录后扫描元素与属性")
         self.scan_status.setObjectName("mutedText")
         self.scan_status.setWordWrap(True)
         scan_row.addWidget(self.scan_button)
@@ -154,7 +154,7 @@ class BasicRulesEditor(QWidget):
         return combo
 
     def set_input_dir(self, path: str | Path) -> None:
-        """设置用于生成下拉选项的输入目录，并延迟自动扫描。"""
+        """设置用于生成下拉选项的输入文件或目录，并延迟自动扫描。"""
         text = str(path).strip()
         self._input_dir = Path(text).expanduser() if text else None
         self._scan_timer.start()
@@ -163,7 +163,7 @@ class BasicRulesEditor(QWidget):
         self._scan_timer.stop()
         if self._input_dir is None:
             self._schema = LayerSchemaScanResult()
-            self.scan_status.setText("请选择输入目录后扫描元素与属性")
+            self.scan_status.setText("请选择输入文件或目录后扫描元素与属性")
             return
 
         result = scan_direct_layer_schema(self._input_dir)
@@ -179,8 +179,8 @@ class BasicRulesEditor(QWidget):
             self.delete_tag.currentText(),
         )
 
-        if not self._input_dir.is_dir():
-            self.scan_status.setText("输入目录不存在，暂时无法生成元素和属性选项")
+        if not self._input_dir.exists():
+            self.scan_status.setText("输入路径不存在或没有 G 文件，暂时无法生成元素和属性选项")
             self.scan_status.setToolTip("\n".join(result.warnings))
             return
 
@@ -216,9 +216,15 @@ class BasicRulesEditor(QWidget):
             combo.setCurrentIndex(-1)
         combo.blockSignals(False)
 
-    def build_settings(self, input_dir: Path, output_dir: Path) -> BasicSettings:
+    def build_settings(
+        self,
+        source_path: Path,
+        input_mode: InputMode,
+        output_dir: Path,
+    ) -> BasicSettings:
         return BasicSettings(
-            input_dir=input_dir,
+            source_path=source_path,
+            input_mode=input_mode,
             output_dir=output_dir,
             replace_attribute=self.replace_attribute_rule.enabled.isChecked(),
             replace_target_tag=self.replace_tag.currentText().strip(),

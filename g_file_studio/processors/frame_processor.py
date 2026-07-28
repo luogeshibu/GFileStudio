@@ -10,6 +10,7 @@ from g_file_studio.processors.common import (
     CallbackWriter,
     LogCallback,
     ProgressCallback,
+    discover_g_inputs,
     redirect_safe_callback,
 )
 
@@ -30,15 +31,11 @@ def add_drawing_frames(
     log: LogCallback = print,
     progress: ProgressCallback | None = None,
 ) -> ProcessingResult:
-    if not settings.input_dir.is_dir():
-        raise NotADirectoryError(f"输入目录不存在：{settings.input_dir}")
     if not settings.template_file.is_file():
         raise FileNotFoundError(f"模板文件不存在：{settings.template_file}")
     settings.output_dir.mkdir(parents=True, exist_ok=True)
 
-    files = sorted(p for p in settings.input_dir.iterdir() if p.is_file() and p.suffix.lower() == ".g")
-    if not files:
-        raise FileNotFoundError(f"输入目录中没有 .g 文件：{settings.input_dir}")
+    files = discover_g_inputs(settings.source_path, settings.input_mode)
 
     template_tree = ET.parse(settings.template_file)
     if template_tree.getroot().tag != "G":
@@ -64,6 +61,7 @@ def add_drawing_frames(
                 output_path=output_path,
                 template_tree=template_tree,
                 all_config=all_config,
+                edit_content=settings.edit_builtin_content,
             )
         writer.flush()
         outputs.append(output_path)
@@ -73,5 +71,12 @@ def add_drawing_frames(
     return ProcessingResult(
         success=True,
         output_files=outputs,
-        statistics={"file_count": len(outputs), "template": str(settings.template_file)},
+        statistics={
+            "input_mode": settings.input_mode.value,
+            "source_path": str(settings.source_path),
+            "file_count": len(outputs),
+            "template": str(settings.template_file),
+            "template_mode": settings.template_mode.value,
+            "content_modified": settings.edit_builtin_content,
+        },
     )

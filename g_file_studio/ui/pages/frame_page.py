@@ -11,21 +11,22 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QVBoxLayout,
-    QWidget,
 )
 
-from g_file_studio.models import FrameSettings, PersonSettings
+from g_file_studio.models import FrameSettings, PersonSettings, TemplateMode
 from g_file_studio.processors.frame_processor import add_drawing_frames
-from g_file_studio.services.paths import default_template, default_workspace
+from g_file_studio.services.paths import default_workspace
 from g_file_studio.ui.help_content import APP_HELP, FIELD_HELP
 from g_file_studio.ui.pages.base_page import BasePage
 from g_file_studio.ui.widgets import (
     HelpLabel,
     InfoBanner,
+    InputSourceSelector,
     IntegerInput,
     PathRow,
     PersonEditor,
     TaskPanel,
+    TemplateSelector,
 )
 from g_file_studio.ui.widgets.help_widgets import set_secondary
 
@@ -35,37 +36,48 @@ class FramePage(BasePage):
         help_title, help_html = APP_HELP["frame"]
         super().__init__(
             "添加图框",
-            "读取固定 SLD 模板，为已经合并的 G 文件添加外框、左上标题以及右下 Draw/Approve/Issue 信息。",
+            "支持为单个 G 文件或整个目录批量添加并适配 SLD 图框。",
             help_title,
             help_html,
             parent,
         )
-        self.layout.addWidget(
-            InfoBanner(
-                "标题留空时自动取输入文件名。模板图元会重新分配唯一 ID，不会覆盖原有图元 ID。"
-            )
+        self.banner = InfoBanner(
+            "输入可以是单个 G 文件，也可以是 G 文件目录。默认使用程序内置模板；客户模板只调整外框尺寸与组件位置，不修改任何内容。"
         )
+        self.layout.addWidget(self.banner)
 
-        path_box = QGroupBox("文件与目录")
-        path_form = QFormLayout(path_box)
-        path_form.setHorizontalSpacing(16)
-        path_form.setVerticalSpacing(10)
-        self.input_path = PathRow()
+        path_box = QGroupBox("输入与输出")
+        path_layout = QVBoxLayout(path_box)
+        path_layout.setContentsMargins(12, 18, 12, 12)
+        path_layout.setSpacing(10)
+        self.source = InputSourceSelector(
+            default_directory=default_workspace() / "merged",
+            file_filter="G Files (*.sln.pic.g *.g)",
+            file_tooltip="选择一个需要添加图框的 G 文件。",
+            directory_tooltip="选择包含多个待添加图框 G 文件的目录；程序只扫描目录第一层。",
+        )
+        path_layout.addWidget(self.source)
+
+        output_form = QFormLayout()
+        output_form.setHorizontalSpacing(16)
+        output_form.setVerticalSpacing(10)
         self.output_path = PathRow()
-        self.template_path = PathRow(directory=False, file_filter="G Files (*.g)")
-        self.input_path.set_path(default_workspace() / "merged")
         self.output_path.set_path(default_workspace() / "output")
-        self.template_path.set_path(default_template())
-        self.input_path.set_tooltip(FIELD_HELP["input_dir"])
         self.output_path.set_tooltip(FIELD_HELP["output_dir"])
-        self.template_path.set_tooltip(FIELD_HELP["template"])
-        path_form.addRow(HelpLabel("输入目录", FIELD_HELP["input_dir"]), self.input_path)
-        path_form.addRow(HelpLabel("输出目录", FIELD_HELP["output_dir"]), self.output_path)
-        path_form.addRow(HelpLabel("图框模板", FIELD_HELP["template"]), self.template_path)
+        output_form.addRow(HelpLabel("输出目录", FIELD_HELP["output_dir"]), self.output_path)
+        path_layout.addLayout(output_form)
         self.layout.addWidget(path_box)
 
-        title_box = QGroupBox("标题与签字栏")
-        title_form = QFormLayout(title_box)
+        template_box = QGroupBox("图框模板")
+        template_layout = QVBoxLayout(template_box)
+        template_layout.setContentsMargins(12, 18, 12, 12)
+        self.template_selector = TemplateSelector()
+        self.template_selector.modeChanged.connect(self._template_mode_changed)
+        template_layout.addWidget(self.template_selector)
+        self.layout.addWidget(template_box)
+
+        self.title_box = QGroupBox("内置模板：标题与签字栏")
+        title_form = QFormLayout(self.title_box)
         title_form.setHorizontalSpacing(16)
         title_form.setVerticalSpacing(10)
         self.title = QLineEdit()
@@ -78,7 +90,7 @@ class FramePage(BasePage):
         title_form.addRow(HelpLabel("Draw", FIELD_HELP["draw"]), self.draw_editor)
         title_form.addRow(HelpLabel("Approve", FIELD_HELP["approve"]), self.approve_editor)
         title_form.addRow(HelpLabel("Issue", FIELD_HELP["issue"]), self.issue_editor)
-        self.layout.addWidget(title_box)
+        self.layout.addWidget(self.title_box)
 
         layout_box = QGroupBox("图框与输出参数")
         layout_form = QFormLayout(layout_box)
@@ -97,39 +109,54 @@ class FramePage(BasePage):
         layout_form.addRow(HelpLabel("输出后缀", FIELD_HELP["output_suffix"]), self.suffix)
         self.layout.addWidget(layout_box)
 
-        config_box = QGroupBox("配置文件")
+        config_box = QGroupBox("内置模板内容配置")
         config_layout = QVBoxLayout(config_box)
         config_layout.setContentsMargins(12, 18, 12, 12)
-        config_layout.setSpacing(8)
         config_buttons = QHBoxLayout()
-        load_btn = QPushButton("载入 JSON")
-        save_btn = QPushButton("保存 JSON")
-        set_secondary(load_btn)
-        set_secondary(save_btn)
-        load_btn.setToolTip("从 drawing_frame_config.json 载入标题、姓名和日期。")
-        save_btn.setToolTip("把当前标题、姓名和日期保存为可复用 JSON 配置。")
-        load_btn.clicked.connect(self.load_json)
-        save_btn.clicked.connect(self.save_json)
-        config_buttons.addWidget(load_btn)
-        config_buttons.addWidget(save_btn)
+        self.load_btn = QPushButton("载入 JSON")
+        self.save_btn = QPushButton("保存 JSON")
+        set_secondary(self.load_btn)
+        set_secondary(self.save_btn)
+        self.load_btn.clicked.connect(self.load_json)
+        self.save_btn.clicked.connect(self.save_json)
+        config_buttons.addWidget(self.load_btn)
+        config_buttons.addWidget(self.save_btn)
         config_buttons.addStretch(1)
         config_layout.addLayout(config_buttons)
         self.layout.addWidget(config_box)
+        self.config_box = config_box
 
         self.task = TaskPanel()
         self.task.run_button.setText("开始添加图框")
         self.task.run_button.clicked.connect(self.run)
         self.layout.addWidget(self.task, 1)
+        self._template_mode_changed(self.template_selector.mode().value)
 
     @staticmethod
     def spin(value: int) -> IntegerInput:
         return IntegerInput(value=value, minimum=0, maximum=100000)
 
+    def _template_mode_changed(self, mode_value: str) -> None:
+        builtin = TemplateMode(mode_value) == TemplateMode.BUILTIN
+        self.title_box.setEnabled(builtin)
+        self.config_box.setEnabled(builtin)
+        if builtin:
+            self.banner.set_text(
+                "内置模板会按四边距调整外框，并修改左上标题和 Draw/Approve/Issue 信息。输入支持单文件或目录。"
+            )
+        else:
+            self.banner.set_text(
+                "客户自定义模板会按四边距调整外框长度和组件位置，但不会修改任何文字、姓名、日期、字体、颜色或表格内容。输入支持单文件或目录。"
+            )
+
     def settings(self) -> FrameSettings:
         return FrameSettings(
-            input_dir=self.input_path.path(),
+            source_path=self.source.path(),
+            input_mode=self.source.mode(),
             output_dir=self.output_path.path(),
-            template_file=self.template_path.path(),
+            template_file=self.template_selector.resolved_template_path(),
+            template_mode=self.template_selector.mode(),
+            builtin_template_id=self.template_selector.builtin_template_id(),
             title=self.title.text().strip(),
             draw=PersonSettings(name=self.draw_editor.name(), date=self.draw_editor.date()),
             approve=PersonSettings(name=self.approve_editor.name(), date=self.approve_editor.date()),
@@ -143,10 +170,7 @@ class FramePage(BasePage):
 
     def save_json(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
-            self,
-            "保存图框配置",
-            "drawing_frame_config.json",
-            "JSON Files (*.json)",
+            self, "保存图框配置", "drawing_frame_config.json", "JSON Files (*.json)"
         )
         if not path:
             return
@@ -159,12 +183,7 @@ class FramePage(BasePage):
         QMessageBox.information(self, "保存成功", f"配置已保存到：\n{path}")
 
     def load_json(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "载入图框配置",
-            "",
-            "JSON Files (*.json)",
-        )
+        path, _ = QFileDialog.getOpenFileName(self, "载入图框配置", "", "JSON Files (*.json)")
         if not path:
             return
         try:
@@ -178,7 +197,6 @@ class FramePage(BasePage):
         if not isinstance(data, dict):
             QMessageBox.warning(self, "配置无效", "配置文件 default 必须是 JSON 对象。")
             return
-
         self.title.setText(str(data.get("title", "")))
         for key, editor in (
             ("draw", self.draw_editor),
@@ -190,6 +208,8 @@ class FramePage(BasePage):
                 editor.set_values(str(row.get("name", "")), str(row.get("date", "")))
 
     def run(self) -> None:
+        if not self.template_selector.validate_selection():
+            return
         settings = self.settings()
         self.task.start(
             lambda log, progress: add_drawing_frames(settings, log, progress),

@@ -1,7 +1,7 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from g_file_studio.models import BasicSettings
+from g_file_studio.models import BasicSettings, InputMode
 from g_file_studio.processors.basic_processor import process_basic
 
 
@@ -16,7 +16,8 @@ def test_replace_attribute_and_generic_delete(tmp_path: Path):
     )
 
     settings = BasicSettings(
-        input_dir=source,
+        source_path=source,
+        input_mode=InputMode.DIRECTORY,
         output_dir=output,
         replace_attribute=True,
         replace_target_tag="ZhaiWaiJieDiDaoZha",
@@ -56,7 +57,8 @@ def test_delete_matching_element_and_clean_references(tmp_path: Path):
         encoding="utf-8",
     )
     settings = BasicSettings(
-        input_dir=source,
+        source_path=source,
+        input_mode=InputMode.DIRECTORY,
         output_dir=output,
         replace_attribute=False,
         delete_matching_element=True,
@@ -102,7 +104,8 @@ def test_basic_rules_only_touch_direct_children_of_direct_layer(tmp_path: Path):
         encoding="utf-8",
     )
     settings = BasicSettings(
-        input_dir=source,
+        source_path=source,
+        input_mode=InputMode.DIRECTORY,
         output_dir=output,
         replace_attribute=True,
         replace_target_tag="ZhaiWaiJieDiDaoZha",
@@ -142,7 +145,8 @@ def test_rule_validation_requires_tag_and_attribute(tmp_path: Path):
     (source / "a.g").write_text("<G><Layer /></G>", encoding="utf-8")
 
     settings = BasicSettings(
-        input_dir=source,
+        source_path=source,
+        input_mode=InputMode.DIRECTORY,
         output_dir=output,
         replace_attribute=True,
         replace_target_tag="",
@@ -167,7 +171,8 @@ def test_replace_rule_is_disabled_by_default(tmp_path: Path):
     )
 
     settings = BasicSettings(
-        input_dir=source,
+        source_path=source,
+        input_mode=InputMode.DIRECTORY,
         output_dir=output,
         replace_target_tag="Device",
         replace_target_attribute="p_NameString",
@@ -179,3 +184,31 @@ def test_replace_rule_is_disabled_by_default(tmp_path: Path):
     device = ET.parse(output / "a.g").getroot().find("Layer/Device")
     assert device is not None
     assert device.get("p_NameString") == "OLD"
+
+
+def test_basic_processor_accepts_single_file_input(tmp_path: Path):
+    source = tmp_path / "single.sln.pic.g"
+    output = tmp_path / "out"
+    source.write_text(
+        '<G><Layer><Device id="1" p_NameString="OLD" /></Layer></G>',
+        encoding="utf-8",
+    )
+
+    result = process_basic(
+        BasicSettings(
+            source_path=source,
+            input_mode=InputMode.SINGLE_FILE,
+            output_dir=output,
+            replace_attribute=True,
+            replace_target_tag="Device",
+            replace_target_attribute="p_NameString",
+            replace_old_value="OLD",
+            replace_new_value="NEW",
+        )
+    )
+
+    assert result.success
+    assert result.statistics["input_mode"] == "single_file"
+    device = ET.parse(output / source.name).getroot().find("Layer/Device")
+    assert device is not None
+    assert device.get("p_NameString") == "NEW"

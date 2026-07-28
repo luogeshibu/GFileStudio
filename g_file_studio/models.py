@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -9,8 +10,28 @@ from pydantic import BaseModel, Field, field_validator
 MERGED_FILE_SUFFIX = ".sln.pic.g"
 
 
+class TemplateMode(str, Enum):
+    """图框模板来源。"""
+
+    BUILTIN = "builtin"
+    CUSTOM = "custom"
+
+
+class InputMode(str, Enum):
+    """G 文件输入类型。"""
+
+    SINGLE_FILE = "single_file"
+    DIRECTORY = "directory"
+
+
+# 向后兼容旧代码和已有配置。
+PipelineInputMode = InputMode
+
+
 class BasicSettings(BaseModel):
     """基础处理参数。
+
+    输入既可以是单个 G 文件，也可以是包含多个 G 文件的目录。
 
     所有规则都只作用于 G 根节点直属 Layer 的直接子元素：
     - 属性替换：元素标签、属性名、旧值全部精确匹配后写入新值；
@@ -19,17 +40,16 @@ class BasicSettings(BaseModel):
     G、Theme、Layer 本身、Layer 外内容，以及 Layer 图元内部的嵌套子元素均保持不变。
     """
 
-    input_dir: Path
+    source_path: Path
+    input_mode: InputMode = InputMode.DIRECTORY
     output_dir: Path
 
-    # 规则 1：替换匹配元素的属性值。
     replace_attribute: bool = False
     replace_target_tag: str = ""
     replace_target_attribute: str = ""
     replace_old_value: str = ""
     replace_new_value: str = ""
 
-    # 规则 2：标签、属性名、属性值全部匹配时，删除整个直属图元子树。
     delete_matching_element: bool = False
     delete_target_tag: str = ""
     delete_target_attribute: str = ""
@@ -72,9 +92,18 @@ class PersonSettings(BaseModel):
 
 
 class FrameSettings(BaseModel):
-    input_dir: Path
+    """添加图框参数。
+
+    输入既可以是单个 G 文件，也可以是包含多个 G 文件的目录。
+    输出始终写入 output_dir，原始文件不会被覆盖。
+    """
+
+    source_path: Path
+    input_mode: InputMode = InputMode.DIRECTORY
     output_dir: Path
     template_file: Path
+    template_mode: TemplateMode = TemplateMode.BUILTIN
+    builtin_template_id: str = "default_sld_frame"
     title: str = ""
     draw: PersonSettings = Field(default_factory=PersonSettings)
     approve: PersonSettings = Field(default_factory=PersonSettings)
@@ -86,7 +115,16 @@ class FrameSettings(BaseModel):
     output_suffix: str = ""
     overwrite: bool = True
 
+    @property
+    def edit_builtin_content(self) -> bool:
+        """仅内置模板允许替换标题、姓名与日期。"""
+        return self.template_mode == TemplateMode.BUILTIN
+
     def config_dict(self) -> dict[str, Any]:
+        """生成内置模板的标题与签字栏配置。
+
+        自定义模板模式不会使用这些配置，但保留同一数据结构，便于 UI 和配置文件复用。
+        """
         return {
             "default": {
                 "title": self.title,
@@ -99,14 +137,13 @@ class FrameSettings(BaseModel):
 
 
 class PipelineSettings(BaseModel):
-    source_dir: Path
-    work_dir: Path
+    source_path: Path
+    input_mode: InputMode = InputMode.DIRECTORY
+    temp_work_dir: Path
     output_dir: Path
-    template_file: Path
     run_basic: bool = True
     run_merge: bool = True
     run_frame: bool = True
-    clear_work_dirs: bool = True
     basic: BasicSettings
     merge: MergeSettings
     frame: FrameSettings

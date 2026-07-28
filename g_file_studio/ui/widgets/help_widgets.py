@@ -110,12 +110,15 @@ class InfoBanner(QFrame):
         icon = QLabel("i")
         icon.setObjectName("infoIcon")
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label = QLabel(text)
-        label.setObjectName("infoText")
-        label.setTextFormat(Qt.TextFormat.PlainText)
-        label.setWordWrap(True)
+        self.label = QLabel(text)
+        self.label.setObjectName("infoText")
+        self.label.setTextFormat(Qt.TextFormat.PlainText)
+        self.label.setWordWrap(True)
         layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
-        layout.addWidget(label, 1)
+        layout.addWidget(self.label, 1)
+
+    def set_text(self, text: str) -> None:
+        self.label.setText(text)
 
 
 class HelpLabel(QWidget):

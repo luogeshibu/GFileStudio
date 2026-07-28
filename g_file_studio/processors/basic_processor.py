@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import Iterable
 
 from g_file_studio.models import BasicSettings, ProcessingResult
-from g_file_studio.processors.common import LogCallback, ProgressCallback
+from g_file_studio.processors.common import (
+    LogCallback,
+    ProgressCallback,
+    discover_g_inputs,
+)
 
 REFERENCE_LIST_ATTRIBUTES = ("link", "node_area")
 REFERENCE_SINGLE_ATTRIBUTES = ("p_FatherObjId",)
@@ -151,20 +155,8 @@ def process_basic(
 ) -> ProcessingResult:
     _validate_rules(settings)
 
-    if not settings.input_dir.is_dir():
-        raise NotADirectoryError(f"输入目录不存在：{settings.input_dir}")
     settings.output_dir.mkdir(parents=True, exist_ok=True)
-
-    files = sorted(
-        (
-            path
-            for path in settings.input_dir.iterdir()
-            if path.is_file() and path.suffix.lower() == ".g"
-        ),
-        key=lambda path: path.name.casefold(),
-    )
-    if not files:
-        raise FileNotFoundError(f"输入目录中没有 .g 文件：{settings.input_dir}")
+    files = discover_g_inputs(settings.source_path, settings.input_mode)
 
     outputs: list[Path] = []
     total_replaced = 0
@@ -223,6 +215,8 @@ def process_basic(
         success=True,
         output_files=outputs,
         statistics={
+            "input_mode": settings.input_mode.value,
+            "source_path": str(settings.source_path),
             "file_count": len(outputs),
             "replaced_attribute_count": total_replaced,
             "removed_matching_element_count": total_removed_matching,

@@ -4,7 +4,9 @@ from g_file_studio.models import (
     BasicSettings,
     FrameSettings,
     MergeSettings,
+    InputMode,
     PipelineSettings,
+    TemplateMode,
 )
 
 
@@ -18,18 +20,30 @@ def test_output_name_replaces_plain_g_suffix():
     assert settings.output_name == "merged.sln.pic.g"
 
 
-def test_pipeline_cleans_work_directories_by_default():
-    pipeline = PipelineSettings(
-        source_dir=Path("input"),
-        work_dir=Path("work"),
-        output_dir=Path("output"),
+def test_custom_template_does_not_edit_content():
+    frame = FrameSettings(
+        source_path=Path("in"),
+        input_mode=InputMode.DIRECTORY,
+        output_dir=Path("out"),
         template_file=Path("template.g"),
-        basic=BasicSettings(input_dir=Path("input"), output_dir=Path("processed")),
-        merge=MergeSettings(input_dir=Path("processed"), output_dir=Path("merged")),
+        template_mode=TemplateMode.CUSTOM,
+    )
+    assert frame.edit_builtin_content is False
+
+
+def test_pipeline_uses_hidden_temp_work_dir():
+    pipeline = PipelineSettings(
+        source_path=Path("input/a.sln.pic.g"),
+        input_mode=InputMode.SINGLE_FILE,
+        temp_work_dir=Path("cache/session"),
+        output_dir=Path("output"),
+        basic=BasicSettings(source_path=Path("x"), input_mode=InputMode.DIRECTORY, output_dir=Path("y")),
+        merge=MergeSettings(input_dir=Path("y"), output_dir=Path("z")),
         frame=FrameSettings(
-            input_dir=Path("merged"),
+            source_path=Path("z"),
+            input_mode=InputMode.DIRECTORY,
             output_dir=Path("output"),
             template_file=Path("template.g"),
         ),
     )
-    assert pipeline.clear_work_dirs is True
+    assert pipeline.temp_work_dir == Path("cache/session")

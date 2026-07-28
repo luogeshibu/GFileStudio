@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -16,13 +16,15 @@ from PySide6.QtWidgets import (
 )
 
 from g_file_studio import __version__
+from g_file_studio.services.temp_workspace_service import TempWorkspaceService
 from g_file_studio.ui.pages import BasicPage, FramePage, HelpPage, MergePage, PipelinePage
 from g_file_studio.ui.theme import build_app_style
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, temp_workspace: TempWorkspaceService) -> None:
         super().__init__()
+        self.temp_workspace = temp_workspace
         self.setWindowTitle("G File Studio")
         self.resize(1280, 860)
         self.setMinimumSize(1040, 720)
@@ -37,7 +39,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.setObjectName("contentRoot")
         self.pages = [
-            PipelinePage(),
+            PipelinePage(self.temp_workspace),
             BasicPage(),
             MergePage(),
             FramePage(),
@@ -124,6 +126,11 @@ class MainWindow(QMainWindow):
             item = self.nav.item(index)
             if item:
                 self.statusBar().showMessage(item.statusTip() or item.toolTip())
+
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
+        self.temp_workspace.cleanup()
+        super().closeEvent(event)
 
     def _install_help_shortcut(self) -> None:
         action = QAction(self)
