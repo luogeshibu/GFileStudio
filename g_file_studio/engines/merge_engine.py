@@ -6,7 +6,7 @@ r"""
 当前规则：
 1. 文件名前面的内容可以任意命名，但后缀必须是 .sln.pic.g。
 2. App 可由用户自由定义文件顺序；未指定时才按名称自然排序。
-3. 每个文件必须只有一个直属 Layer，且不能包含外框架图。
+3. 每个文件必须只有一个直属 Layer；内置图框会在内存副本中移除后参与合并，非内置图框禁止参与。
 4. 合并前删除负坐标图元并清理相关真实引用，再统一取整位置坐标。
 5. 用户顺序中的第一个文件完整作为基准，后续文件只复制 Layer 子图元。
 6. 只识别标签名严格等于 <Bus> 的有效非零长度水平母线（不把 <BusDis> 当作 Bus）；有 Bus 时使用最顶部 Bus 对齐，没有 Bus 时使用最高图元 Y 对齐。
@@ -26,7 +26,20 @@ from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_HALF_UP
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Callable, Iterable, Iterator
+
+from g_file_studio.engines.frame_engine import (
+    GFS_FRAME_COMPONENT_ATTRIBUTE,
+    GFS_FRAME_TEMPLATE_ATTRIBUTE,
+    GFS_FRAME_TYPE_ATTRIBUTE,
+)
+from g_file_studio.engines.merge_frame_inspector import (
+    FRAME_BUILTIN,
+    FRAME_NONE,
+    FRAME_UNSUPPORTED,
+    MergeFrameInspectionError,
+    inspect_merge_frame,
+)
 
 
 # ============================================================================
@@ -112,6 +125,27 @@ class ParsedGFile:
     max_y: Decimal
     negative_cleanup: NegativeCoordinateCleanupResult
     rounded_coordinate_attributes: int
+    frame_kind: str = FRAME_NONE
+    frame_detection_mode: str = "none"
+    removed_builtin_frame_elements: int = 0
+    removed_builtin_frame_ids: int = 0
+    removed_builtin_frame_references: int = 0
+
+
+@dataclass(frozen=True)
+class MergeCandidateInspection:
+    info: GFileInfo
+    eligible: bool
+    status: str
+    frame_kind: str
+    frame_detection_mode: str = "none"
+    alignment_mode: str = ""
+    alignment_y: Decimal | None = None
+    error: str = ""
+
+
+class UnsupportedMergeFrameError(ValueError):
+    """检测到客户或来源不明图框，禁止参与合并。"""
 
 
 @dataclass
@@ -615,6 +649,154 @@ def validate_no_outer_frame(root: ET.Element, layer: ET.Element, filename: str) 
             "参与 G 文件合并的输入文件不能包含外框、左上标题块或右下签字栏；"
             "请使用未添加图框的原始馈线图。"
         )
+
+
+def _remove_builtin_frame_for_merge(
+    root: ET.Element,
+    layer: ET.Element,
+    components: Iterable[ET.Element],
+) -> tuple[int, int, int]:
+    """从内存中的合并副本移除内置图框，并清理失效引用。
+
+    源文件不会被修改。返回：删除直属组件数、真正删除的 ID 数、清理引用数。
+    """
+    component_ids = {id(element) for element in components}
+    direct_children = list(layer)
+    targets = [element for element in direct_children if id(element) in component_ids]
+    if not targets:
+        raise ValueError("已识别内置图框，但没有找到可从 Layer 移除的直属图框组件。")
+
+    removed_ids: set[str] = set()
+    for element in targets:
+        removed_ids.update(collect_subtree_nonempty_ids(element))
+        layer.remove(element)
+
+    remaining_ids = set(collect_ids(layer))
+    truly_removed_ids = removed_ids - remaining_ids
+    cleaned_references = 0
+    if truly_removed_ids:
+        for element in iter_graph_elements(layer):
+            for attr in REFERENCE_LIST_ATTRS:
+                value = element.get(attr)
+                if value is None:
+                    continue
+                new_value, removed_count = remove_reference_groups_to_ids(
+                    value, truly_removed_ids
+                )
+                if removed_count:
+                    element.set(attr, new_value)
+                    cleaned_references += removed_count
+
+            for attr in REFERENCE_SINGLE_ATTRS:
+                value = element.get(attr)
+                if value and value.strip() in truly_removed_ids:
+                    element.set(attr, "")
+                    cleaned_references += 1
+
+    # 输出基准文件不能继续携带“已有图框”身份标记。
+    for attr in (
+        GFS_FRAME_TYPE_ATTRIBUTE,
+        GFS_FRAME_TEMPLATE_ATTRIBUTE,
+        GFS_FRAME_COMPONENT_ATTRIBUTE,
+    ):
+        root.attrib.pop(attr, None)
+
+    return len(targets), len(truly_removed_ids), cleaned_references
+
+
+def _prepare_frame_for_merge(
+    root: ET.Element,
+    layer: ET.Element,
+    root_width: Decimal,
+    root_height: Decimal,
+    filename: str,
+) -> tuple[str, str, int, int, int]:
+    """分类图框；内置图框从内存副本移除，其他图框拒绝合并。"""
+    try:
+        inspection = inspect_merge_frame(
+            root,
+            layer,
+            float(root_width),
+            float(root_height),
+        )
+    except MergeFrameInspectionError as exc:
+        raise UnsupportedMergeFrameError(
+            f"文件 {filename} 的内置图框结构异常，不能安全参与合并：\n{exc}"
+        ) from exc
+
+    if inspection.kind == FRAME_UNSUPPORTED:
+        raise UnsupportedMergeFrameError(
+            f"文件 {filename} 检测到非 G File Studio 内置图框，不能参与合并。\n"
+            f"原因：{inspection.reason or '图框来源或结构无法确认。'}"
+        )
+
+    if inspection.kind == FRAME_BUILTIN:
+        removed_count, removed_ids, cleaned_references = _remove_builtin_frame_for_merge(
+            root, layer, inspection.components
+        )
+        return (
+            FRAME_BUILTIN,
+            inspection.detection_mode,
+            removed_count,
+            removed_ids,
+            cleaned_references,
+        )
+
+    return FRAME_NONE, inspection.detection_mode, 0, 0, 0
+
+
+def inspect_merge_candidate(info: GFileInfo) -> MergeCandidateInspection:
+    """完整检查一个候选文件，供加载列表和模糊查询对话框使用。"""
+    try:
+        parsed = parse_g_file(info)
+    except UnsupportedMergeFrameError as exc:
+        return MergeCandidateInspection(
+            info=info,
+            eligible=False,
+            status="非内置图框（禁止合并）",
+            frame_kind=FRAME_UNSUPPORTED,
+            error=str(exc),
+        )
+    except Exception as exc:
+        return MergeCandidateInspection(
+            info=info,
+            eligible=False,
+            status="检查失败",
+            frame_kind="invalid",
+            error=str(exc),
+        )
+
+    if parsed.frame_kind == FRAME_BUILTIN:
+        status = "内置图框（合并时自动移除）"
+    else:
+        status = "正常"
+    return MergeCandidateInspection(
+        info=info,
+        eligible=True,
+        status=status,
+        frame_kind=parsed.frame_kind,
+        frame_detection_mode=parsed.frame_detection_mode,
+        alignment_mode=parsed.alignment_mode,
+        alignment_y=parsed.alignment_y,
+    )
+
+
+def inspect_merge_candidates(
+    input_dir: Path,
+    *,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> list[MergeCandidateInspection]:
+    """按自然顺序加载并检查目录中的全部候选文件。"""
+    infos = discover_files(input_dir)
+    total = len(infos)
+    results: list[MergeCandidateInspection] = []
+    for index, info in enumerate(infos, 1):
+        if progress_callback is not None:
+            progress_callback(index - 1, total, info.path.name)
+        results.append(inspect_merge_candidate(info))
+        if progress_callback is not None:
+            progress_callback(index, total, info.path.name)
+    return results
 
 
 def get_graph_extents(
@@ -1191,8 +1373,20 @@ def parse_g_file(info: GFileInfo) -> ParsedGFile:
     root_height = get_root_dimension(root, "h", "height", info.path.name)
     root_width = get_root_dimension(root, "w", "width", info.path.name)
 
-    # 合并输入必须是未加图框的馈线图。
-    validate_no_outer_frame(root, layer, info.path.name)
+    # 内置图框会从内存副本中安全移除后参与合并；客户或未知图框禁止参与。
+    (
+        frame_kind,
+        frame_detection_mode,
+        removed_builtin_frame_elements,
+        removed_builtin_frame_ids,
+        removed_builtin_frame_references,
+    ) = _prepare_frame_for_merge(
+        root,
+        layer,
+        root_width,
+        root_height,
+        info.path.name,
+    )
 
     negative_cleanup = remove_negative_coordinate_elements(
         layer,
@@ -1221,6 +1415,11 @@ def parse_g_file(info: GFileInfo) -> ParsedGFile:
         max_y=max_y,
         negative_cleanup=negative_cleanup,
         rounded_coordinate_attributes=rounded_coordinate_attributes,
+        frame_kind=frame_kind,
+        frame_detection_mode=frame_detection_mode,
+        removed_builtin_frame_elements=removed_builtin_frame_elements,
+        removed_builtin_frame_ids=removed_builtin_frame_ids,
+        removed_builtin_frame_references=removed_builtin_frame_references,
     )
 
 
@@ -1272,12 +1471,18 @@ def merge_g_files(
     print("\n源文件预处理：")
     for item in parsed_files:
         cleanup = item.negative_cleanup
+        frame_message = (
+            f"，移除内置图框直属组件 {item.removed_builtin_frame_elements} 个"
+            if item.frame_kind == FRAME_BUILTIN
+            else ""
+        )
         print(
             f"  文件 {item.info.order}: "
             f"删除负坐标根图元 {cleanup.removed_root_elements} 个，"
             f"累计删除元素 {cleanup.removed_total_elements} 个，"
             f"清理引用分组 {cleanup.removed_reference_groups} 个，"
             f"取整坐标属性 {item.rounded_coordinate_attributes} 个"
+            f"{frame_message}"
         )
 
     print("\n基准图：")

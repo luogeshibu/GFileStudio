@@ -22,6 +22,7 @@ def merge_feeders(
         raise NotADirectoryError(f"输入目录不存在：{settings.input_dir}")
     settings.output_dir.mkdir(parents=True, exist_ok=True)
 
+    log("正在加载并检查已导入的 G 文件……")
     if progress:
         progress(5)
     infos = merge_engine.discover_files(
@@ -35,6 +36,8 @@ def merge_feeders(
         else merge_engine.build_default_output_path(settings.output_dir, infos)
     )
 
+    if progress:
+        progress(10)
     writer = CallbackWriter(redirect_safe_callback(log))
     with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
         merge_engine.merge_g_files(

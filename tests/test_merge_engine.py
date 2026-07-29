@@ -73,7 +73,7 @@ def test_outer_frame_is_rejected(tmp_path: Path):
 """
     _write_g(input_dir / "framed.sln.pic.g", body)
     info = merge_engine.discover_files(input_dir)[0]
-    with pytest.raises(ValueError, match="外框架图"):
+    with pytest.raises(ValueError, match="非 G File Studio 内置图框"):
         merge_engine.parse_g_file(info)
 
 
@@ -262,3 +262,127 @@ def test_merge_processor_merges_only_selected_subset(tmp_path: Path):
     source_ids = {element.get("id") for element in list(layer)}
     # b 文件未参与合并，因此不会出现其唯一 ID=2。
     assert "2" not in source_ids
+
+
+
+def _builtin_frame_config() -> dict[str, object]:
+    return {
+        "default": {
+            "title": "",
+            "draw": {"name": "", "date": ""},
+            "approve": {"name": "", "date": ""},
+            "issue": {"name": "", "date": ""},
+        },
+        "files": {},
+    }
+
+
+def _add_builtin_frame(source: Path, output: Path) -> None:
+    from g_file_studio.engines.frame_engine import process_one_file
+
+    project_root = Path(__file__).resolve().parents[1]
+    template_path = (
+        project_root
+        / "resources"
+        / "templates"
+        / "SLD-Drawing-Frame-Template.sln.pic.g"
+    )
+    process_one_file(
+        source,
+        output,
+        ET.parse(template_path),
+        _builtin_frame_config(),
+        edit_content=True,
+    )
+
+
+def test_marked_builtin_frame_is_removed_before_merge(tmp_path: Path):
+    plain = tmp_path / "plain.sln.pic.g"
+    framed = tmp_path / "framed.sln.pic.g"
+    _write_g(
+        plain,
+        '<Bus id="body-bus" x="100" y="200" x1="100" y1="200" '
+        'x2="300" y2="200" d="100,200 300,200" />',
+        width=1000,
+        height=800,
+    )
+    _add_builtin_frame(plain, framed)
+
+    info = merge_engine.parse_filename(framed)
+    inspection = merge_engine.inspect_merge_candidate(info)
+    assert inspection.eligible is True
+    assert inspection.frame_kind == "builtin"
+    assert "自动移除" in inspection.status
+
+    parsed = merge_engine.parse_g_file(info)
+    assert parsed.removed_builtin_frame_elements >= 25
+    assert parsed.frame_kind == "builtin"
+    assert parsed.layer.find("Bus") is not None
+    # 合并内存副本中不再保留图框身份标记。
+    assert parsed.root.get("gfs_frame_type") is None
+    assert all(
+        element.get("gfs_frame_type") != "builtin"
+        for element in list(parsed.layer)
+    )
+
+
+def test_legacy_builtin_detection_ignores_all_text_content(tmp_path: Path):
+    plain = tmp_path / "plain.sln.pic.g"
+    framed = tmp_path / "legacy.sln.pic.g"
+    _write_g(
+        plain,
+        '<Text id="body" x="200" y="200" w="100" h="50" ts="BODY" />',
+        width=1000,
+        height=800,
+    )
+    _add_builtin_frame(plain, framed)
+
+    tree = ET.parse(framed)
+    root = tree.getroot()
+    root.attrib.pop("gfs_frame_type", None)
+    root.attrib.pop("gfs_frame_template", None)
+    layer = root.find("Layer")
+    assert layer is not None
+    for index, element in enumerate(list(layer)):
+        element.attrib.pop("gfs_frame_type", None)
+        element.attrib.pop("gfs_frame_component", None)
+        if element.tag == "Text" and element.get("ts") != "BODY":
+            element.set("ts", f"任意修改内容-{index}")
+    tree.write(framed, encoding="utf-8", xml_declaration=True)
+
+    info = merge_engine.parse_filename(framed)
+    inspection = merge_engine.inspect_merge_candidate(info)
+    assert inspection.eligible is True
+    assert inspection.frame_kind == "builtin"
+    assert inspection.frame_detection_mode == "legacy_builtin_geometry"
+
+    parsed = merge_engine.parse_g_file(info)
+    body = next(
+        element
+        for element in list(parsed.layer)
+        if element.tag == "Text" and element.get("ts") == "BODY"
+    )
+    assert body.get("id") == "body"
+    assert all(
+        not (element.tag == "Text" and str(element.get("ts", "")).startswith("任意修改内容"))
+        for element in list(parsed.layer)
+    )
+
+
+def test_non_builtin_frame_is_catalogued_as_ineligible(tmp_path: Path):
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    body = """
+<line id="1" x1="50" y1="50" x2="950" y2="50" d="50,50 950,50" />
+<line id="2" x1="950" y1="50" x2="950" y2="750" d="950,50 950,750" />
+<line id="3" x1="950" y1="750" x2="50" y2="750" d="950,750 50,750" />
+<line id="4" x1="50" y1="750" x2="50" y2="50" d="50,750 50,50" />
+<Text id="5" x="200" y="200" w="100" h="50" ts="BODY" />
+"""
+    _write_g(input_dir / "customer.sln.pic.g", body)
+
+    result = merge_engine.inspect_merge_candidates(input_dir)
+    assert len(result) == 1
+    assert result[0].eligible is False
+    assert result[0].frame_kind == "unsupported"
+    assert result[0].status == "非内置图框（禁止合并）"
