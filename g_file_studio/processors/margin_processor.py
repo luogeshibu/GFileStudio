@@ -48,10 +48,14 @@ def adjust_graph_margins(
         outputs.append(output_path)
         if result.had_existing_frame:
             files_with_frame.append(output_path.name)
+            frame_mode = (
+                "身份标记" if result.frame_detection_mode == "marker"
+                else "旧版内置模板指纹"
+            )
             frame_text = (
-                f"；已有图框保持边距 左={result.frame_left_margin:g}、"
-                f"上={result.frame_top_margin:g}、右={result.frame_right_margin:g}、"
-                f"下={result.frame_bottom_margin:g}"
+                f"；已识别内置图框（{frame_mode}），保持边距 "
+                f"左={result.frame_left_margin:g}、上={result.frame_top_margin:g}、"
+                f"右={result.frame_right_margin:g}、下={result.frame_bottom_margin:g}"
             )
         else:
             files_without_frame.append(output_path.name)

@@ -89,8 +89,8 @@ class MergeSettings(BaseModel):
 class MarginSettings(BaseModel):
     """主体图形四边距调整参数。
 
-    已有完整外框会被识别、排除在主体边界计算之外，并在新画布上保留原四边距、
-    同步拉伸外框和移动其附属组件；图框文字及业务内容保持不变。
+    仅可确认的 G File Studio 内置图框会被排除在主体边界计算之外，并在新画布上
+    保留原四边距、同步拉伸外框和移动附属组件；其他图框要求用户先删除。
     """
 
     source_path: Path

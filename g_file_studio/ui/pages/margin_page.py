@@ -25,7 +25,7 @@ class MarginPage(BasePage):
         help_title, help_html = APP_HELP["margin"]
         super().__init__(
             "图形边距调整",
-            "把主体图形整体移动到指定四边距，并在识别到已有外框时保留并同步调整。",
+            "把主体图形整体移动到指定四边距；内置图框自动同步调整，其他图框要求先删除。",
             help_title,
             help_html,
             parent,
@@ -33,7 +33,7 @@ class MarginPage(BasePage):
 
         self.layout.addWidget(
             InfoBanner(
-                "默认主体图形距离画布左、上、右、下各 500。若识别到完整外框，外框不参与主体边界计算，并保持原图框四边距同步拉伸和移动附属组件；图框文字与业务内容完全不修改。"
+                "默认主体图形距离画布左、上、右、下各 500。仅当图框可确认是 G File Studio 内置图框时，程序才会排除图框组件并同步调整；检测到其他图框时会停止并提示先删除图框。内置图框文字与业务内容完全不修改。"
             )
         )
 
@@ -87,7 +87,7 @@ class MarginPage(BasePage):
 
         self.layout.addWidget(
             InfoBanner(
-                "已有图框处理方式固定为：保留并同步调整。程序不会修改图框中的标题、Draw、Approve、Issue、日期、字体、颜色、线宽或表格内容。"
+                "已有图框处理规则：G File Studio 内置图框会保留并同步调整；客户图框或无法确认来源的图框不会自动处理，程序会提示先删除图框。内置图框中的标题、Draw、Approve、Issue、日期、字体、颜色、线宽和表格内容保持不变。"
             )
         )
 

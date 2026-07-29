@@ -149,7 +149,7 @@ class PipelinePage(BasePage):
         self.layout.addWidget(self.margin_box)
         self.layout.addWidget(
             InfoBanner(
-                "图形边距调整若检测到已有完整外框，会保留外框原四边距并同步拉伸、移动附属组件；后续自动跳过重复添加图框。"
+                "图形边距调整只会自动保留并同步调整 G File Studio 内置图框；客户图框或来源不明的图框会提示先删除。识别为内置图框后，后续自动跳过重复添加图框。"
             )
         )
 

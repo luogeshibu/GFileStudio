@@ -122,7 +122,12 @@ class TaskPanel(QFrame):
     def on_error(self, traceback_text: str) -> None:
         self.append_log("\n处理失败：")
         self.append_log(traceback_text)
-        QMessageBox.critical(self, "处理失败", "处理过程中发生错误，详情请查看日志区域。")
+        user_message = traceback_text.split("\n\n---TRACEBACK---", 1)[0].strip()
+        QMessageBox.critical(
+            self,
+            "处理失败",
+            user_message or "处理过程中发生错误，详情请查看日志区域。",
+        )
 
     def open_output(self) -> None:
         if self._output_dir:

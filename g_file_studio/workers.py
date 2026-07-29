@@ -29,7 +29,8 @@ class FunctionWorker(QRunnable):
                 progress=self.signals.progress.emit,
             )
             self.signals.result.emit(result)
-        except Exception:
-            self.signals.error.emit(traceback.format_exc())
+        except Exception as exc:
+            details = traceback.format_exc()
+            self.signals.error.emit(f"{exc}\n\n---TRACEBACK---\n{details}")
         finally:
             self.signals.finished.emit()

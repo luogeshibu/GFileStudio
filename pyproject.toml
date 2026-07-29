@@ -1,6 +1,6 @@
 [project]
 name = "g-file-studio"
-version = "2.2.0"
+version = "2.3.0"
 description = "PySide6 desktop application for processing XML-based G files"
 requires-python = ">=3.11,<3.14"
 dependencies = [

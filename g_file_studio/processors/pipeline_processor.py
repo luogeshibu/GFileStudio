@@ -240,7 +240,7 @@ def run_pipeline(
         outputs = []
         if skip_names:
             log(
-                f"检测到 {len(skip_names)} 个文件已包含完整图框；图形边距调整已保留并同步适配，"
+                f"检测到 {len(skip_names)} 个文件已包含 G File Studio 内置图框；图形边距调整已保留并同步适配，"
                 "为避免重复图框，本阶段将直接输出这些文件。"
             )
             outputs.extend(

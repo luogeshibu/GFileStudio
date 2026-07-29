@@ -97,6 +97,16 @@ D_POINT_PATTERN = re.compile(
 # 引用属性中的纯数字 token。
 ID_TOKEN_PATTERN = re.compile(r"(?<!\d)(\d+)(?!\d)")
 
+# G File Studio 写入的图框身份标记。
+# 使用普通 XML 属性，目标编辑器会忽略未知属性；程序则可以可靠地区分
+# 内置图框与客户自定义图框，避免仅凭几何关系误判。
+GFS_FRAME_TYPE_ATTRIBUTE = "gfs_frame_type"
+GFS_FRAME_TEMPLATE_ATTRIBUTE = "gfs_frame_template"
+GFS_FRAME_COMPONENT_ATTRIBUTE = "gfs_frame_component"
+GFS_FRAME_TYPE_BUILTIN = "builtin"
+GFS_FRAME_TYPE_CUSTOM = "custom"
+DEFAULT_BUILTIN_TEMPLATE_ID = "default_sld_frame"
+
 
 class FrameError(RuntimeError):
     """图框处理错误。"""
@@ -980,7 +990,15 @@ def process_one_file(
     id_mapping = allocate_template_ids(template_elements, used_ids)
     apply_id_mapping(template_elements, id_mapping)
 
-    for element in template_elements:
+    frame_type = GFS_FRAME_TYPE_BUILTIN if edit_content else GFS_FRAME_TYPE_CUSTOM
+    target_root.set(GFS_FRAME_TYPE_ATTRIBUTE, frame_type)
+    target_root.set(
+        GFS_FRAME_TEMPLATE_ATTRIBUTE,
+        DEFAULT_BUILTIN_TEMPLATE_ID if edit_content else "custom",
+    )
+    for ordinal, element in enumerate(template_elements):
+        element.set(GFS_FRAME_TYPE_ATTRIBUTE, frame_type)
+        element.set(GFS_FRAME_COMPONENT_ATTRIBUTE, str(ordinal))
         target_layer.append(element)
 
     validate_unique_element_ids(target_layer, input_path.name)

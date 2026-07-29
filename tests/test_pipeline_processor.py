@@ -1,5 +1,10 @@
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
+import pytest
+
+from g_file_studio.engines.frame_engine import process_one_file
+from g_file_studio.engines.margin_engine import UnsupportedExistingFrameError
 from g_file_studio.models import (
     BasicSettings,
     FrameSettings,
@@ -18,6 +23,56 @@ def _write_g(path: Path) -> None:
         '<Text id="1" x="10" y="20" w="20" h="10" ts="A" />'
         '</Layer></G>',
         encoding="utf-8",
+    )
+
+
+def _builtin_config() -> dict[str, object]:
+    return {
+        "default": {
+            "title": "",
+            "draw": {"name": "", "date": ""},
+            "approve": {"name": "", "date": ""},
+            "issue": {"name": "", "date": ""},
+        },
+        "files": {},
+    }
+
+
+def _add_builtin_frame(source: Path, output: Path) -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    template_path = project_root / "resources" / "templates" / "SLD-Drawing-Frame-Template.sln.pic.g"
+    process_one_file(
+        source,
+        output,
+        ET.parse(template_path),
+        _builtin_config(),
+        edit_content=True,
+    )
+
+
+def _pipeline_settings(source: Path, output: Path, work: Path, template_file: Path) -> PipelineSettings:
+    return PipelineSettings(
+        source_path=source,
+        input_mode=InputMode.SINGLE_FILE,
+        temp_work_dir=work,
+        output_dir=output,
+        run_basic=False,
+        run_merge=False,
+        run_margin=True,
+        run_frame=True,
+        basic=BasicSettings(source_path=work / "a", output_dir=work / "b"),
+        merge=MergeSettings(input_dir=work / "b", output_dir=work / "c"),
+        margin=MarginSettings(
+            source_path=work / "c",
+            output_dir=work / "d",
+            output_suffix="",
+        ),
+        frame=FrameSettings(
+            source_path=work / "d",
+            output_dir=output,
+            template_file=template_file,
+            output_suffix="-FINAL",
+        ),
     )
 
 
@@ -69,8 +124,28 @@ def test_temp_workspace_is_cleaned_on_startup_and_close(tmp_path: Path):
     assert not task.exists()
 
 
-def test_pipeline_preserves_existing_frame_and_skips_duplicate_frame(tmp_path: Path):
+def test_pipeline_preserves_marked_builtin_frame_and_skips_duplicate_frame(tmp_path: Path):
+    plain = tmp_path / "plain.sln.pic.g"
     source = tmp_path / "framed.sln.pic.g"
+    _write_g(plain)
+    _add_builtin_frame(plain, source)
+
+    output = tmp_path / "output"
+    output.mkdir()
+    work = tmp_path / "cache"
+    settings = _pipeline_settings(source, output, work, tmp_path / "not-needed.g")
+
+    result = run_pipeline(settings, log=lambda _line: None)
+    target = output / "framed-FINAL.sln.pic.g"
+    assert target.is_file()
+    root = ET.parse(target).getroot()
+    layer = next(child for child in root if child.tag == "Layer")
+    assert len(layer.findall("line")) == 9
+    assert result.statistics["files_with_existing_frame"] == ["framed.sln.pic.g"]
+
+
+def test_pipeline_rejects_unknown_existing_frame(tmp_path: Path):
+    source = tmp_path / "custom-frame.sln.pic.g"
     source.write_text(
         '<G w="1000" width="1000" h="800" height="800"><Layer>'
         '<line id="10" x="50" y="50" w="906" h="6" x1="50" y1="50" x2="950" y2="50" d="50,50 950,50" />'
@@ -83,35 +158,7 @@ def test_pipeline_preserves_existing_frame_and_skips_duplicate_frame(tmp_path: P
     )
     output = tmp_path / "output"
     output.mkdir()
-    work = tmp_path / "cache"
+    settings = _pipeline_settings(source, output, tmp_path / "cache", tmp_path / "not-needed.g")
 
-    settings = PipelineSettings(
-        source_path=source,
-        input_mode=InputMode.SINGLE_FILE,
-        temp_work_dir=work,
-        output_dir=output,
-        run_basic=False,
-        run_merge=False,
-        run_margin=True,
-        run_frame=True,
-        basic=BasicSettings(source_path=work / "a", output_dir=work / "b"),
-        merge=MergeSettings(input_dir=work / "b", output_dir=work / "c"),
-        margin=MarginSettings(
-            source_path=work / "c",
-            output_dir=work / "d",
-            output_suffix="",
-        ),
-        frame=FrameSettings(
-            source_path=work / "d",
-            output_dir=output,
-            template_file=tmp_path / "not-needed.g",
-            output_suffix="-FINAL",
-        ),
-    )
-    result = run_pipeline(settings, log=lambda _line: None)
-    target = output / "framed-FINAL.sln.pic.g"
-    assert target.is_file()
-    root = __import__("xml.etree.ElementTree", fromlist=["ElementTree"]).parse(target).getroot()
-    layer = next(child for child in root if child.tag == "Layer")
-    assert len(layer.findall("line")) == 4
-    assert result.statistics["files_with_existing_frame"] == ["framed.sln.pic.g"]
+    with pytest.raises(UnsupportedExistingFrameError):
+        run_pipeline(settings, log=lambda _line: None)

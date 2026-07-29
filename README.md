@@ -1,4 +1,4 @@
-# G File Studio v2.2.0
+# G File Studio v2.3.0
 
 G File Studio 是一个基于 **PySide6** 的 Windows 桌面程序，用于处理 XML 格式的 `.g` / `.sln.pic.g` 图形文件。
 
@@ -56,11 +56,12 @@ C:\Users\<用户名>\AppData\Local\NARI\GFileStudio\Config\user_settings.ini
 处理规则：
 
 1. 识别 Layer 中主体图形的实际边界；
-2. 已有完整外框不参与主体边界计算；
+2. 仅当图框可确认是 G File Studio 内置图框时，精确排除内置图框组件；
 3. 整体平移主体图形，使其达到指定四边距；
 4. 重新计算 `G.w/G.width` 和 `G.h/G.height`；
-5. 如果识别到已有外框，保留原图框四边距，拉伸外框线并移动附属组件；
-6. 不修改外框中的标题、Draw、Approve、Issue、日期、字体、颜色、线宽和表格内容。
+5. 内置图框保留原四边距，外框线动态拉伸，标题区与签字栏按锚点同步移动；
+6. 不修改内置图框中的标题、Draw、Approve、Issue、日期、字体、颜色、线宽和表格内容；
+7. 检测到客户图框或来源无法确认的图框时，停止处理并提示先删除图框。
 
 ## 一键处理顺序
 
@@ -71,7 +72,7 @@ C:\Users\<用户名>\AppData\Local\NARI\GFileStudio\Config\user_settings.ini
 → 添加图框
 ```
 
-如果图形边距调整阶段检测到文件已经包含完整外框，则该外框会被保留并同步适配，后续自动跳过重复添加图框。
+如果图形边距调整阶段确认文件包含 G File Studio 内置图框，则保留并同步适配该图框，后续自动跳过重复添加图框。其他图框会提示先删除。
 
 ## 安装开发环境
 
@@ -102,7 +103,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 ```text
 dist\GFileStudio\GFileStudio.exe
-release\GFileStudio_v2.2.0_Windows_x64.zip
+release\GFileStudio_v2.3.0_Windows_x64.zip
 ```
 
 分享给客户时发送 `release` 目录中的 ZIP。客户完整解压后运行 `GFileStudio.exe`，不需要安装 Python。

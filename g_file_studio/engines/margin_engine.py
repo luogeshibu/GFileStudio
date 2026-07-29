@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import xml.etree.ElementTree as ET
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -10,10 +11,15 @@ from typing import Iterable, Sequence
 from g_file_studio.engines.frame_engine import (
     Box,
     FrameError,
+    GFS_FRAME_COMPONENT_ATTRIBUTE,
+    GFS_FRAME_TEMPLATE_ATTRIBUTE,
+    GFS_FRAME_TYPE_ATTRIBUTE,
+    GFS_FRAME_TYPE_BUILTIN,
+    GFS_FRAME_TYPE_CUSTOM,
     _shift_custom_template_components,
     boxes_intersect,
-    element_box,
     identify_outer_frame_lines,
+    line_endpoints,
     parse_d_points,
     parse_number,
     read_canvas_size,
@@ -27,6 +33,10 @@ class MarginAdjustmentError(RuntimeError):
     """图形边距调整错误。"""
 
 
+class UnsupportedExistingFrameError(MarginAdjustmentError):
+    """检测到非内置图框时使用的用户可读错误。"""
+
+
 @dataclass(frozen=True)
 class ExistingFrame:
     outer_lines: dict[str, ET.Element]
@@ -36,6 +46,7 @@ class ExistingFrame:
     top_margin: float
     right_margin: float
     bottom_margin: float
+    detection_mode: str = "marked"
 
 
 @dataclass(frozen=True)
@@ -54,6 +65,7 @@ class MarginAdjustmentResult:
     frame_top_margin: float | None = None
     frame_right_margin: float | None = None
     frame_bottom_margin: float | None = None
+    frame_detection_mode: str | None = None
 
 
 def _local_name(tag: object) -> str:
@@ -162,36 +174,248 @@ def _frame_is_canvas_outer(frame: Box, width: int, height: int) -> bool:
     )
 
 
-def _connected_frame_components(
+def _make_existing_frame(
+    outer_lines: dict[str, ET.Element],
+    frame_box: Box,
+    components: Sequence[ET.Element],
+    canvas_width: int,
+    canvas_height: int,
+    *,
+    detection_mode: str,
+) -> ExistingFrame:
+    return ExistingFrame(
+        outer_lines=outer_lines,
+        frame_box=frame_box,
+        components=tuple(components),
+        left_margin=frame_box.left,
+        top_margin=frame_box.top,
+        right_margin=canvas_width - frame_box.right,
+        bottom_margin=canvas_height - frame_box.bottom,
+        detection_mode=detection_mode,
+    )
+
+
+def _detect_marked_builtin_frame(
+    layer: ET.Element,
+    canvas_width: int,
+    canvas_height: int,
+) -> ExistingFrame | None:
+    components = [
+        element
+        for element in list(layer)
+        if element.get(GFS_FRAME_TYPE_ATTRIBUTE) == GFS_FRAME_TYPE_BUILTIN
+    ]
+    if not components:
+        return None
+
+    try:
+        outer_lines, frame_box = identify_outer_frame_lines(
+            components,
+            canvas_width,
+            canvas_height,
+        )
+    except (FrameError, ValueError) as exc:
+        raise MarginAdjustmentError(
+            "文件带有 G File Studio 内置图框标记，但图框结构已损坏或不完整。"
+            "请重新添加内置图框后再处理。"
+        ) from exc
+
+    if not _frame_is_canvas_outer(frame_box, canvas_width, canvas_height):
+        raise MarginAdjustmentError(
+            "文件带有 G File Studio 内置图框标记，但图框已不在画布外围。"
+            "请重新添加内置图框后再处理。"
+        )
+
+    return _make_existing_frame(
+        outer_lines,
+        frame_box,
+        components,
+        canvas_width,
+        canvas_height,
+        detection_mode="marker",
+    )
+
+
+def _center_inside(inner: Box, outer: Box, tolerance: float = 0.0) -> bool:
+    return (
+        outer.left - tolerance <= inner.center_x <= outer.right + tolerance
+        and outer.top - tolerance <= inner.center_y <= outer.bottom + tolerance
+    )
+
+
+def _legacy_builtin_components(
     elements: Sequence[ET.Element],
     outer_lines: dict[str, ET.Element],
-    width: int,
-    height: int,
-) -> tuple[ET.Element, ...]:
-    """从外框线出发，按几何邻接识别标题栏、签字栏等附属组件。"""
-    boxes = {id(element): subtree_box(element) for element in elements}
-    included = {id(element) for element in outer_lines.values()}
-    tolerance = min(36.0, max(14.0, min(width, height) * 0.006))
+    frame_box: Box,
+) -> tuple[ET.Element, ...] | None:
+    """识别 v2.2.0 及更早版本写入、尚未带身份标记的内置图框。
 
-    changed = True
-    while changed:
-        changed = False
-        included_boxes = [boxes[item_id] for item_id in included if boxes.get(item_id) is not None]
-        for element in elements:
-            element_id = id(element)
-            if element_id in included:
+    这是严格的结构指纹匹配，不再使用“从外框开始无限几何连通扩散”。
+    因此主体馈线即使与图框接触，也不会被误归类为图框组件。
+    """
+    outer_ids = {id(element) for element in outer_lines.values()}
+
+    rect_candidates: list[tuple[ET.Element, Box]] = []
+    for element in elements:
+        if _local_name(element.tag).lower() != "rect":
+            continue
+        box = subtree_box(element)
+        if box is not None:
+            rect_candidates.append((element, box))
+
+    title_rects = [
+        (element, box)
+        for element, box in rect_candidates
+        if abs(box.left - (frame_box.left + 10.0)) <= 20.0
+        and abs(box.top - (frame_box.top + 10.0)) <= 20.0
+        and 250.0 <= box.width <= 360.0
+        and 40.0 <= box.height <= 90.0
+    ]
+    info_rects = [
+        (element, box)
+        for element, box in rect_candidates
+        if abs(frame_box.right - box.right) <= 25.0
+        and abs(frame_box.bottom - box.bottom) <= 25.0
+        and 300.0 <= box.width <= 420.0
+        and 70.0 <= box.height <= 135.0
+    ]
+    if len(title_rects) != 1 or len(info_rects) != 1:
+        return None
+
+    title_rect, title_box = title_rects[0]
+    info_rect, info_box = info_rects[0]
+    if title_rect is info_rect:
+        return None
+
+    title_texts: list[ET.Element] = []
+    title_pokes: list[ET.Element] = []
+    info_texts: list[ET.Element] = []
+    info_lines: list[ET.Element] = []
+
+    for element in elements:
+        if id(element) in outer_ids or element in {title_rect, info_rect}:
+            continue
+        box = subtree_box(element)
+        if box is None:
+            continue
+        tag = _local_name(element.tag)
+
+        if tag == "Text" and boxes_intersect(box, title_box, tolerance=3.0):
+            if _center_inside(box, title_box, tolerance=3.0):
+                title_texts.append(element)
                 continue
-            box = boxes.get(element_id)
-            if box is None:
+        if tag.lower() == "poke" and boxes_intersect(box, title_box, tolerance=4.0):
+            if abs(box.width - title_box.width) <= 20.0 and abs(box.height - title_box.height) <= 20.0:
+                title_pokes.append(element)
                 continue
-            if any(boxes_intersect(box, existing, tolerance=tolerance) for existing in included_boxes):
-                included.add(element_id)
-                changed = True
+        if tag == "Text" and boxes_intersect(box, info_box, tolerance=3.0):
+            if _center_inside(box, info_box, tolerance=5.0):
+                info_texts.append(element)
+                continue
+        if tag.lower() == "line" and boxes_intersect(box, info_box, tolerance=4.0):
+            endpoints = line_endpoints(element)
+            if endpoints is not None:
+                x1, y1, x2, y2 = endpoints
+                tolerance = 8.0
+                if all(
+                    (
+                        info_box.left - tolerance <= x <= info_box.right + tolerance
+                        and info_box.top - tolerance <= y <= info_box.bottom + tolerance
+                    )
+                    for x, y in ((x1, y1), (x2, y2))
+                ):
+                    info_lines.append(element)
 
-    return tuple(element for element in elements if id(element) in included)
+    # 当前内置模板的稳定结构：1 个标题文字、1 个 poke、
+    # 右下信息栏 12 个文字和 5 条分隔线。
+    if not (
+        len(title_texts) == 1
+        and len(title_pokes) == 1
+        and len(info_texts) == 12
+        and len(info_lines) == 5
+    ):
+        return None
+
+    already_selected = {
+        id(element)
+        for element in (
+            *outer_lines.values(),
+            title_rect,
+            title_texts[0],
+            title_pokes[0],
+            info_rect,
+            *info_texts,
+            *info_lines,
+        )
+    }
+
+    # 某些旧版内置模板还会保留 1 个左上 logo image，
+    # 以及 4 个重合的微小 ConnectLine 模板辅助点。它们同样属于图框，
+    # 不能参与主体边界计算。
+    optional_images: list[ET.Element] = []
+    optional_connect_lines: list[ET.Element] = []
+    for element in elements:
+        if id(element) in already_selected:
+            continue
+        box = subtree_box(element)
+        if box is None:
+            continue
+        tag = _local_name(element.tag).lower()
+        if (
+            tag == "image"
+            and frame_box.left <= box.left <= frame_box.left + 700.0
+            and abs(box.top - (frame_box.top + 10.0)) <= 25.0
+            and 80.0 <= box.width <= 320.0
+            and 35.0 <= box.height <= 100.0
+        ):
+            optional_images.append(element)
+        elif (
+            tag == "connectline"
+            and box.width <= 12.0
+            and box.height <= 12.0
+            and abs(box.center_x - (frame_box.left + 383.0)) <= 24.0
+            and abs(box.center_y - (frame_box.top + 483.0)) <= 24.0
+        ):
+            optional_connect_lines.append(element)
+
+    if len(optional_images) > 1:
+        return None
+    if len(optional_connect_lines) == 4:
+        centers_x = [subtree_box(element).center_x for element in optional_connect_lines]  # type: ignore[union-attr]
+        centers_y = [subtree_box(element).center_y for element in optional_connect_lines]  # type: ignore[union-attr]
+        if max(centers_x) - min(centers_x) > 8.0 or max(centers_y) - min(centers_y) > 8.0:
+            optional_connect_lines = []
+    else:
+        # 该区域出现零散 ConnectLine 时按主体元素处理；只有严格的 4 点重合结构
+        # 才认定为旧版内置模板辅助点。
+        optional_connect_lines = []
+
+    components = [
+        *outer_lines.values(),
+        title_rect,
+        title_texts[0],
+        title_pokes[0],
+        info_rect,
+        *info_texts,
+        *info_lines,
+        *optional_images,
+        *optional_connect_lines,
+    ]
+    if len({id(element) for element in components}) != len(components):
+        return None
+
+    counts = Counter(_local_name(element.tag).lower() for element in components)
+    expected = Counter({"text": 13, "line": 9, "rect": 2, "poke": 1})
+    if optional_images:
+        expected["image"] = 1
+    if optional_connect_lines:
+        expected["connectline"] = 4
+    if counts != expected:
+        return None
+    return tuple(components)
 
 
-def detect_existing_frame(
+def _detect_legacy_builtin_frame(
     layer: ET.Element,
     canvas_width: int,
     canvas_height: int,
@@ -208,22 +432,63 @@ def detect_existing_frame(
 
     if not _frame_is_canvas_outer(frame_box, canvas_width, canvas_height):
         return None
-
-    components = _connected_frame_components(
-        elements,
+    components = _legacy_builtin_components(elements, outer_lines, frame_box)
+    if components is None:
+        return None
+    return _make_existing_frame(
         outer_lines,
+        frame_box,
+        components,
         canvas_width,
         canvas_height,
+        detection_mode="legacy_builtin_fingerprint",
     )
-    return ExistingFrame(
-        outer_lines=outer_lines,
-        frame_box=frame_box,
-        components=components,
-        left_margin=frame_box.left,
-        top_margin=frame_box.top,
-        right_margin=canvas_width - frame_box.right,
-        bottom_margin=canvas_height - frame_box.bottom,
+
+
+def detect_existing_frame(
+    layer: ET.Element,
+    canvas_width: int,
+    canvas_height: int,
+) -> ExistingFrame | None:
+    """只返回可以安全自动调整的 G File Studio 内置图框。"""
+    return (
+        _detect_marked_builtin_frame(layer, canvas_width, canvas_height)
+        or _detect_legacy_builtin_frame(layer, canvas_width, canvas_height)
     )
+
+
+def _has_canvas_outer_frame(
+    root: ET.Element,
+    layer: ET.Element,
+    canvas_width: int,
+    canvas_height: int,
+) -> bool:
+    """检测是否存在任意已有图框，用于阻止未知/客户图框自动处理。"""
+    root_type = root.get(GFS_FRAME_TYPE_ATTRIBUTE, "").strip().lower()
+    if root_type == GFS_FRAME_TYPE_CUSTOM:
+        return True
+    if any(
+        element.get(GFS_FRAME_TYPE_ATTRIBUTE, "").strip().lower() == GFS_FRAME_TYPE_CUSTOM
+        for element in list(layer)
+    ):
+        return True
+
+    elements = list(layer)
+    try:
+        _, frame_box = identify_outer_frame_lines(elements, canvas_width, canvas_height)
+    except (FrameError, ValueError):
+        frame_box = None
+    if frame_box is not None and _frame_is_canvas_outer(frame_box, canvas_width, canvas_height):
+        return True
+
+    # 兼容由单个大 rect 表示的客户图框。
+    for element in elements:
+        if _local_name(element.tag).lower() != "rect":
+            continue
+        box = subtree_box(element)
+        if box is not None and _frame_is_canvas_outer(box, canvas_width, canvas_height):
+            return True
+    return False
 
 
 def _set_canvas_size(root: ET.Element, width: int, height: int) -> None:
@@ -255,7 +520,7 @@ def adjust_one_file(
     bottom_margin: int = 500,
     preserve_existing_frame: bool = True,
 ) -> MarginAdjustmentResult:
-    """调整主体图形到画布四边的距离，并同步适配已有外框。"""
+    """调整主体图形边距；只对可确认的内置图框执行自动同步调整。"""
     try:
         tree = ET.parse(input_path)
     except ET.ParseError as exc:
@@ -268,15 +533,32 @@ def adjust_one_file(
     layer = require_single_direct_layer(root, input_path.name)
     old_width, old_height = read_canvas_size(root, input_path.name)
     direct_elements = list(layer)
+
     existing_frame = (
         detect_existing_frame(layer, old_width, old_height)
         if preserve_existing_frame
         else None
     )
+    if preserve_existing_frame and existing_frame is None and _has_canvas_outer_frame(
+        root,
+        layer,
+        old_width,
+        old_height,
+    ):
+        raise UnsupportedExistingFrameError(
+            "检测到已有图框，但该图框不是 G File Studio 内置图框，"
+            "程序无法安全区分图框组件和主体图形。\n\n"
+            "请先在图形编辑器中删除现有图框，再执行“图形边距调整”。"
+        )
+
     frame_ids = {id(element) for element in existing_frame.components} if existing_frame else set()
     body_elements = [element for element in direct_elements if id(element) not in frame_ids]
     body_before = elements_box(body_elements)
     if body_before is None:
+        if existing_frame is not None:
+            raise MarginAdjustmentError(
+                f"{input_path.name} 已识别为内置图框，但图框之外没有找到主体图形。"
+            )
         raise MarginAdjustmentError(
             f"{input_path.name} 中没有找到可用于边距调整的主体图形。"
         )
@@ -305,7 +587,7 @@ def adjust_one_file(
         )
         if new_frame.width <= 0 or new_frame.height <= 0:
             raise MarginAdjustmentError(
-                "调整后的画布太小，无法保留原有图框四边距。"
+                "调整后的画布太小，无法保留原有内置图框四边距。"
             )
 
         outer = existing_frame.outer_lines
@@ -328,7 +610,6 @@ def adjust_one_file(
 
     _set_canvas_size(root, new_width, new_height)
 
-    # 写出前验证主体边距。右、下因画布尺寸取整，允许小于 1 像素的额外空白。
     final_body = elements_box(body_elements)
     if final_body is None:
         raise MarginAdjustmentError("无法验证最终主体图形边界。")
@@ -372,6 +653,7 @@ def adjust_one_file(
         frame_top_margin=frame_margins[1] if frame_margins else None,
         frame_right_margin=frame_margins[2] if frame_margins else None,
         frame_bottom_margin=frame_margins[3] if frame_margins else None,
+        frame_detection_mode=existing_frame.detection_mode if existing_frame else None,
     )
 
 
