@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -7,11 +10,18 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QVBoxLayout,
 )
 
-from g_file_studio.models import BasicIdAction
+from g_file_studio.models import (
+    BasicIdAction,
+    BasicOutputConflictAction,
+    RmuAction,
+)
 from g_file_studio.processors.basic_processor import process_basic
+from g_file_studio.processors.common import discover_g_inputs
+from g_file_studio.services.output_naming import make_task_timestamp
 from g_file_studio.services.paths import default_workspace
 from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.help_content import APP_HELP, FIELD_HELP
@@ -19,6 +29,7 @@ from g_file_studio.ui.pages.base_page import BasePage
 from g_file_studio.ui.path_validation import validate_existing_directory, validate_input_source
 from g_file_studio.ui.widgets import (
     BasicRulesEditor,
+    ColorRuleRow,
     HelpLabel,
     InfoBanner,
     InputSourceSelector,
@@ -41,7 +52,9 @@ class BasicPage(BasePage):
 
         self.layout.addWidget(
             InfoBanner(
-                "输入可以是单个 G 文件，也可以是 G 文件目录。属性替换、元素删除、重复 ID 检查/修复和环网柜组合都在点击“开始基础处理”后统一执行。目录模式下每个文件独立处理。"
+                "输入可以是单个 G 文件，也可以是 G 文件目录。属性替换、元素删除、重复 ID 检查/修复、"
+                "环网柜组合/取消组合，以及线路与母线颜色修改，都在点击“开始基础处理”后统一执行。"
+                "目录模式下每个文件独立处理。"
             )
         )
 
@@ -87,26 +100,36 @@ class BasicPage(BasePage):
         rules_layout.addWidget(self.rules_editor)
         self.layout.addWidget(rules_box)
 
-        id_box = QGroupBox("ID 校验与修复")
-        id_layout = QVBoxLayout(id_box)
-        id_layout.setContentsMargins(16, 18, 16, 14)
-        id_layout.setSpacing(10)
-        id_description = QLabel(
+        self._build_id_options()
+        self._build_rmu_options()
+        self._build_color_options()
+        self._restore_options()
+
+        self.task = TaskPanel()
+        self.task.run_button.setText("开始基础处理")
+        self.task.run_button.clicked.connect(self.run)
+        self.layout.addWidget(self.task, 1)
+
+    def _build_id_options(self) -> None:
+        box = QGroupBox("ID 校验与修复")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(16, 18, 16, 14)
+        layout.setSpacing(10)
+        description = QLabel(
             "请选择本次基础处理的 ID 操作。只检查每个 G 文件自身直属 Layer 图元的重复 ID，"
             "不比较不同文件之间的 ID。检查和修复结果只写入下方当前任务日志，不生成 CSV 报告。"
         )
-        id_description.setWordWrap(True)
-        id_description.setObjectName("mutedText")
-        id_layout.addWidget(id_description)
+        description.setWordWrap(True)
+        description.setObjectName("mutedText")
+        layout.addWidget(description)
 
-        id_options = QHBoxLayout()
-        id_options.setSpacing(18)
+        options = QHBoxLayout()
+        options.setSpacing(12)
         self.id_action_group = QButtonGroup(self)
         self.id_action_group.setExclusive(True)
         self.id_none = QCheckBox("不处理 ID")
         self.id_check = QCheckBox("检查重复 ID")
         self.id_repair = QCheckBox("检查并修复重复 ID")
-        self.id_none.setChecked(True)
         self.id_none.setToolTip("本次基础处理不执行重复 ID 检查。")
         self.id_check.setToolTip("只检查并将结果写入当前日志，不修改 ID。")
         self.id_repair.setToolTip(
@@ -115,39 +138,122 @@ class BasicPage(BasePage):
         for button in (self.id_none, self.id_check, self.id_repair):
             button.setProperty("optionChoice", True)
             self.id_action_group.addButton(button)
-            id_options.addWidget(button)
-        id_options.addStretch(1)
-        id_layout.addLayout(id_options)
-        self.layout.addWidget(id_box)
+            options.addWidget(button)
+        options.addStretch(1)
+        layout.addLayout(options)
+        self.layout.addWidget(box)
 
-        rmu_box = QGroupBox("环网柜图元组合")
-        rmu_layout = QVBoxLayout(rmu_box)
-        rmu_layout.setContentsMargins(16, 18, 16, 14)
-        rmu_layout.setSpacing(10)
-        rmu_description = QLabel(
-            "启用后，程序会将每个直属 <rect> 识别为一个环网柜矩形框，并为每个 rect 重建一个 <Merge>。"
-            "只组合完整位于该矩形框内部的直属图元；任何部分位于框外的连接线、状态图标、标题文字或其他图元都不会进入组合。"
-            "文件中已有 Merge 也会按同一严格规则重建，避免旧组合误包含框外图元。"
+    def _build_rmu_options(self) -> None:
+        box = QGroupBox("环网柜组合处理")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(16, 18, 16, 14)
+        layout.setSpacing(10)
+        description = QLabel(
+            "“组合所有环网柜”会将每个直属 <rect> 作为环网柜外框，只组合完整位于矩形框内部的直属图元；"
+            "任何部分位于框外的连接线、状态图标和文字都不会进入组合。"
+            "“取消所有环网柜组合”只删除成员中含 <rect> 的 <Merge> 头元素，原成员、坐标、ID、引用和顺序保持不变；"
+            "其他业务 Merge 不受影响。"
         )
-        rmu_description.setWordWrap(True)
-        rmu_description.setObjectName("mutedText")
-        rmu_layout.addWidget(rmu_description)
-        self.group_rmu = QCheckBox("组合文件中的所有环网柜")
-        self.group_rmu.setToolTip(
-            "单文件模式处理所选文件；目录模式处理目录第一层的全部 G 文件。每个 rect 对应一个 Merge，框外图元不组合。"
-        )
-        self.group_rmu.setChecked(False)
-        rmu_layout.addWidget(self.group_rmu)
-        self.layout.addWidget(rmu_box)
+        description.setWordWrap(True)
+        description.setObjectName("mutedText")
+        layout.addWidget(description)
 
-        self.task = TaskPanel()
-        self.task.run_button.setText("开始基础处理")
-        self.task.run_button.clicked.connect(self.run)
-        self.layout.addWidget(self.task, 1)
+        options = QHBoxLayout()
+        options.setSpacing(12)
+        self.rmu_action_group = QButtonGroup(self)
+        self.rmu_action_group.setExclusive(True)
+        self.rmu_none = QCheckBox("不处理环网柜组合")
+        self.rmu_group = QCheckBox("组合所有环网柜")
+        self.rmu_ungroup = QCheckBox("取消所有环网柜组合")
+        self.rmu_none.setToolTip("保持文件现有 Merge 结构不变。")
+        self.rmu_group.setToolTip(
+            "单文件模式处理所选文件；目录模式处理第一层全部 G 文件。每个 rect 对应一个 Merge，只组合框内图元。"
+        )
+        self.rmu_ungroup.setToolTip(
+            "删除所有成员中包含 rect 的环网柜 Merge，保留其全部成员；不删除其他业务 Merge。"
+        )
+        for button in (self.rmu_none, self.rmu_group, self.rmu_ungroup):
+            button.setProperty("optionChoice", True)
+            self.rmu_action_group.addButton(button)
+            options.addWidget(button)
+        options.addStretch(1)
+        layout.addLayout(options)
+        self.layout.addWidget(box)
+
+    def _build_color_options(self) -> None:
+        box = QGroupBox("线路与母线颜色")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(16, 18, 16, 14)
+        layout.setSpacing(9)
+        description = QLabel(
+            "按元素标签修改静态线色，只同步修改 lc（R,G,B）和 lcc（#RRGGBB），不修改填充色、线宽、坐标、ID 或引用。"
+            "启用动态颜色的图元仍会修改静态线色，但运行时显示可能被动态规则覆盖。"
+        )
+        description.setWordWrap(True)
+        description.setObjectName("mutedText")
+        layout.addWidget(description)
+
+        self.feedline_color = ColorRuleRow("馈线", "FeedLine")
+        self.connectline_color = ColorRuleRow("连接线", "ConnectLine")
+        self.busdis_color = ColorRuleRow("配网母线", "BusDis")
+        self.bus_color = ColorRuleRow("主网母线", "Bus")
+        for row in (
+            self.feedline_color,
+            self.connectline_color,
+            self.busdis_color,
+            self.bus_color,
+        ):
+            layout.addWidget(row)
+        self.layout.addWidget(box)
+
+    def _restore_options(self) -> None:
+        id_value = self.user_settings.get_value("basic/id_action", BasicIdAction.NONE.value)
+        id_buttons = {
+            BasicIdAction.NONE.value: self.id_none,
+            BasicIdAction.CHECK.value: self.id_check,
+            BasicIdAction.REPAIR.value: self.id_repair,
+        }
+        id_buttons.get(id_value, self.id_none).setChecked(True)
+
+        rmu_value = self.user_settings.get_value("basic/rmu_action", RmuAction.NONE.value)
+        rmu_buttons = {
+            RmuAction.NONE.value: self.rmu_none,
+            RmuAction.GROUP.value: self.rmu_group,
+            RmuAction.UNGROUP.value: self.rmu_ungroup,
+        }
+        rmu_buttons.get(rmu_value, self.rmu_none).setChecked(True)
+
+        color_rows = {
+            "feedline": self.feedline_color,
+            "connectline": self.connectline_color,
+            "busdis": self.busdis_color,
+            "bus": self.bus_color,
+        }
+        for key, row in color_rows.items():
+            row.set_color(self.user_settings.get_value(f"basic/colors/{key}", "#0000FF"))
+            row.set_enabled(
+                self.user_settings.get_bool(f"basic/colors/{key}_enabled", False)
+            )
 
     def save_state(self) -> None:
         self.source.persist_all_text()
         self.output_path.persist_current_text()
+        self._persist_options()
+
+    def _persist_options(self) -> None:
+        self.user_settings.set_value("basic/id_action", self._selected_id_action().value)
+        self.user_settings.set_value("basic/rmu_action", self._selected_rmu_action().value)
+        color_rows = {
+            "feedline": self.feedline_color,
+            "connectline": self.connectline_color,
+            "busdis": self.busdis_color,
+            "bus": self.bus_color,
+        }
+        for key, row in color_rows.items():
+            self.user_settings.set_value(f"basic/colors/{key}", row.color())
+            self.user_settings.set_value(
+                f"basic/colors/{key}_enabled", row.is_enabled()
+            )
 
     def _validate_common_paths(self) -> bool:
         if not validate_input_source(self, self.source, display_name="基础处理输入"):
@@ -165,6 +271,85 @@ class BasicPage(BasePage):
             return BasicIdAction.CHECK
         return BasicIdAction.NONE
 
+    def _selected_rmu_action(self) -> RmuAction:
+        if self.rmu_group.isChecked():
+            return RmuAction.GROUP
+        if self.rmu_ungroup.isChecked():
+            return RmuAction.UNGROUP
+        return RmuAction.NONE
+
+    @staticmethod
+    def _same_path(left: Path, right: Path) -> bool:
+        return os.path.normcase(str(left.resolve(strict=False))) == os.path.normcase(
+            str(right.resolve(strict=False))
+        )
+
+    def _ask_output_conflict_action(
+        self,
+        conflicts: list[tuple[Path, Path]],
+    ) -> BasicOutputConflictAction | None:
+        examples = "\n".join(
+            f"• {source.name} → {target}"
+            for source, target in conflicts[:5]
+        )
+        if len(conflicts) > 5:
+            examples += f"\n• 其余 {len(conflicts) - 5} 个冲突文件……"
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("输出文件冲突")
+        box.setText(
+            f"检测到 {len(conflicts)} 个输出文件与源文件相同，或目标位置已经存在同名文件。"
+        )
+        box.setInformativeText(
+            f"{examples}\n\n请选择本次任务的处理方式。为避免误覆盖，推荐自动添加统一时间戳。"
+        )
+        timestamp_button = box.addButton(
+            "自动添加时间戳（推荐）", QMessageBox.ButtonRole.AcceptRole
+        )
+        overwrite_button = box.addButton(
+            "覆盖原文件/已有文件", QMessageBox.ButtonRole.DestructiveRole
+        )
+        cancel_button = box.addButton("取消任务", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(timestamp_button)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked is timestamp_button:
+            return BasicOutputConflictAction.TIMESTAMP
+        if clicked is overwrite_button:
+            answer = QMessageBox.question(
+                self,
+                "确认覆盖",
+                "覆盖后原文件或已有输出文件将被替换。程序会先写入临时文件并验证，"
+                "验证成功后再原子替换。是否继续？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                return BasicOutputConflictAction.OVERWRITE
+            return None
+        if clicked is cancel_button:
+            return None
+        return None
+
+    def _resolve_output_policy(self) -> tuple[BasicOutputConflictAction, str] | None:
+        files = discover_g_inputs(self.source.path(), self.source.mode())
+        output_dir = self.output_path.path()
+        conflicts: list[tuple[Path, Path]] = []
+        for source in files:
+            target = output_dir / source.name
+            if target.exists() or self._same_path(source, target):
+                conflicts.append((source, target))
+
+        if not conflicts:
+            return BasicOutputConflictAction.OVERWRITE, ""
+        action = self._ask_output_conflict_action(conflicts)
+        if action is None:
+            return None
+        timestamp = make_task_timestamp() if action == BasicOutputConflictAction.TIMESTAMP else ""
+        return action, timestamp
+
     def _settings(self):
         settings = self.rules_editor.build_settings(
             source_path=self.source.path(),
@@ -174,14 +359,38 @@ class BasicPage(BasePage):
         return settings.model_copy(
             update={
                 "id_action": self._selected_id_action(),
-                "group_rmu_elements": self.group_rmu.isChecked(),
+                "rmu_action": self._selected_rmu_action(),
+                "group_rmu_elements": False,
+                "change_feedline_color": self.feedline_color.is_enabled(),
+                "feedline_color": self.feedline_color.color(),
+                "change_connectline_color": self.connectline_color.is_enabled(),
+                "connectline_color": self.connectline_color.color(),
+                "change_busdis_color": self.busdis_color.is_enabled(),
+                "busdis_color": self.busdis_color.color(),
+                "change_bus_color": self.bus_color.is_enabled(),
+                "bus_color": self.bus_color.color(),
             }
         )
 
     def run(self) -> None:
         if not self._validate_common_paths():
             return
-        settings = self._settings()
+        try:
+            policy = self._resolve_output_policy()
+        except Exception as exc:
+            QMessageBox.warning(self, "输出检查失败", str(exc))
+            return
+        if policy is None:
+            return
+
+        action, timestamp = policy
+        self._persist_options()
+        settings = self._settings().model_copy(
+            update={
+                "output_conflict_action": action,
+                "task_timestamp": timestamp,
+            }
+        )
         self.task.start(
             lambda log, progress: process_basic(settings, log, progress),
             settings.output_dir,

@@ -223,8 +223,15 @@ QCheckBox[optionChoice="true"] {
     border: 1px solid #cad6e4;
     border-radius: 8px;
     padding: 8px 12px;
+    min-height: 28px;
     color: #263449;
     font-weight: 600;
+}
+
+QCheckBox[optionChoice="true"]::indicator {
+    width: 20px;
+    height: 20px;
+    border-radius: 5px;
 }
 
 QCheckBox[optionChoice="true"]:hover {
@@ -242,6 +249,17 @@ QCheckBox[optionChoice="true"]:disabled {
     background: #f1f4f8;
     border-color: #d5dde8;
     color: #8a96a8;
+}
+
+
+QLabel#colorValue {
+    color: #334155;
+    font-family: "Consolas", "Cascadia Mono", monospace;
+    font-weight: 650;
+}
+
+QLabel#colorPreview {
+    background: #ffffff;
 }
 
 QPushButton {

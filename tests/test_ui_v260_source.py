@@ -23,8 +23,11 @@ def test_basic_page_uses_selection_mode_and_one_run_button():
     assert 'QCheckBox("不处理 ID")' in source
     assert 'QCheckBox("检查重复 ID")' in source
     assert 'QCheckBox("检查并修复重复 ID")' in source
-    assert 'QGroupBox("环网柜图元组合")' in source
-    assert 'QCheckBox("组合文件中的所有环网柜")' in source
+    assert 'QGroupBox("环网柜组合处理")' in source
+    assert 'QCheckBox("不处理环网柜组合")' in source
+    assert 'QCheckBox("组合所有环网柜")' in source
+    assert 'QCheckBox("取消所有环网柜组合")' in source
+    assert 'QGroupBox("线路与母线颜色")' in source
     assert 'setText("开始基础处理")' in source
     assert "check_duplicate_ids" not in source
     assert "repair_duplicate_ids" not in source

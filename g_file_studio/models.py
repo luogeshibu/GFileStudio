@@ -34,6 +34,21 @@ class BasicIdAction(str, Enum):
     REPAIR = "repair"
 
 
+class RmuAction(str, Enum):
+    """基础处理中的环网柜组合操作。"""
+
+    NONE = "none"
+    GROUP = "group"
+    UNGROUP = "ungroup"
+
+
+class BasicOutputConflictAction(str, Enum):
+    """基础处理输出文件发生冲突时的处理方式。"""
+
+    OVERWRITE = "overwrite"
+    TIMESTAMP = "timestamp"
+
+
 # 向后兼容旧代码和已有配置。
 PipelineInputMode = InputMode
 
@@ -67,7 +82,22 @@ class BasicSettings(BaseModel):
 
     # 这些选项都由统一的“开始基础处理”按钮执行。
     id_action: BasicIdAction = BasicIdAction.NONE
+    rmu_action: RmuAction = RmuAction.NONE
+    # 兼容 v2.7/v2.8 代码；为 True 且 rmu_action=NONE 时按 GROUP 处理。
     group_rmu_elements: bool = False
+
+    # 线路与母线静态线色。颜色使用 #RRGGBB；仅启用的类型会被修改。
+    change_feedline_color: bool = False
+    feedline_color: str = "#0000FF"
+    change_connectline_color: bool = False
+    connectline_color: str = "#0000FF"
+    change_busdis_color: bool = False
+    busdis_color: str = "#0000FF"
+    change_bus_color: bool = False
+    bus_color: str = "#0000FF"
+
+    output_conflict_action: BasicOutputConflictAction = BasicOutputConflictAction.OVERWRITE
+    task_timestamp: str = ""
 
 
 class MergeSettings(BaseModel):

@@ -1,146 +1,173 @@
-# G File Studio v2.8.0 设计说明
+# G File Studio v2.9.0 设计说明
 
-## 1. 基线与范围
+## 1. 版本基线
 
-本版本基于 v2.7.0，保留 ID 选择模式和环网柜组合，仅新增两类修复：
+v2.9.0 基于 v2.8.0。图形边距、馈线图合并、图框添加和重复 ID 逻辑保持不变，本版集中新增：
 
-- 图形边距调整按真实可见几何边界严格计算四边距；
-- ID 操作和图框模板模式使用更醒目的互斥复选框。
+- 环网柜取消组合；
+- 非环网柜 Merge 保护；
+- FeedLine / ConnectLine / BusDis / Bus 颜色修改；
+- 基础处理输出冲突策略；
+- 互斥选择控件统一样式。
 
-## 2. 线状图元边界规则
+## 2. 基础处理数据模型
 
-以下标签视为线状图元：
-
-```text
-ConnectLine、Line、Bus、BusDis、FeedLine、FlowLine、Polyline、LWPolyline
-```
-
-边界优先级：
+`BasicSettings` 新增：
 
 ```text
-1. d 路径中的全部坐标点
-2. x1/y1/x2/y2 端点
-3. 仅使用 x/y 作为退化点
+rmu_action: none | group | ungroup
+change_feedline_color / feedline_color
+change_connectline_color / connectline_color
+change_busdis_color / busdis_color
+change_bus_color / bus_color
+output_conflict_action: overwrite | timestamp
+task_timestamp
 ```
 
-禁止使用 `x + w`、`y + h` 计算线状图元的真实范围，以避免 `ConnectLine w="5000"` 等内部参数扩大画布。
+保留旧字段 `group_rmu_elements` 作为 v2.7/v2.8 兼容入口。当 `rmu_action=none` 且该旧字段为 true 时按 group 执行。
 
-## 3. 严格四边距验证
+## 3. Merge 连续成员模型
 
-主体边界采用整数像素外包矩形：
+G 文件中的组合不是 XML 嵌套，而是：
 
-```text
-left=floor(真实左边界)
-top=floor(真实上边界)
-right=ceil(真实右边界)
-bottom=ceil(真实下边界)
+```xml
+<Merge mergesize="N" />
+<成员1 />
+...
+<成员N />
 ```
 
-平移和画布计算后必须满足：
+扫描时校验：
 
-```text
-主体 left = 用户左边距
-主体 top = 用户上边距
-画布宽度 - 主体 right = 用户右边距
-画布高度 - 主体 bottom = 用户下边距
-```
+- `mergesize` 必须是正整数；
+- 成员范围不得超出 Layer；
+- 不同 Merge 成员区间不得重叠。
 
-验证执行两次：内存处理完成后一次，临时 XML 写出并重新解析后一次。
+成员范围中包含 `<rect>` 的 Merge 视为环网柜 Merge；不包含 `<rect>` 的 Merge 视为其他业务 Merge。
 
-## 4. 互斥复选框
+## 4. 环网柜组合
 
-`QButtonGroup.setExclusive(True)` 管理复选框，使其保留单选行为。带 `optionChoice=true` 属性的复选框使用独立卡片样式，选中时显示蓝色边框、浅蓝背景和清晰勾选图标。
-
-## 5. 基础处理执行顺序
-
-每个输入文件按以下顺序处理：
-
-```text
-属性替换与匹配元素删除
-→ 环网柜组合（若启用）
-→ 重复 ID 检查或修复（按选择）
-→ XML 重解析验证
-→ 输出文件
-```
-
-目录模式中每个文件独立执行。
-
-## 6. ID 选择模式
-
-`BasicSettings.id_action`：
-
-```text
-none   不处理
-check  只检查并写日志
-repair 检查并修复，写日志
-```
-
-不生成 CSV。修复规则沿用 v2.6.0：只修复单个文件直属 Layer 的重复 ID，保留第一处，后续重复项参考同标签元素的主流前缀和固定总位数生成唯一 ID。
-
-## 7. 环网柜识别
-
-检查范围：
+识别范围：
 
 ```text
 G → 直属 Layer → 直属 <rect>
 ```
 
-每个 `<rect>` 都视为一个环网柜边框。只处理标签严格等于 `rect` 的元素，不把 `Rectangle` 或其他矩形标签视为环网柜。
-
-## 8. 严格框内成员规则
-
-对每个直属图元计算完整可见边界，包括：
-
-- `x/y/w/h`；
-- `x1/y1/x2/y2`；
-- `cx/cy/rx/ry`；
-- `mergex/mergey/w/h`；
-- `d` 中坐标；
-- 图元子树的综合边界。
-
-仅当图元的完整边界满足：
+成员判定采用完整边界包含：
 
 ```text
-left   >= rect.left
-right  <= rect.right
-top    >= rect.top
-bottom <= rect.bottom
+member.left   >= rect.left
+member.top    >= rect.top
+member.right  <= rect.right
+member.bottom <= rect.bottom
 ```
 
-才归入该 rect 的 Merge。允许 0.5 坐标单位容差。中心点在框内但有任何部分伸出框外的图元不会组合。
+允许 0.5 坐标单位容差。只看中心点不够，任何部分伸出框外的图元都不组合。
 
-## 9. Merge 重建
+处理旧 Merge：
 
-为保证旧文件也满足严格规则，处理时会：
+- 环网柜 Merge 头先移除，再按严格框内规则重建；
+- 对应同一个 rect 的合法旧 Merge 尽量复用 ID 和样式；
+- 不含 rect 的其他业务 Merge 及其成员完整保留，并从环网柜成员候选中排除。
 
-1. 解析旧 Merge 的 `mergesize` 和成员区间，用于复用对应 rect 的 Merge ID 与样式；
-2. 从 Layer 中移除全部旧 Merge 标记；
-3. 按 rect 完整包含关系重新计算成员；
-4. 在该组第一个成员前插入 Merge；
-5. 将组内成员整理为连续区间，保持成员原相对顺序；
-6. 设置 `mergex/mergey/w/h` 为 rect 的精确边界；
-7. 设置 `mergesize` 为实际成员数量；
-8. 框外图元保持非组合状态和原相对顺序。
+新 Merge 几何复现用户提供的手工组合文件：
 
-若一个图元完整位于两个同尺寸重叠 rect 内，程序停止该文件处理，不猜测归属。
+```text
+mergex = rect.left - 1
+mergey = rect.top - 1
+w      = rect.width + 1
+h      = rect.height + 1
+```
 
-## 10. 验证
+右、下边界与 rect 保持一致。
 
-输出前验证：
+## 5. 新 Merge ID
 
-- 每个 rect 恰好属于一个 Merge；
-- 每个 Merge 恰好包含一个 rect；
-- `mergesize` 与实际连续成员数一致；
-- Merge 区间不越界、不重叠；
-- 每个成员完整位于所属 rect 框内；
-- XML 可重新解析。
+优先级：
+
+1. 当前文件已有 Merge 的主流 ID 格式；
+2. 当前文件中 20 前缀对象的固定总位数；
+3. 从各同类元素主流格式提取文件最大顺序号；
+4. 通用唯一 ID 兜底。
+
+用户样本中图元顺序号最大为 27，因此新 Merge 为 `20000028`。
+
+## 6. 取消环网柜组合
+
+取消操作只删除合法 Merge 块中成员包含 `<rect>` 的 Merge 头：
+
+```text
+删除：<Merge ... />
+保留：其后的全部成员
+```
+
+不修改：
+
+- 成员排列顺序；
+- ID；
+- 坐标和 d；
+- link / node_area / p_FatherObjId；
+- 颜色、字体、线宽和业务属性。
+
+不含 `<rect>` 的其他业务 Merge 保留。无法可靠解析 `mergesize` 的异常 Merge 不猜测删除，只记录日志告警。
+
+## 7. 颜色处理
+
+严格处理直属 Layer 的：
+
+```text
+FeedLine
+ConnectLine
+BusDis
+Bus
+```
+
+每个启用规则只修改：
+
+```text
+lcc = #RRGGBB
+lc  = R,G,B
+```
+
+颜色输入经过 `#RRGGBB` 校验和标准化。不修改 `fc`、`fcc`、`lw`、`ls`、坐标、ID 或引用。
+
+## 8. 输出冲突
+
+UI 在启动任务前枚举本次全部输入文件，并比较目标路径。以下情况视为冲突：
+
+- 输入文件路径与输出文件路径相同；
+- 输出目录已经存在同名目标文件。
+
+处理策略：
+
+- `timestamp`：本批全部输出统一添加任务时间戳；若时间戳名称仍存在，追加 `-2`、`-3`。
+- `overwrite`：写 `.tmp` 文件，重新解析成功后使用 `os.replace` 原子替换。
+- 取消：不启动任务。
+
+## 9. UI 选择样式
+
+互斥选择使用 `QCheckBox + QButtonGroup(exclusive=True)`。所有选项设置 `optionChoice=true`，共享：
+
+- 20px 指示器；
+- 统一卡片内边距和最小高度；
+- 选中蓝色边框、浅蓝背景；
+- 统一 hover、disabled 状态。
+
+## 10. 处理顺序
+
+```text
+通用属性规则
+→ 环网柜组合/取消组合
+→ 线路与母线颜色
+→ 重复 ID 检查/修复
+→ XML 临时写出与重解析
+→ 安全输出
+```
 
 ## 11. 回归样本
 
-`tests/data/combine-test-20260730.sln.pic.g`：
-
-- 2 个 rect；
-- 原有 1 个 Merge；
-- 严格重建后 2 个 Merge；
-- 每组 23 个成员；
-- 左右伸出连接线、柜外 Status 和上方 `35092` Text 均在 Merge 外。
+- `tests/data/no-combine.sln.pic.g`：组合后生成 `Merge 20000028`，`mergesize=23`。
+- `tests/data/combine.sln.pic.g`：取消组合后所有 28 个原成员保留。
+- 用户提供的 `cancel-combine.sln.pic.g`：与取消组合结果的 Layer 标签、属性和顺序一致。
+- 颜色引擎测试验证只修改 `lc/lcc`。
+- 时间戳冲突测试验证源文件不被覆盖。

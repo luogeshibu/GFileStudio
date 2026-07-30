@@ -1,4 +1,5 @@
 from g_file_studio.ui.widgets.basic_rules_editor import BasicRulesEditor
+from g_file_studio.ui.widgets.color_rule_row import ColorRuleRow
 from g_file_studio.ui.widgets.file_order_editor import FileOrderEditor
 from g_file_studio.ui.widgets.help_widgets import HelpButton, HelpLabel, InfoBanner, PageHeader
 from g_file_studio.ui.widgets.input_source_selector import InputSourceSelector
@@ -12,6 +13,7 @@ from g_file_studio.ui.widgets.wheel_safe_combo_box import WheelSafeComboBox
 
 __all__ = [
     "BasicRulesEditor",
+    "ColorRuleRow",
     "FileOrderEditor",
     "HelpButton",
     "HelpLabel",

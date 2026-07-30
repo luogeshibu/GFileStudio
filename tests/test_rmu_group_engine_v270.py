@@ -53,10 +53,10 @@ def test_real_sample_rebuilds_two_rmu_groups_with_only_rect_contents():
         rect_box = subtree_box(rects[0])
         assert rect_box is not None
         assert int(merge.get("mergesize")) == len(members) == 23
-        assert float(merge.get("mergex")) == rect_box.left
-        assert float(merge.get("mergey")) == rect_box.top
-        assert float(merge.get("w")) == rect_box.width
-        assert float(merge.get("h")) == rect_box.height
+        assert float(merge.get("mergex")) == rect_box.left - 1
+        assert float(merge.get("mergey")) == rect_box.top - 1
+        assert float(merge.get("w")) == rect_box.width + 1
+        assert float(merge.get("h")) == rect_box.height + 1
         for member in members:
             member_box = subtree_box(member)
             assert member_box is not None

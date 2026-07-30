@@ -75,6 +75,10 @@ class UserSettingsService:
         with self._lock:
             return self._config.get(section, option, fallback=default)
 
+    def get_bool(self, key: str, default: bool = False) -> bool:
+        value = self.get_value(key, "true" if default else "false").strip().lower()
+        return value in {"1", "true", "yes", "on"}
+
     def set_value(self, key: str, value: object) -> None:
         section, option = self._split_key(key)
         with self._lock:
