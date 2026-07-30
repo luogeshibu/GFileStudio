@@ -108,11 +108,47 @@ def test_frame_processor_accepts_single_file_input(tmp_path: Path):
             output_dir=output,
             template_file=template,
             template_mode=TemplateMode.BUILTIN,
+            task_timestamp="20260729_201509",
         ),
         log=lambda _line: None,
     )
 
     assert result.success
     assert result.statistics["input_mode"] == "single_file"
-    assert (output / source.name).is_file()
-    ET.parse(output / source.name)
+    target = output / "single-WITH-FRAME-20260729_201509.sln.pic.g"
+    assert target.is_file()
+    ET.parse(target)
+
+
+def test_builtin_template_right_border_is_not_shifted_with_info_block():
+    """回归：目标右边框 X=1511 时不能被签字栏逻辑二次移动。"""
+    template = (
+        Path(__file__).parents[1]
+        / "resources"
+        / "templates"
+        / "SLD-Drawing-Frame-Template.sln.pic.g"
+    )
+    root = ET.parse(template).getroot()
+    config = frame_engine.FileFrameConfig(
+        title="JED-CTL-AJWD-14",
+        draw=frame_engine.PersonRow("Shibu", "2026-07-29"),
+        approve=frame_engine.PersonRow("Shibu", "2026-07-29"),
+        issue=frame_engine.PersonRow("Shibu", "2026-07-29"),
+    )
+    frame_engine.FRAME_MARGIN_LEFT = 50
+    frame_engine.FRAME_MARGIN_TOP = 50
+    frame_engine.FRAME_MARGIN_RIGHT = 50
+    frame_engine.FRAME_MARGIN_BOTTOM = 50
+
+    elements = frame_engine.prepare_template_elements(
+        root,
+        target_width=1561,
+        target_height=2863,
+        config=config,
+        edit_content=True,
+    )
+    outer, bounds = frame_engine.identify_outer_frame_lines(elements, 1561, 2863)
+
+    assert bounds == frame_engine.Box(50, 50, 1511, 2813)
+    assert frame_engine.line_endpoints(outer["right"]) == (1511, 50, 1511, 2813)
+    assert outer["right"].get(frame_engine.GFS_FRAME_ROLE_ATTRIBUTE) == "outer_right"

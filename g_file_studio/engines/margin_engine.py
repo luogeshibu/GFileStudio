@@ -86,10 +86,27 @@ def _combine_boxes(boxes: Iterable[Box]) -> Box | None:
     )
 
 
+LINE_LIKE_TAGS = {
+    "connectline",
+    "line",
+    "bus",
+    "busdis",
+    "feedline",
+    "flowline",
+    "polyline",
+    "lwpolyline",
+}
+
+
 def _node_box(node: ET.Element) -> Box | None:
-    """计算单个 XML 节点的可见边界，兼顾尺寸和圆角半径。"""
-    xs: list[float] = []
-    ys: list[float] = []
+    """计算单个 XML 节点的真实可见边界。
+
+    线状图元的 ``w``/``h`` 在部分 G 文件中是绘图工具内部参数，并不代表
+    实际可见尺寸。例如 ConnectLine 可能带有 ``w="5000"``，但真正的线段
+    只有几十像素。此类图元必须优先使用 ``d`` 或端点坐标计算边界，不能
+    使用 ``x + w`` / ``y + h``。
+    """
+    tag = _local_name(node.tag).lower()
 
     numeric: dict[str, float] = {}
     for name in (
@@ -104,6 +121,32 @@ def _node_box(node: ET.Element) -> Box | None:
                 raise MarginAdjustmentError(
                     f"元素 <{_local_name(node.tag)}> 的 {name} 不是有效数字：{raw!r}"
                 ) from exc
+
+    # 线状图元只采用真实路径点或端点。禁止让 ConnectLine.w=5000 等内部参数
+    # 扩大画布边界。
+    if tag in LINE_LIKE_TAGS:
+        d_points = parse_d_points(node.get("d", ""))
+        if d_points:
+            xs = [x for x, _ in d_points]
+            ys = [y for _, y in d_points]
+            return Box(min(xs), min(ys), max(xs), max(ys))
+
+        if all(name in numeric for name in ("x1", "y1", "x2", "y2")):
+            return Box(
+                min(numeric["x1"], numeric["x2"]),
+                min(numeric["y1"], numeric["y2"]),
+                max(numeric["x1"], numeric["x2"]),
+                max(numeric["y1"], numeric["y2"]),
+            )
+
+        # 极少数退化线状图元没有 d 和完整端点，此时只把 x/y 当成一个可见点，
+        # 仍然不能使用 w/h。
+        if "x" in numeric and "y" in numeric:
+            return Box(numeric["x"], numeric["y"], numeric["x"], numeric["y"])
+        return None
+
+    xs: list[float] = []
+    ys: list[float] = []
 
     for name in ("x", "x1", "x2", "cx", "mergex"):
         if name in numeric:
@@ -510,6 +553,78 @@ def _output_name(input_name: str, suffix: str) -> str:
     return input_name + suffix
 
 
+
+def _pixel_envelope(box: Box) -> Box:
+    """返回覆盖全部可见图形的整数像素边界。"""
+    return Box(
+        left=float(math.floor(box.left + 1e-9)),
+        top=float(math.floor(box.top + 1e-9)),
+        right=float(math.ceil(box.right - 1e-9)),
+        bottom=float(math.ceil(box.bottom - 1e-9)),
+    )
+
+
+def _verify_exact_requested_margins(
+    body_box: Box,
+    canvas_width: int,
+    canvas_height: int,
+    requested: tuple[int, int, int, int],
+    *,
+    source_name: str,
+) -> tuple[float, float, float, float]:
+    """按整数像素外包边界严格验证四边距。"""
+    pixel_box = _pixel_envelope(body_box)
+    actual = (
+        pixel_box.left,
+        pixel_box.top,
+        float(canvas_width) - pixel_box.right,
+        float(canvas_height) - pixel_box.bottom,
+    )
+    labels = ("左", "上", "右", "下")
+    for value, expected, label in zip(actual, requested, labels):
+        if abs(value - float(expected)) > 1e-6:
+            raise MarginAdjustmentError(
+                f"{source_name} 的最终主体{label}边距验证失败："
+                f"期望 {expected}，实际 {value:g}。"
+            )
+    return actual
+
+
+def _reparse_and_verify_output(
+    path: Path,
+    *,
+    requested: tuple[int, int, int, int],
+    excluded_element_ids: frozenset[str] = frozenset(),
+) -> tuple[float, float, float, float]:
+    """重新解析临时输出，防止写出后坐标或画布尺寸发生偏差。"""
+    tree = ET.parse(path)
+    root = tree.getroot()
+    layer = require_single_direct_layer(root, path.name)
+    width, height = read_canvas_size(root, path.name)
+
+    detected_frame = detect_existing_frame(layer, width, height)
+    frame_components = (
+        {id(element) for element in detected_frame.components}
+        if detected_frame is not None
+        else set()
+    )
+    body_elements = [
+        element
+        for element in list(layer)
+        if id(element) not in frame_components
+        and element.get("id", "") not in excluded_element_ids
+    ]
+    body_box = elements_box(body_elements)
+    if body_box is None:
+        raise MarginAdjustmentError(f"{path.name} 写出后无法重新识别主体图形。")
+    return _verify_exact_requested_margins(
+        body_box,
+        width,
+        height,
+        requested,
+        source_name=path.name,
+    )
+
 def adjust_one_file(
     input_path: Path,
     output_path: Path,
@@ -552,6 +667,15 @@ def adjust_one_file(
         )
 
     frame_ids = {id(element) for element in existing_frame.components} if existing_frame else set()
+    frame_xml_ids = (
+        frozenset(
+            element.get("id", "")
+            for element in existing_frame.components
+            if element.get("id", "")
+        )
+        if existing_frame is not None
+        else frozenset()
+    )
     body_elements = [element for element in direct_elements if id(element) not in frame_ids]
     body_before = elements_box(body_elements)
     if body_before is None:
@@ -563,8 +687,9 @@ def adjust_one_file(
             f"{input_path.name} 中没有找到可用于边距调整的主体图形。"
         )
 
-    dx = float(left_margin) - body_before.left
-    dy = float(top_margin) - body_before.top
+    body_before_pixels = _pixel_envelope(body_before)
+    dx = float(left_margin) - body_before_pixels.left
+    dy = float(top_margin) - body_before_pixels.top
     for element in body_elements:
         shift_element(element, dx, dy)
 
@@ -572,8 +697,9 @@ def adjust_one_file(
     if body_after is None:
         raise MarginAdjustmentError("主体图形平移后无法重新计算边界。")
 
-    new_width = int(math.ceil(body_after.right + float(right_margin)))
-    new_height = int(math.ceil(body_after.bottom + float(bottom_margin)))
+    body_after_pixels = _pixel_envelope(body_after)
+    new_width = int(body_after_pixels.right + float(right_margin))
+    new_height = int(body_after_pixels.bottom + float(bottom_margin))
     if new_width <= 0 or new_height <= 0:
         raise MarginAdjustmentError(f"计算得到的画布尺寸无效：{new_width} × {new_height}")
 
@@ -613,18 +739,14 @@ def adjust_one_file(
     final_body = elements_box(body_elements)
     if final_body is None:
         raise MarginAdjustmentError("无法验证最终主体图形边界。")
-    actual_margins = (
-        final_body.left,
-        final_body.top,
-        new_width - final_body.right,
-        new_height - final_body.bottom,
-    )
     requested = (left_margin, top_margin, right_margin, bottom_margin)
-    for actual, expected, name in zip(actual_margins, requested, ("左", "上", "右", "下")):
-        if actual + 1e-6 < expected or actual - expected >= 1.000001:
-            raise MarginAdjustmentError(
-                f"最终主体{name}边距验证失败：期望 {expected}，实际 {actual:.6f}。"
-            )
+    actual_margins = _verify_exact_requested_margins(
+        final_body,
+        new_width,
+        new_height,
+        requested,
+        source_name=input_path.name,
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = output_path.with_name(output_path.name + ".tmp")
@@ -632,7 +754,11 @@ def adjust_one_file(
         if hasattr(ET, "indent"):
             ET.indent(tree, space="    ")
         tree.write(tmp_path, encoding="utf-8", xml_declaration=True)
-        ET.parse(tmp_path)
+        _reparse_and_verify_output(
+            tmp_path,
+            requested=requested,
+            excluded_element_ids=frame_xml_ids,
+        )
         os.replace(tmp_path, output_path)
     finally:
         if tmp_path.exists():

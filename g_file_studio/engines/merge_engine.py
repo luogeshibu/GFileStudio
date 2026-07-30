@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import math
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -158,6 +159,38 @@ class IdUpdateResult:
     source_internal_duplicates: int = 0
     # 源文件中只出现在引用里、没有同名 XML 图元的拓扑节点 ID 数量。
     virtual_reference_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class ElementIdPattern:
+    """从当前单个 G 文件的同类元素中推断出的 ID 格式。"""
+
+    tag: str
+    prefix: str
+    total_length: int
+
+    @property
+    def sequence_width(self) -> int:
+        return self.total_length - len(self.prefix)
+
+    @property
+    def max_sequence(self) -> int:
+        return 10 ** self.sequence_width - 1
+
+    def matches(self, value: str) -> bool:
+        return (
+            value.isdigit()
+            and len(value) == self.total_length
+            and value.startswith(self.prefix)
+        )
+
+    def build(self, sequence: int) -> str:
+        if sequence < 0 or sequence > self.max_sequence:
+            raise ValueError(
+                f"<{self.tag}> 的 {self.total_length} 位 ID 空间已用尽："
+                f"前缀 {self.prefix!r}，最大顺序号 {self.max_sequence}。"
+            )
+        return f"{self.prefix}{sequence:0{self.sequence_width}d}"
 
 
 def local_name(tag: object) -> str:
@@ -646,7 +679,7 @@ def validate_no_outer_frame(root: ET.Element, layer: ET.Element, filename: str) 
     if contains_outer_frame(root, layer, filename):
         raise ValueError(
             f"文件 {filename} 检测到接近画布四周的外框架图。\n"
-            "参与 G 文件合并的输入文件不能包含外框、左上标题块或右下签字栏；"
+            "参与馈线图合并的输入文件不能包含无法安全处理的外框、左上标题块或右下签字栏；"
             "请使用未添加图框的原始馈线图。"
         )
 
@@ -1098,14 +1131,144 @@ def collect_identifier_tokens(
     )
 
 
-def generate_unique_id(old_id: str, blocked_ids: set[str]) -> str:
+def _longest_zero_run_start(value: str) -> int | None:
+    """返回数字串中最长连续 0 段的起点；并列时取最靠左的一段。"""
+    best_start: int | None = None
+    best_length = 0
+    index = 1  # 第 1 位必须属于类型编号，避免得到空前缀。
+    while index < len(value):
+        if value[index] != "0":
+            index += 1
+            continue
+        end = index
+        while end < len(value) and value[end] == "0":
+            end += 1
+        run_length = end - index
+        if run_length >= 2 and run_length > best_length:
+            best_start = index
+            best_length = run_length
+        index = end
+    return best_start
+
+
+def infer_element_id_patterns(
+    children_or_layer: Iterable[ET.Element] | ET.Element,
+) -> dict[str, ElementIdPattern]:
+    """
+    仅依据当前单个 G 文件中的同类 XML 元素推断 ID 规则。
+
+    规则模型为：ID = 类型前缀 + 固定宽度顺序号。先取同类元素中使用
+    最多的总位数，再从多数样本的补零区间推断前缀。该逻辑不依赖外部
+    JSON，也不会主动改写唯一且有效的旧 ID；仅在产生新 ID 时使用。
+    """
+    grouped: dict[str, list[str]] = {}
+    # G 文件的业务图元 ID 位于直属 Layer 子元素上。推断同类格式时只统计
+    # 这些直属图元，避免内部辅助节点干扰前缀和总位数判断。
+    if isinstance(children_or_layer, ET.Element):
+        pattern_elements = list(children_or_layer)
+    else:
+        pattern_elements = list(children_or_layer)
+    for element in pattern_elements:
+        value = (element.get("id") or "").strip()
+        if not value.isdigit():
+            continue
+        grouped.setdefault(local_name(element.tag), []).append(value)
+
+    patterns: dict[str, ElementIdPattern] = {}
+    for tag, raw_values in grouped.items():
+        values = unique_in_order(raw_values)
+        if len(values) < 2:
+            continue
+
+        length_counter = Counter(len(value) for value in values)
+        dominant_length = max(
+            length_counter,
+            key=lambda length: (length_counter[length], length),
+        )
+        dominant = [value for value in values if len(value) == dominant_length]
+        if len(dominant) < 2:
+            continue
+
+        # 多数工业图元 ID 形如“类型前缀 + 若干补零 + 顺序号”。取每个
+        # 样本中最长补零段的起点，再以出现最多的位置作为前缀边界。
+        start_counter = Counter(
+            start
+            for value in dominant
+            if (start := _longest_zero_run_start(value)) is not None
+        )
+
+        prefix: str | None = None
+        if start_counter:
+            prefix_length, occurrence = max(
+                start_counter.items(),
+                key=lambda item: (item[1], -item[0]),
+            )
+            prefix_counter = Counter(value[:prefix_length] for value in dominant)
+            candidate_prefix, prefix_occurrence = prefix_counter.most_common(1)[0]
+            required = max(2, math.ceil(len(dominant) * 0.5))
+            if occurrence >= required and prefix_occurrence >= required:
+                prefix = candidate_prefix
+
+        if prefix is None:
+            # 降级：取同长度样本的公共前缀，并把末尾的补零剥离。
+            common = dominant[0]
+            for value in dominant[1:]:
+                limit = min(len(common), len(value))
+                index = 0
+                while index < limit and common[index] == value[index]:
+                    index += 1
+                common = common[:index]
+                if not common:
+                    break
+            common = common.rstrip("0")
+            if common and len(common) < dominant_length:
+                prefix = common
+
+        if not prefix or len(prefix) >= dominant_length:
+            continue
+
+        patterns[tag] = ElementIdPattern(
+            tag=tag,
+            prefix=prefix,
+            total_length=dominant_length,
+        )
+
+    return patterns
+
+
+def generate_unique_id(
+    old_id: str,
+    blocked_ids: set[str],
+    pattern: ElementIdPattern | None = None,
+) -> str:
     """
     生成唯一 ID。
 
-    数字 ID 优先在原 ID 后递增，可尽量保留原有类型前缀和长度；
+    若当前文件能够从同类元素推断规则，则新 ID 必须保持该类型的前缀
+    和固定总位数；否则沿用 v2.4.0 的原 ID 向上递增逻辑。
     非数字 ID 使用 _1、_2……后缀。
     """
     if old_id.isdigit():
+        if pattern is not None:
+            if pattern.matches(old_id):
+                sequence = int(old_id[len(pattern.prefix) :]) + 1
+            else:
+                # 短 ID 通常只剩顺序号，例如 Connector 的 130。优先
+                # 保留其数值含义，按同类前缀恢复为固定总位数 ID。
+                sequence_text = old_id[-pattern.sequence_width :]
+                sequence = int(sequence_text)
+
+            while sequence <= pattern.max_sequence:
+                candidate = pattern.build(sequence)
+                if candidate not in blocked_ids:
+                    return candidate
+                sequence += 1
+
+            raise ValueError(
+                f"无法为 <{pattern.tag}> 分配新的 {pattern.total_length} 位唯一 ID："
+                f"前缀 {pattern.prefix!r} 的编号空间已用尽。"
+            )
+
         width = len(old_id)
         candidate_number = int(old_id) + 1
         while True:
@@ -1205,7 +1368,9 @@ def remap_source_identifier_namespace(
       - 原本确实指向源文件内部 XML 图元的目标 ID（映射后），用于最终校验。
     """
     result = IdUpdateResult()
-    elements = list(iter_graph_elements(children))
+    direct_children = list(children)
+    elements = list(iter_graph_elements(direct_children))
+    patterns = infer_element_id_patterns(direct_children)
 
     element_ids = [
         element.get("id", "").strip()
@@ -1221,12 +1386,21 @@ def remap_source_identifier_namespace(
     # 同一个 token 无论出现在元素 id 还是引用中，都使用同一份映射。
     source_tokens = unique_in_order([*element_ids, *reference_ids])
     token_map: dict[str, str] = {}
+    token_patterns: dict[str, ElementIdPattern] = {}
+    for element in elements:
+        element_id = (element.get("id") or "").strip()
+        if not element_id or element_id in token_patterns:
+            continue
+        pattern = patterns.get(local_name(element.tag))
+        if pattern is not None:
+            token_patterns[element_id] = pattern
 
     for old_token in source_tokens:
         if old_token in used_tokens:
             new_token = generate_unique_id(
                 old_token,
                 blocked_tokens | used_tokens,
+                token_patterns.get(old_token),
             )
         else:
             new_token = old_token
@@ -1255,6 +1429,7 @@ def remap_source_identifier_namespace(
             new_id = generate_unique_id(
                 old_id,
                 blocked_tokens | used_tokens,
+                patterns.get(local_name(element.tag)),
             )
             element.set("id", new_id)
             used_tokens.add(new_id)
@@ -1290,6 +1465,7 @@ def normalize_base_layer_duplicate_ids(
     """
     result = IdUpdateResult()
     seen: set[str] = set()
+    patterns = infer_element_id_patterns(layer)
 
     for element in iter_graph_elements(layer):
         old_id_raw = element.get("id")
@@ -1302,7 +1478,11 @@ def normalize_base_layer_duplicate_ids(
             continue
 
         result.source_internal_duplicates += 1
-        new_id = generate_unique_id(old_id, blocked_ids | seen)
+        new_id = generate_unique_id(
+            old_id,
+            blocked_ids | seen,
+            patterns.get(local_name(element.tag)),
+        )
         element.set("id", new_id)
         blocked_ids.add(new_id)
         seen.add(new_id)

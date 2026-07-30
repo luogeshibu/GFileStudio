@@ -136,7 +136,9 @@ def test_pipeline_preserves_marked_builtin_frame_and_skips_duplicate_frame(tmp_p
     settings = _pipeline_settings(source, output, work, tmp_path / "not-needed.g")
 
     result = run_pipeline(settings, log=lambda _line: None)
-    target = output / "framed-FINAL.sln.pic.g"
+    targets = list(output.glob("framed-FINAL-*.sln.pic.g"))
+    assert len(targets) == 1
+    target = targets[0]
     assert target.is_file()
     root = ET.parse(target).getroot()
     layer = next(child for child in root if child.tag == "Layer")

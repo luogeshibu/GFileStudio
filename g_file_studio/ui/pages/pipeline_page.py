@@ -85,9 +85,9 @@ class PipelinePage(BasePage):
         stage_layout.setContentsMargins(14, 18, 14, 12)
         stage_layout.setSpacing(9)
         self.run_basic = QCheckBox("1. 基础处理：执行通用属性替换和元素删除规则")
-        self.run_merge = QCheckBox("2. G 文件合并：目录模式下按用户定义顺序合并")
+        self.run_merge = QCheckBox("2. 馈线图合并：目录模式下按用户定义顺序合并")
         self.run_margin = QCheckBox("3. 图形边距调整：主体默认距离画布四边各 500")
-        self.run_frame = QCheckBox("4. 添加图框：使用内置模板或客户自定义模板")
+        self.run_frame = QCheckBox("4. 图框添加：使用内置模板或客户自定义模板")
         for check in (self.run_basic, self.run_merge, self.run_margin, self.run_frame):
             check.setChecked(True)
             stage_layout.addWidget(check)
@@ -101,7 +101,7 @@ class PipelinePage(BasePage):
         basic_layout.addWidget(self.basic_rules)
         self.layout.addWidget(self.basic_box)
 
-        self.merge_box = QGroupBox("G 文件合并参数与顺序")
+        self.merge_box = QGroupBox("馈线图合并参数与顺序")
         merge_layout = QVBoxLayout(self.merge_box)
         merge_layout.setContentsMargins(12, 18, 12, 12)
         merge_layout.setSpacing(14)
@@ -109,7 +109,7 @@ class PipelinePage(BasePage):
         merge_form.setHorizontalSpacing(16)
         merge_form.setVerticalSpacing(10)
         self.merge_output_name = QLineEdit()
-        self.merge_output_name.setPlaceholderText("留空时生成 MERGED.sln.pic.g")
+        self.merge_output_name.setPlaceholderText("一键流程留空时使用中间名 MERGED.sln.pic.g")
         self.gap = self.spin(300)
         self.left_margin = self.spin(300)
         self.top_margin = self.spin(300)
@@ -181,13 +181,13 @@ class PipelinePage(BasePage):
         self.frame_top = self.spin(50)
         self.frame_right = self.spin(50)
         self.frame_bottom = self.spin(50)
-        self.output_suffix = QLineEdit()
-        self.output_suffix.setPlaceholderText("留空保持原名")
+        self.output_suffix = QLineEdit("-WITH-FRAME")
+        self.output_suffix.setPlaceholderText("默认 -WITH-FRAME；最终输出自动追加时间戳")
         frame_form.addRow(HelpLabel("图框左边距", FIELD_HELP["frame_margin"]), self.frame_left)
         frame_form.addRow(HelpLabel("图框上边距", FIELD_HELP["frame_margin"]), self.frame_top)
         frame_form.addRow(HelpLabel("图框右边距", FIELD_HELP["frame_margin"]), self.frame_right)
         frame_form.addRow(HelpLabel("图框下边距", FIELD_HELP["frame_margin"]), self.frame_bottom)
-        frame_form.addRow(HelpLabel("最终输出后缀", FIELD_HELP["output_suffix"]), self.output_suffix)
+        frame_form.addRow(HelpLabel("最终输出标记", FIELD_HELP["output_suffix"]), self.output_suffix)
         frame_layout.addLayout(frame_form)
         self.layout.addWidget(self.frame_box)
 
@@ -292,7 +292,8 @@ class PipelinePage(BasePage):
             right_margin=self.content_right.value(),
             bottom_margin=self.content_bottom.value(),
             preserve_existing_frame=True,
-            output_suffix="",
+            output_suffix="-ADJUSTED",
+            append_timestamp=True,
         )
         frame = FrameSettings(
             source_path=task_work / "03_adjusted",
@@ -309,7 +310,8 @@ class PipelinePage(BasePage):
             frame_top=self.frame_top.value(),
             frame_right=self.frame_right.value(),
             frame_bottom=self.frame_bottom.value(),
-            output_suffix=self.output_suffix.text().strip(),
+            output_suffix=self.output_suffix.text().strip() or "-WITH-FRAME",
+            append_timestamp=True,
         )
         settings = PipelineSettings(
             source_path=source,

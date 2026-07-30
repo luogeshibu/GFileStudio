@@ -173,3 +173,61 @@ def test_unknown_or_customer_frame_requires_manual_removal(tmp_path: Path) -> No
     assert "不是 G File Studio 内置图框" in message
     assert "请先在图形编辑器中删除现有图框" in message
     assert not output.exists()
+
+
+def test_connectline_internal_width_does_not_expand_canvas(tmp_path: Path) -> None:
+    source = tmp_path / "connectline-width.sln.pic.g"
+    output = tmp_path / "connectline-width-adjusted.sln.pic.g"
+    source.write_text(
+        '<G w="2445" width="2445" h="2668" height="2668">'
+        '<Layer>'
+        '<Text id="1" x="300" y="300" w="100" h="50" ts="BODY" />'
+        '<ConnectLine id="2" x="2084" y="874" w="5000" h="25" '
+        'd="2087,877 2087,896" />'
+        '</Layer>'
+        '</G>',
+        encoding="utf-8",
+    )
+
+    result = adjust_one_file(
+        source,
+        output,
+        left_margin=500,
+        top_margin=500,
+        right_margin=500,
+        bottom_margin=500,
+    )
+
+    assert result.body_left_margin == 500
+    assert result.body_top_margin == 500
+    assert result.body_right_margin == 500
+    assert result.body_bottom_margin == 500
+    assert result.new_canvas_width < 4000
+
+    root = ET.parse(output).getroot()
+    assert root.get("w") == root.get("width") == str(result.new_canvas_width)
+    assert root.get("h") == root.get("height") == str(result.new_canvas_height)
+
+
+def test_real_style_line_geometry_uses_d_points_for_exact_margins(tmp_path: Path) -> None:
+    source = tmp_path / "real-style.sln.pic.g"
+    output = tmp_path / "real-style-adjusted.sln.pic.g"
+    source.write_text(
+        '<G w="2445" width="2445" h="2668" height="2668">'
+        '<Layer>'
+        '<Text id="1" x="300" y="300" w="309" h="50" ts="LEFT" />'
+        '<Text id="2" x="2056" y="2500" w="309" h="111" ts="RIGHT" />'
+        '<ConnectLine id="3" x="2084" y="874" w="5000" h="25" '
+        'd="2087,877 2087,896" />'
+        '</Layer>'
+        '</G>',
+        encoding="utf-8",
+    )
+
+    result = adjust_one_file(source, output)
+    assert (
+        result.body_left_margin,
+        result.body_top_margin,
+        result.body_right_margin,
+        result.body_bottom_margin,
+    ) == (500, 500, 500, 500)

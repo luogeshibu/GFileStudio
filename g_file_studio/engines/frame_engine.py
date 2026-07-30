@@ -40,6 +40,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Set, Tuple
 
+from g_file_studio.engines.id_engine import (
+    generate_unique_id as generate_pattern_unique_id,
+    infer_element_id_patterns as infer_direct_id_patterns,
+    local_name as id_local_name,
+)
+
 
 # =============================================================================
 # 用户可修改配置
@@ -103,6 +109,7 @@ ID_TOKEN_PATTERN = re.compile(r"(?<!\d)(\d+)(?!\d)")
 GFS_FRAME_TYPE_ATTRIBUTE = "gfs_frame_type"
 GFS_FRAME_TEMPLATE_ATTRIBUTE = "gfs_frame_template"
 GFS_FRAME_COMPONENT_ATTRIBUTE = "gfs_frame_component"
+GFS_FRAME_ROLE_ATTRIBUTE = "gfs_frame_role"
 GFS_FRAME_TYPE_BUILTIN = "builtin"
 GFS_FRAME_TYPE_CUSTOM = "custom"
 DEFAULT_BUILTIN_TEMPLATE_ID = "default_sld_frame"
@@ -610,13 +617,19 @@ def identify_title_text(elements: Sequence[ET.Element], title_rect: ET.Element) 
 def identify_info_block_elements(
     elements: Sequence[ET.Element],
     info_rect: ET.Element,
+    *,
+    excluded_elements: Sequence[ET.Element] = (),
 ) -> List[ET.Element]:
+    """识别右下签字栏组件，并明确排除四条外框线。"""
     info_box = element_box(info_rect)
     if info_box is None:
         raise FrameError("右下信息框坐标无效。")
 
+    excluded_ids = {id(item) for item in excluded_elements}
     result: List[ET.Element] = []
     for element in elements:
+        if id(element) in excluded_ids:
+            continue
         box = element_box(element)
         if box is None:
             continue
@@ -626,6 +639,66 @@ def identify_info_block_elements(
     if info_rect not in result:
         result.append(info_rect)
     return result
+
+
+def set_builtin_component_roles(
+    outer_lines: Mapping[str, ET.Element],
+    title_group: Sequence[ET.Element],
+    info_group: Sequence[ET.Element],
+) -> None:
+    """给输出内置图框写入明确组件角色，便于后续可靠识别。"""
+    roles = {
+        "top": "outer_top",
+        "right": "outer_right",
+        "bottom": "outer_bottom",
+        "left": "outer_left",
+    }
+    outer_ids = {id(item) for item in outer_lines.values()}
+    for side, element in outer_lines.items():
+        element.set(GFS_FRAME_ROLE_ATTRIBUTE, roles[side])
+    for element in title_group:
+        if id(element) not in outer_ids:
+            element.set(GFS_FRAME_ROLE_ATTRIBUTE, "title_block")
+    for element in info_group:
+        if id(element) not in outer_ids:
+            element.set(GFS_FRAME_ROLE_ATTRIBUTE, "info_block")
+
+
+def validate_outer_frame_geometry(
+    outer_lines: Mapping[str, ET.Element],
+    frame: Box,
+    canvas_width: float,
+    canvas_height: float,
+    *,
+    tolerance: float = 0.001,
+) -> None:
+    """输出前强制确认四条外框线闭合且没有超出画布。"""
+    expected = {
+        "top": (frame.left, frame.top, frame.right, frame.top),
+        "right": (frame.right, frame.top, frame.right, frame.bottom),
+        "bottom": (frame.right, frame.bottom, frame.left, frame.bottom),
+        "left": (frame.left, frame.bottom, frame.left, frame.top),
+    }
+    for side, expected_points in expected.items():
+        actual = line_endpoints(outer_lines[side])
+        if actual is None:
+            raise FrameError(f"内置图框适配失败：{side} 边框缺少有效端点。")
+        if any(abs(a - b) > tolerance for a, b in zip(actual, expected_points)):
+            raise FrameError(
+                f"内置图框适配失败：{side} 边框未形成闭合矩形。"
+                f"期望 {expected_points}，实际 {actual}。"
+            )
+        for x, y in ((actual[0], actual[1]), (actual[2], actual[3])):
+            if (
+                x < -tolerance
+                or y < -tolerance
+                or x > canvas_width + tolerance
+                or y > canvas_height + tolerance
+            ):
+                raise FrameError(
+                    f"内置图框适配失败：{side} 边框端点 ({x}, {y}) "
+                    f"超出画布 {canvas_width}×{canvas_height}。"
+                )
 
 
 def fit_text_in_cell(
@@ -786,6 +859,9 @@ def prepare_template_elements(
     template_layer = require_single_direct_layer(template_root, "图框模板")
     elements = [copy.deepcopy(element) for element in list(template_layer)]
 
+    # 必须在修改任何坐标前固定识别组件身份。旧实现先移动右边框，再按
+    # 几何相交识别签字栏；当目标右边框恰好落在签字栏左边界时，右边框
+    # 会被当作签字栏再次移动，造成右侧边框错位。
     outer_lines, old_frame = identify_outer_frame_lines(
         elements, template_width, template_height
     )
@@ -801,50 +877,57 @@ def prepare_template_elements(
             f"目标画布 {target_width}×{target_height} 太小，无法放置当前配置的图框边距。"
         )
 
-    set_line_geometry(outer_lines["top"], target_left, target_top, target_right, target_top)
-    set_line_geometry(
-        outer_lines["right"], target_right, target_top, target_right, target_bottom
-    )
-    set_line_geometry(
-        outer_lines["bottom"], target_right, target_bottom, target_left, target_bottom
-    )
-    set_line_geometry(
-        outer_lines["left"], target_left, target_bottom, target_left, target_top
-    )
-
     if not edit_content:
-        # 客户模板：外框适配目标画布，其他组件按最近边锚定移动；
-        # 不修改任何 Text.ts、签字人、日期、颜色、字体、线宽或组件尺寸。
+        # 客户模板只调整几何：先移动非外框组件，最后单独重设四条边。
         _shift_custom_template_components(elements, outer_lines, old_frame, new_frame)
+        set_line_geometry(outer_lines["top"], target_left, target_top, target_right, target_top)
+        set_line_geometry(outer_lines["right"], target_right, target_top, target_right, target_bottom)
+        set_line_geometry(outer_lines["bottom"], target_right, target_bottom, target_left, target_bottom)
+        set_line_geometry(outer_lines["left"], target_left, target_bottom, target_left, target_top)
+        validate_outer_frame_geometry(
+            outer_lines, new_frame, target_width, target_height
+        )
         return elements
 
-    # 内置模板：识别并更新标题与签字栏。
+    # 内置模板：在原始模板坐标中识别标题区和签字栏，并明确排除外框线。
     title_rect, info_rect = identify_rectangles(elements)
     title_text = identify_title_text(elements, title_rect)
-    info_elements = identify_info_block_elements(elements, info_rect)
+    outer_values = list(outer_lines.values())
+    outer_ids = {id(value) for value in outer_values}
+    info_elements = identify_info_block_elements(
+        elements,
+        info_rect,
+        excluded_elements=outer_values,
+    )
 
     title_rect_box = element_box(title_rect)
     if title_rect_box is None:
         raise FrameError("模板左上标题框坐标无效。")
+    title_group = [
+        element
+        for element in elements
+        if id(element) not in outer_ids
+        and (box := element_box(element)) is not None
+        and boxes_intersect(box, title_rect_box, tolerance=4.0)
+    ]
+    set_builtin_component_roles(outer_lines, title_group, info_elements)
+
     desired_title_left = target_left + (title_rect_box.left - old_frame.left)
     desired_title_top = target_top + (title_rect_box.top - old_frame.top)
     title_dx = desired_title_left - title_rect_box.left
     title_dy = desired_title_top - title_rect_box.top
-
-    title_group = [
-        element
-        for element in elements
-        if (box := element_box(element)) is not None
-        and boxes_intersect(box, title_rect_box, tolerance=4.0)
-        and id(element) not in {id(value) for value in outer_lines.values()}
-    ]
     for element in title_group:
         shift_element(element, title_dx, title_dy)
 
     shifted_title_box = element_box(title_rect)
     if shifted_title_box is None:
         raise FrameError("移动后的标题框坐标无效。")
-    fit_text_in_cell(title_text, config.title, shifted_title_box, horizontal_padding=12.0)
+    fit_text_in_cell(
+        title_text,
+        config.title,
+        shifted_title_box,
+        horizontal_padding=12.0,
+    )
 
     info_box = element_box(info_rect)
     if info_box is None:
@@ -855,11 +938,18 @@ def prepare_template_elements(
     desired_info_bottom = target_bottom - gap_bottom
     info_dx = desired_info_right - info_box.right
     info_dy = desired_info_bottom - info_box.bottom
-
     for element in info_elements:
         shift_element(element, info_dx, info_dy)
-
     update_info_block_texts(info_elements, info_rect, config)
+
+    # 最后单独设置外框。外框永远不会进入标题或签字栏组件集合。
+    set_line_geometry(outer_lines["top"], target_left, target_top, target_right, target_top)
+    set_line_geometry(outer_lines["right"], target_right, target_top, target_right, target_bottom)
+    set_line_geometry(outer_lines["bottom"], target_right, target_bottom, target_left, target_bottom)
+    set_line_geometry(outer_lines["left"], target_left, target_bottom, target_left, target_top)
+    validate_outer_frame_geometry(
+        outer_lines, new_frame, target_width, target_height
+    )
     return elements
 
 
@@ -883,20 +973,30 @@ def collect_used_ids_and_tokens(layer: ET.Element) -> Set[str]:
 def allocate_template_ids(
     elements: Sequence[ET.Element],
     used_ids: Set[str],
+    target_layer: ET.Element | None = None,
 ) -> Dict[str, str]:
-    numeric_values = [int(value) for value in used_ids if value.isdigit()]
-    next_id = max(numeric_values, default=0) + 1
+    """为模板元素分配唯一 ID。
+
+    优先参考目标 G 文件中相同 XML 标签元素使用最多的“前缀 + 固定总位数”
+    格式；目标中没有同类样本时，再参考模板自身同类格式。无法推断时才
+    回退到旧版的原数字递增方式。
+    """
+    target_patterns = (
+        infer_direct_id_patterns(list(target_layer))
+        if target_layer is not None
+        else {}
+    )
+    template_patterns = infer_direct_id_patterns(elements)
     mapping: Dict[str, str] = {}
 
     for element in elements:
         for node in element.iter():
-            old_id = node.get("id")
+            old_id = (node.get("id") or "").strip()
             if not old_id or old_id in mapping:
                 continue
-            while str(next_id) in used_ids:
-                next_id += 1
-            new_id = str(next_id)
-            next_id += 1
+            tag = id_local_name(node.tag)
+            pattern = target_patterns.get(tag) or template_patterns.get(tag)
+            new_id = generate_pattern_unique_id(old_id, used_ids, pattern)
             mapping[old_id] = new_id
             used_ids.add(new_id)
     return mapping
@@ -936,7 +1036,7 @@ def validate_unique_element_ids(layer: ET.Element, source_name: str) -> None:
         seen.add(element_id)
     if duplicates:
         values = ", ".join(sorted(duplicates)[:20])
-        raise FrameError(f"{source_name} 添加图框后仍存在重复 ID：{values}")
+        raise FrameError(f"{source_name} 图框添加后仍存在重复 ID：{values}")
 
 
 # =============================================================================
@@ -987,7 +1087,7 @@ def process_one_file(
     )
 
     used_ids = collect_used_ids_and_tokens(target_layer)
-    id_mapping = allocate_template_ids(template_elements, used_ids)
+    id_mapping = allocate_template_ids(template_elements, used_ids, target_layer)
     apply_id_mapping(template_elements, id_mapping)
 
     frame_type = GFS_FRAME_TYPE_BUILTIN if edit_content else GFS_FRAME_TYPE_CUSTOM

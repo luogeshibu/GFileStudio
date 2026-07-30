@@ -11,6 +11,10 @@ from g_file_studio.processors.common import (
     ProgressCallback,
     redirect_safe_callback,
 )
+from g_file_studio.services.output_naming import (
+    default_merge_output_path,
+    make_task_timestamp,
+)
 
 
 def merge_feeders(
@@ -30,11 +34,16 @@ def merge_feeders(
         ordered_file_names=settings.ordered_file_names or None,
         allow_subset=bool(settings.ordered_file_names),
     )
+    task_timestamp = make_task_timestamp()
     output_path = (
         settings.output_dir / settings.output_name
         if settings.output_name
-        else merge_engine.build_default_output_path(settings.output_dir, infos)
+        else default_merge_output_path(settings.output_dir, task_timestamp)
     )
+    if settings.output_name:
+        log(f"使用用户指定输出文件名：{output_path.name}")
+    else:
+        log(f"未填写输出文件名，自动生成：{output_path.name}")
 
     if progress:
         progress(10)

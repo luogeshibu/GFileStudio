@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QThreadPool, QUrl
+from PySide6.QtCore import QThreadPool, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFrame,
@@ -21,6 +21,8 @@ from g_file_studio.workers import FunctionWorker
 
 
 class TaskPanel(QFrame):
+    busyChanged = Signal(bool)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("taskPanel")
@@ -93,6 +95,7 @@ class TaskPanel(QFrame):
         self.progress.setValue(0)
         self.run_button.setEnabled(False)
         self.open_button.setEnabled(False)
+        self.busyChanged.emit(True)
         self._output_dir = Path(output_dir)
         self.append_log("任务已启动……")
 
@@ -106,18 +109,30 @@ class TaskPanel(QFrame):
 
     def on_finished(self) -> None:
         self.run_button.setEnabled(True)
+        self.busyChanged.emit(False)
 
     def on_result(self, result) -> None:
         self.progress.setValue(100)
         self.append_log("\n处理完成。")
         for path in result.output_files:
             self.append_log(f"输出：{path}")
+        if result.warnings:
+            self.append_log("告警：")
+            for warning in result.warnings:
+                self.append_log(f"  {warning}")
         if result.statistics:
             self.append_log("统计：")
             for key, value in result.statistics.items():
                 self.append_log(f"  {key}: {value}")
         self.open_button.setEnabled(True)
-        QMessageBox.information(self, "处理完成", "任务已成功完成，详细结果请查看日志。")
+        if result.success:
+            QMessageBox.information(self, "处理完成", "任务已成功完成，详细结果请查看日志。")
+        else:
+            QMessageBox.warning(
+                self,
+                "处理完成（有告警）",
+                "任务已完成，但部分文件处理失败或存在告警，请查看日志和报告。",
+            )
 
     def on_error(self, traceback_text: str) -> None:
         self.append_log("\n处理失败：")

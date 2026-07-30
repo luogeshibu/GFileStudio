@@ -24,8 +24,8 @@ class MergePage(BasePage):
         self.user_settings = user_settings
         help_title, help_html = APP_HELP["merge"]
         super().__init__(
-            "G 文件合并",
-            "合并任意命名的 .sln.pic.g 文件，并由用户自由定义顺序、完成垂直对齐、ID 处理和画布计算。",
+            "馈线图合并",
+            "按用户选择顺序合并多个馈线 G 图，完成垂直对齐、冲突 ID 处理和画布计算。",
             help_title,
             help_html,
             parent,
@@ -46,7 +46,7 @@ class MergePage(BasePage):
             recent_directory_key="recent_paths/merge/input_directory",
             persistent_path_key="merge/input_directory",
             default_path=default_workspace() / "processed",
-            location_name="G 文件合并输入目录",
+            location_name="馈线图合并输入目录",
             settings_service=self.user_settings,
         )
         self.output_path = PathRow(
@@ -55,13 +55,13 @@ class MergePage(BasePage):
             recent_directory_key="recent_paths/merge/output_directory",
             persistent_path_key="merge/output_directory",
             default_path=default_workspace() / "merged",
-            location_name="G 文件合并输出目录",
+            location_name="馈线图合并输出目录",
             settings_service=self.user_settings,
         )
         self.input_path.set_tooltip(FIELD_HELP["merge_input_dir"])
         self.output_path.set_tooltip(FIELD_HELP["output_dir"])
         self.output_name = QLineEdit()
-        self.output_name.setPlaceholderText("留空时生成 MERGED.sln.pic.g")
+        self.output_name.setPlaceholderText("留空自动生成 MERGED-时间戳.sln.pic.g；也可手动输入名称")
         self.output_name.setToolTip(FIELD_HELP["output_name"])
         path_form.addRow(HelpLabel("输入目录", FIELD_HELP["merge_input_dir"]), self.input_path)
         path_form.addRow(HelpLabel("输出目录", FIELD_HELP["output_dir"]), self.output_path)
@@ -127,9 +127,9 @@ class MergePage(BasePage):
         self.output_path.persist_current_text()
 
     def run(self) -> None:
-        if not validate_existing_directory(self, self.input_path.path(), "G 文件合并输入目录"):
+        if not validate_existing_directory(self, self.input_path.path(), "馈线图合并输入目录"):
             return
-        if not validate_existing_directory(self, self.output_path.path(), "G 文件合并输出目录"):
+        if not validate_existing_directory(self, self.output_path.path(), "馈线图合并输出目录"):
             return
         self.input_path.persist_valid_path()
         self.output_path.persist_valid_path()

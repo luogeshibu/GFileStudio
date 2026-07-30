@@ -9,6 +9,7 @@ from g_file_studio.processors.common import LogCallback, ProgressCallback
 from g_file_studio.processors.frame_processor import add_drawing_frames
 from g_file_studio.processors.margin_processor import adjust_graph_margins
 from g_file_studio.processors.merge_processor import merge_feeders
+from g_file_studio.services.output_naming import make_task_timestamp, marked_output_name
 
 
 G_SUFFIX = ".sln.pic.g"
@@ -83,14 +84,19 @@ def _prepare_source(
     return outputs
 
 
-def _name_with_suffix(input_name: str, suffix: str) -> str:
-    if not suffix:
-        return input_name
-    if input_name.lower().endswith(G_SUFFIX):
-        return input_name[: -len(G_SUFFIX)] + suffix + G_SUFFIX
-    if input_name.lower().endswith(".g"):
-        return input_name[:-2] + suffix + ".g"
-    return input_name + suffix
+def _name_with_suffix(
+    input_name: str,
+    suffix: str,
+    *,
+    timestamp: str = "",
+    append_timestamp: bool = False,
+) -> str:
+    return marked_output_name(
+        input_name,
+        suffix,
+        timestamp,
+        append_timestamp=append_timestamp,
+    )
 
 
 def _copy_final_files(
@@ -99,6 +105,8 @@ def _copy_final_files(
     log: LogCallback,
     *,
     suffix: str = "",
+    timestamp: str = "",
+    append_timestamp: bool = False,
     selected_names: set[str] | None = None,
 ) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -110,7 +118,12 @@ def _copy_final_files(
 
     outputs: list[Path] = []
     for source in files:
-        target = output_dir / _name_with_suffix(source.name, suffix)
+        target = output_dir / _name_with_suffix(
+            source.name,
+            suffix,
+            timestamp=timestamp,
+            append_timestamp=append_timestamp,
+        )
         shutil.copy2(source, target)
         outputs.append(target)
         log(f"最终输出：{target}")
@@ -147,6 +160,7 @@ def run_pipeline(
     stage_adjusted = work / "03_adjusted"
     stage_frame_input = work / "04_frame_input"
     settings.output_dir.mkdir(parents=True, exist_ok=True)
+    final_timestamp = make_task_timestamp()
 
     source_files = _prepare_source(settings, stage_source, log)
     effective_merge = (
@@ -156,7 +170,7 @@ def run_pipeline(
     )
     warnings: list[str] = []
     if settings.run_merge and not effective_merge:
-        message = "单个文件或目录中只有一个文件，不执行 G 文件合并。"
+        message = "单个文件或目录中只有一个文件，不执行馈线图合并。"
         warnings.append(message)
         log(message)
 
@@ -193,9 +207,14 @@ def run_pipeline(
         completed_names.append("基础处理")
 
     if effective_merge:
-        log("\n=== 阶段 2：G 文件合并 ===")
+        log("\n=== 阶段 2：馈线图合并 ===")
         merge = settings.merge.model_copy(
-            update={"input_dir": current_input, "output_dir": stage_merged}
+            update={
+                "input_dir": current_input,
+                "output_dir": stage_merged,
+                # 一键流程中的合并结果是中间文件，不追加时间戳。
+                "output_name": settings.merge.output_name or "MERGED.sln.pic.g",
+            }
         )
         result = merge_feeders(
             merge,
@@ -205,7 +224,7 @@ def run_pipeline(
         stage_index += 1
         current_input = stage_merged
         outputs = result.output_files
-        completed_names.append("G 文件合并")
+        completed_names.append("馈线图合并")
 
     if settings.run_margin:
         log("\n=== 阶段 3：图形边距调整 ===")
@@ -214,8 +233,10 @@ def run_pipeline(
                 "source_path": current_input,
                 "input_mode": InputMode.DIRECTORY,
                 "output_dir": stage_adjusted,
-                # 一键流程内部保持文件名，最终命名由添加图框或最终输出阶段决定。
+                # 一键流程内部保持文件名，最终命名由图框添加或最终输出阶段决定。
                 "output_suffix": "",
+                "append_timestamp": False,
+                "task_timestamp": "",
             }
         )
         result = adjust_graph_margins(
@@ -232,7 +253,7 @@ def run_pipeline(
         completed_names.append("图形边距调整")
 
     if settings.run_frame:
-        log("\n=== 阶段 4：添加图框 ===")
+        log("\n=== 阶段 4：图框添加 ===")
         current_names = {item.name for item in _discover_stage_files(current_input)}
         skip_names = existing_frame_names & current_names
         frame_names = current_names - skip_names
@@ -249,6 +270,8 @@ def run_pipeline(
                     settings.output_dir,
                     log,
                     suffix=settings.frame.output_suffix,
+                    timestamp=final_timestamp,
+                    append_timestamp=True,
                     selected_names=skip_names,
                 )
             )
@@ -260,6 +283,8 @@ def run_pipeline(
                     "source_path": stage_frame_input,
                     "input_mode": InputMode.DIRECTORY,
                     "output_dir": settings.output_dir,
+                    "append_timestamp": True,
+                    "task_timestamp": final_timestamp,
                 }
             )
             result = add_drawing_frames(
@@ -273,9 +298,27 @@ def run_pipeline(
             if stage_callback:
                 stage_callback(100)
 
-        completed_names.append("添加图框/保留已有图框")
+        completed_names.append("图框添加/保留已有图框")
     else:
-        outputs = _copy_final_files(current_input, settings.output_dir, log)
+        if settings.run_margin:
+            outputs = _copy_final_files(
+                current_input,
+                settings.output_dir,
+                log,
+                suffix=settings.margin.output_suffix or "-ADJUSTED",
+                timestamp=final_timestamp,
+                append_timestamp=True,
+            )
+        elif effective_merge and not settings.merge.output_name:
+            outputs = _copy_final_files(
+                current_input,
+                settings.output_dir,
+                log,
+                timestamp=final_timestamp,
+                append_timestamp=True,
+            )
+        else:
+            outputs = _copy_final_files(current_input, settings.output_dir, log)
         if not completed_names:
             completed_names.append("原样输出")
 

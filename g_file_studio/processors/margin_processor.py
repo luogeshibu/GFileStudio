@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from g_file_studio.engines.margin_engine import adjust_one_file, make_output_path
+from g_file_studio.engines.margin_engine import adjust_one_file
 from g_file_studio.models import MarginSettings, ProcessingResult
 from g_file_studio.processors.common import LogCallback, ProgressCallback, discover_g_inputs
+from g_file_studio.services.output_naming import make_task_timestamp, marked_output_name
 
 
 def adjust_graph_margins(
@@ -18,20 +19,23 @@ def adjust_graph_margins(
     outputs: list[Path] = []
     files_with_frame: list[str] = []
     files_without_frame: list[str] = []
+    task_timestamp = settings.task_timestamp.strip() or make_task_timestamp()
 
     for index, input_path in enumerate(files, 1):
-        output_path = make_output_path(
-            settings.output_dir,
-            input_path,
+        output_name = marked_output_name(
+            input_path.name,
             settings.output_suffix,
+            task_timestamp,
+            append_timestamp=settings.append_timestamp,
         )
+        output_path = settings.output_dir / output_name
         try:
             same_as_input = output_path.resolve() == input_path.resolve()
         except OSError:
             same_as_input = output_path.absolute() == input_path.absolute()
         if same_as_input:
             raise ValueError(
-                "图形边距调整不会覆盖原始文件。请更换输出目录，或设置非空输出后缀。"
+                "图形边距调整不会覆盖原始文件。请更换输出目录，或保留输出标记/时间戳。"
             )
         if output_path.exists() and not settings.overwrite:
             raise FileExistsError(f"输出文件已存在且不允许覆盖：{output_path}")
@@ -86,5 +90,6 @@ def adjust_graph_margins(
             "top_margin": settings.top_margin,
             "right_margin": settings.right_margin,
             "bottom_margin": settings.bottom_margin,
+            "task_timestamp": task_timestamp if settings.append_timestamp else "",
         },
     )

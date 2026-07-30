@@ -77,12 +77,12 @@ class MarginPage(BasePage):
         for widget in (self.left, self.top, self.right, self.bottom):
             widget.setToolTip(FIELD_HELP["content_margin"])
         self.suffix = QLineEdit("-ADJUSTED")
-        self.suffix.setPlaceholderText("例如 -ADJUSTED；留空保持原名")
+        self.suffix.setPlaceholderText("默认 -ADJUSTED；程序会自动追加任务时间戳")
         parameter_form.addRow(HelpLabel("图形左边距", FIELD_HELP["content_margin"]), self.left)
         parameter_form.addRow(HelpLabel("图形上边距", FIELD_HELP["content_margin"]), self.top)
         parameter_form.addRow(HelpLabel("图形右边距", FIELD_HELP["content_margin"]), self.right)
         parameter_form.addRow(HelpLabel("图形下边距", FIELD_HELP["content_margin"]), self.bottom)
-        parameter_form.addRow(HelpLabel("输出后缀", FIELD_HELP["output_suffix"]), self.suffix)
+        parameter_form.addRow(HelpLabel("输出标记", FIELD_HELP["output_suffix"]), self.suffix)
         self.layout.addWidget(parameter_box)
 
         self.layout.addWidget(

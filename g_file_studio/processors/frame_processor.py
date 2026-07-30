@@ -13,17 +13,7 @@ from g_file_studio.processors.common import (
     discover_g_inputs,
     redirect_safe_callback,
 )
-
-
-def _output_name(input_name: str, suffix: str) -> str:
-    if not suffix:
-        return input_name
-    compound = ".sln.pic.g"
-    if input_name.lower().endswith(compound):
-        return input_name[: -len(compound)] + suffix + compound
-    if input_name.lower().endswith(".g"):
-        return input_name[:-2] + suffix + ".g"
-    return input_name + suffix
+from g_file_studio.services.output_naming import make_task_timestamp, marked_output_name
 
 
 def add_drawing_frames(
@@ -52,9 +42,16 @@ def add_drawing_frames(
     all_config = settings.config_dict()
     outputs: list[Path] = []
     writer = CallbackWriter(redirect_safe_callback(log))
+    task_timestamp = settings.task_timestamp.strip() or make_task_timestamp()
 
     for index, input_path in enumerate(files, 1):
-        output_path = settings.output_dir / _output_name(input_path.name, settings.output_suffix)
+        output_name = marked_output_name(
+            input_path.name,
+            settings.output_suffix,
+            task_timestamp,
+            append_timestamp=settings.append_timestamp,
+        )
+        output_path = settings.output_dir / output_name
         with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
             frame_engine.process_one_file(
                 input_path=input_path,
@@ -78,5 +75,6 @@ def add_drawing_frames(
             "template": str(settings.template_file),
             "template_mode": settings.template_mode.value,
             "content_modified": settings.edit_builtin_content,
+            "task_timestamp": task_timestamp if settings.append_timestamp else "",
         },
     )

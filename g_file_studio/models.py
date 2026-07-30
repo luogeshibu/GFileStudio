@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from g_file_studio.services.output_naming import normalize_merge_output_name
+
 
 MERGED_FILE_SUFFIX = ".sln.pic.g"
 
@@ -22,6 +24,14 @@ class InputMode(str, Enum):
 
     SINGLE_FILE = "single_file"
     DIRECTORY = "directory"
+
+
+class BasicIdAction(str, Enum):
+    """基础处理中的重复 ID 操作方式。"""
+
+    NONE = "none"
+    CHECK = "check"
+    REPAIR = "repair"
 
 
 # 向后兼容旧代码和已有配置。
@@ -55,6 +65,10 @@ class BasicSettings(BaseModel):
     delete_target_attribute: str = ""
     delete_target_value: str = ""
 
+    # 这些选项都由统一的“开始基础处理”按钮执行。
+    id_action: BasicIdAction = BasicIdAction.NONE
+    group_rmu_elements: bool = False
+
 
 class MergeSettings(BaseModel):
     input_dir: Path
@@ -72,18 +86,7 @@ class MergeSettings(BaseModel):
     @classmethod
     def normalize_output_name(cls, value: str) -> str:
         """合并结果统一使用 .sln.pic.g 后缀。"""
-        value = value.strip()
-        if not value:
-            return ""
-
-        lower = value.lower()
-        if lower.endswith(MERGED_FILE_SUFFIX):
-            return value
-        if lower.endswith(".sln.pic"):
-            return value + ".g"
-        if lower.endswith(".g"):
-            value = value[:-2]
-        return value + MERGED_FILE_SUFFIX
+        return normalize_merge_output_name(value)
 
 
 class MarginSettings(BaseModel):
@@ -102,6 +105,8 @@ class MarginSettings(BaseModel):
     bottom_margin: int = Field(default=500, ge=0)
     preserve_existing_frame: bool = True
     output_suffix: str = "-ADJUSTED"
+    append_timestamp: bool = True
+    task_timestamp: str = ""
     overwrite: bool = True
 
 
@@ -111,7 +116,7 @@ class PersonSettings(BaseModel):
 
 
 class FrameSettings(BaseModel):
-    """添加图框参数。
+    """图框添加参数。
 
     输入既可以是单个 G 文件，也可以是包含多个 G 文件的目录。
     输出始终写入 output_dir，原始文件不会被覆盖。
@@ -131,7 +136,9 @@ class FrameSettings(BaseModel):
     frame_top: int = Field(default=50, ge=0)
     frame_right: int = Field(default=50, ge=0)
     frame_bottom: int = Field(default=50, ge=0)
-    output_suffix: str = ""
+    output_suffix: str = "-WITH-FRAME"
+    append_timestamp: bool = True
+    task_timestamp: str = ""
     overwrite: bool = True
 
     @property

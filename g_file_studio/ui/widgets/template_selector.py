@@ -4,12 +4,13 @@ from pathlib import Path
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QButtonGroup,
+    QCheckBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
-    QRadioButton,
     QVBoxLayout,
     QWidget,
 )
@@ -51,10 +52,15 @@ class TemplateSelector(QWidget):
         root.setSpacing(9)
 
         mode_row = QHBoxLayout()
-        self.builtin_radio = QRadioButton("使用程序内置模板")
-        self.custom_radio = QRadioButton("使用客户自定义模板")
-        mode_row.addWidget(self.builtin_radio)
-        mode_row.addWidget(self.custom_radio)
+        mode_row.setSpacing(12)
+        self.mode_group = QButtonGroup(self)
+        self.mode_group.setExclusive(True)
+        self.builtin_option = QCheckBox("使用程序内置模板")
+        self.custom_option = QCheckBox("使用客户自定义模板")
+        for option in (self.builtin_option, self.custom_option):
+            option.setProperty("optionChoice", True)
+            self.mode_group.addButton(option)
+            mode_row.addWidget(option)
         mode_row.addStretch(1)
         root.addLayout(mode_row)
 
@@ -90,8 +96,8 @@ class TemplateSelector(QWidget):
         self.note.setWordWrap(True)
         root.addWidget(self.note)
 
-        self.builtin_radio.toggled.connect(self._update_mode)
-        self.custom_radio.toggled.connect(self._update_mode)
+        self.builtin_option.toggled.connect(self._update_mode)
+        self.custom_option.toggled.connect(self._update_mode)
         self.builtin_combo.currentIndexChanged.connect(self._builtin_changed)
         self.custom_path.pathChanged.connect(self.templateChanged)
         self.export_button.clicked.connect(self.export_current_builtin)
@@ -137,8 +143,8 @@ class TemplateSelector(QWidget):
             mode = TemplateMode(saved_mode)
         except ValueError:
             mode = TemplateMode.BUILTIN
-        self.builtin_radio.setChecked(mode == TemplateMode.BUILTIN)
-        self.custom_radio.setChecked(mode == TemplateMode.CUSTOM)
+        self.builtin_option.setChecked(mode == TemplateMode.BUILTIN)
+        self.custom_option.setChecked(mode == TemplateMode.CUSTOM)
         self._builtin_changed(save=False)
 
     def _builtin_changed(self, *_args: object, save: bool = True) -> None:
@@ -156,7 +162,7 @@ class TemplateSelector(QWidget):
         self.templateChanged.emit(str(item.path))
 
     def _update_mode(self, *_args: object, save: bool = True) -> None:
-        builtin = self.builtin_radio.isChecked()
+        builtin = self.builtin_option.isChecked()
         self.builtin_combo.setEnabled(builtin)
         self.version_label.setEnabled(builtin)
         self.export_button.setEnabled(builtin)
@@ -178,7 +184,7 @@ class TemplateSelector(QWidget):
         self.templateChanged.emit(str(self.resolved_template_path()))
 
     def mode(self) -> TemplateMode:
-        return TemplateMode.BUILTIN if self.builtin_radio.isChecked() else TemplateMode.CUSTOM
+        return TemplateMode.BUILTIN if self.builtin_option.isChecked() else TemplateMode.CUSTOM
 
     def builtin_template_id(self) -> str:
         return str(self.builtin_combo.currentData() or "default_sld_frame")

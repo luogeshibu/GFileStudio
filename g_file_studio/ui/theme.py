@@ -11,7 +11,7 @@ QWidget {
     font-size: 13px;
 }
 
-QLabel, QCheckBox, QRadioButton {
+QLabel, QCheckBox {
     background: transparent;
 }
 
@@ -115,19 +115,20 @@ QGroupBox {
     background: #ffffff;
     border: 1px solid #dce4ee;
     border-radius: 11px;
-    margin-top: 16px;
-    padding: 18px 16px 14px 16px;
+    margin-top: 0;
+    padding: 38px 16px 14px 16px;
     font-weight: 650;
     color: #162033;
 }
 
 QGroupBox::title {
-    subcontrol-origin: margin;
+    subcontrol-origin: padding;
     subcontrol-position: top left;
-    left: 14px;
-    padding: 0 7px;
+    left: 16px;
+    top: 12px;
+    padding: 0;
     color: #162033;
-    background: #ffffff;
+    background: transparent;
 }
 
 QLabel#fieldLabel {
@@ -193,11 +194,11 @@ QCheckBox {
 }
 
 QCheckBox::indicator {
-    width: 17px;
-    height: 17px;
+    width: 20px;
+    height: 20px;
     background: #ffffff;
-    border: 1px solid #8799b0;
-    border-radius: 4px;
+    border: 2px solid #71849c;
+    border-radius: 5px;
 }
 
 QCheckBox::indicator:hover {
@@ -214,6 +215,33 @@ QCheckBox::indicator:checked {
 QCheckBox::indicator:disabled {
     background: #edf1f6;
     border-color: #c1cad6;
+}
+
+
+QCheckBox[optionChoice="true"] {
+    background: #f8fafc;
+    border: 1px solid #cad6e4;
+    border-radius: 8px;
+    padding: 8px 12px;
+    color: #263449;
+    font-weight: 600;
+}
+
+QCheckBox[optionChoice="true"]:hover {
+    background: #f0f6ff;
+    border-color: #8fb2ec;
+}
+
+QCheckBox[optionChoice="true"]:checked {
+    background: #e8f1ff;
+    border: 2px solid #2f6be8;
+    color: #174ea6;
+}
+
+QCheckBox[optionChoice="true"]:disabled {
+    background: #f1f4f8;
+    border-color: #d5dde8;
+    color: #8a96a8;
 }
 
 QPushButton {
