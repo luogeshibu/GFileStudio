@@ -19,6 +19,7 @@ from g_file_studio.models import (
     BasicIdAction,
     BasicOutputConflictAction,
     RmuAction,
+    RmuStatusPosition,
 )
 from g_file_studio.processors.basic_processor import process_basic
 from g_file_studio.processors.common import discover_g_inputs
@@ -37,6 +38,7 @@ from g_file_studio.ui.widgets import (
     IntegerInput,
     PathRow,
     TaskPanel,
+    WheelSafeComboBox,
 )
 
 
@@ -55,7 +57,7 @@ class BasicPage(BasePage):
         self.layout.addWidget(
             InfoBanner(
                 "输入可以是单个 G 文件，也可以是 G 文件目录。属性替换、元素删除、重复 ID 检查/修复、"
-                "环网柜组合/取消组合、含 SMART 环网柜外框改色，以及线路与母线颜色修改，"
+                "环网柜组合/取消组合、SMART 外框改色、红色状态点定位，以及线路与母线颜色修改，"
                 "都在点击“开始基础处理”后统一执行。"
                 "目录模式下每个文件独立处理。"
             )
@@ -201,35 +203,48 @@ class BasicPage(BasePage):
         layout.addWidget(self.rmu_smart_frame_color)
 
         # 增强操作按竖列展示；每项仍是独立复选框，可按需多选。
-        height_row = QHBoxLayout()
-        height_row.setContentsMargins(0, 0, 0, 0)
-        height_row.setSpacing(10)
-        self.rmu_normalize_busdis_spacing = QCheckBox(
-            "统一带 BusDis 的环网柜垂直间距（仅整体移动 Y）"
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(10)
+        self.rmu_reposition_channel_status = QCheckBox(
+            "移动环网柜红色状态点（channel_status）"
         )
-        self.rmu_normalize_busdis_spacing.setProperty("optionChoice", True)
-        self.rmu_normalize_busdis_spacing.setToolTip(
-            "按 Y 坐标从上到下排列同一竖列内带 BusDis 的环网柜。每列最上方环网柜保持不动，"
-            "后续环网柜及其柜内、柜外周边相关图元整体沿 Y 方向移动；不压缩或拉伸柜框，任何 X 坐标均不改变。"
+        self.rmu_reposition_channel_status.setProperty("optionChoice", True)
+        self.rmu_reposition_channel_status.setToolTip(
+            "只处理带 BusDis 的环网柜中 devref 指向 channel_status 的 <Status> 红色状态点。"
+            "仅移动该状态点本身，不移动环网柜、母线、设备、标题、连接线或其他图元。"
         )
-        self.rmu_busdis_vertical_spacing = IntegerInput(300, 1, 100000)
-        self.rmu_busdis_vertical_spacing.setFixedWidth(150)
-        self.rmu_busdis_vertical_spacing.setToolTip(
-            "输入相邻环网柜顶部 Y 坐标之间的距离。例如输入 300，后一个柜框顶部 Y = 前一个柜框顶部 Y + 300。"
-            "鼠标滚轮、方向键和 PageUp/PageDown 不会改变该值。"
+        self.rmu_channel_status_position = WheelSafeComboBox()
+        self.rmu_channel_status_position.setFixedWidth(135)
+        for position in RmuStatusPosition:
+            self.rmu_channel_status_position.addItem(position.label, position.value)
+        self.rmu_channel_status_position.setToolTip(
+            "可选择矩形框内四个角或四条边的中点；默认左下角，与示意图中的目标位置一致。"
         )
-        height_label = QLabel("相邻柜顶 Y 间距")
-        height_label.setObjectName("mutedText")
-        height_unit = QLabel("像素")
-        height_unit.setObjectName("mutedText")
-        height_row.addWidget(self.rmu_normalize_busdis_spacing)
-        height_row.addWidget(height_label)
-        height_row.addWidget(self.rmu_busdis_vertical_spacing)
-        height_row.addWidget(height_unit)
-        height_row.addStretch(1)
-        layout.addLayout(height_row)
-        self.rmu_normalize_busdis_spacing.toggled.connect(
-            self.rmu_busdis_vertical_spacing.setEnabled
+        self.rmu_channel_status_margin = IntegerInput(5, 0, 1000)
+        self.rmu_channel_status_margin.setFixedWidth(90)
+        self.rmu_channel_status_margin.setToolTip(
+            "状态点与所选矩形框边之间的内边距，默认 5 像素。"
+        )
+        status_position_label = QLabel("框内位置")
+        status_position_label.setObjectName("mutedText")
+        status_margin_label = QLabel("距边")
+        status_margin_label.setObjectName("mutedText")
+        status_margin_unit = QLabel("像素")
+        status_margin_unit.setObjectName("mutedText")
+        status_row.addWidget(self.rmu_reposition_channel_status)
+        status_row.addWidget(status_position_label)
+        status_row.addWidget(self.rmu_channel_status_position)
+        status_row.addWidget(status_margin_label)
+        status_row.addWidget(self.rmu_channel_status_margin)
+        status_row.addWidget(status_margin_unit)
+        status_row.addStretch(1)
+        layout.addLayout(status_row)
+        self.rmu_reposition_channel_status.toggled.connect(
+            self.rmu_channel_status_position.setEnabled
+        )
+        self.rmu_reposition_channel_status.toggled.connect(
+            self.rmu_channel_status_margin.setEnabled
         )
 
         self.rmu_remove_bus_frame = QCheckBox(
@@ -299,18 +314,24 @@ class BasicPage(BasePage):
                 self.user_settings.get_bool("basic/rmu/frame_color_enabled", False),
             )
         )
-        self.rmu_normalize_busdis_spacing.setChecked(
-            self.user_settings.get_bool(
-                "basic/rmu/normalize_busdis_spacing",
-                self.user_settings.get_bool("basic/rmu/normalize_busdis_height", False),
+        self.rmu_reposition_channel_status.setChecked(
+            self.user_settings.get_bool("basic/rmu/reposition_channel_status", False)
+        )
+        status_position = self.user_settings.get_value(
+            "basic/rmu/channel_status_position", RmuStatusPosition.BOTTOM_LEFT.value
+        )
+        status_index = self.rmu_channel_status_position.findData(status_position)
+        self.rmu_channel_status_position.setCurrentIndex(
+            status_index if status_index >= 0 else self.rmu_channel_status_position.findData(
+                RmuStatusPosition.BOTTOM_LEFT.value
             )
         )
-        self.rmu_busdis_vertical_spacing.setValue(
-            self.user_settings.get_int("basic/rmu/busdis_vertical_spacing", 300)
+        self.rmu_channel_status_margin.setValue(
+            self.user_settings.get_int("basic/rmu/channel_status_inner_margin", 5)
         )
-        self.rmu_busdis_vertical_spacing.setEnabled(
-            self.rmu_normalize_busdis_spacing.isChecked()
-        )
+        status_enabled = self.rmu_reposition_channel_status.isChecked()
+        self.rmu_channel_status_position.setEnabled(status_enabled)
+        self.rmu_channel_status_margin.setEnabled(status_enabled)
         self.rmu_remove_bus_frame.setChecked(
             self.user_settings.get_bool("basic/rmu/remove_bus_frame", False)
         )
@@ -343,12 +364,16 @@ class BasicPage(BasePage):
             self.rmu_smart_frame_color.is_enabled(),
         )
         self.user_settings.set_value(
-            "basic/rmu/normalize_busdis_spacing",
-            self.rmu_normalize_busdis_spacing.isChecked(),
+            "basic/rmu/reposition_channel_status",
+            self.rmu_reposition_channel_status.isChecked(),
         )
         self.user_settings.set_value(
-            "basic/rmu/busdis_vertical_spacing",
-            self.rmu_busdis_vertical_spacing.value(),
+            "basic/rmu/channel_status_position",
+            self.rmu_channel_status_position.currentData(),
+        )
+        self.user_settings.set_value(
+            "basic/rmu/channel_status_inner_margin",
+            self.rmu_channel_status_margin.value(),
         )
         self.user_settings.set_value(
             "basic/rmu/remove_bus_frame", self.rmu_remove_bus_frame.isChecked()
@@ -483,8 +508,11 @@ class BasicPage(BasePage):
                     self.rmu_smart_frame_color.is_enabled()
                 ),
                 "smart_rmu_frame_color": self.rmu_smart_frame_color.color(),
-                "normalize_busdis_rmu_spacing": self.rmu_normalize_busdis_spacing.isChecked(),
-                "busdis_rmu_vertical_spacing": self.rmu_busdis_vertical_spacing.value(),
+                "reposition_channel_status": self.rmu_reposition_channel_status.isChecked(),
+                "channel_status_position": RmuStatusPosition(
+                    self.rmu_channel_status_position.currentData()
+                ),
+                "channel_status_inner_margin": self.rmu_channel_status_margin.value(),
                 "remove_bus_rmu_frame_and_reposition_title": self.rmu_remove_bus_frame.isChecked(),
             }
         )

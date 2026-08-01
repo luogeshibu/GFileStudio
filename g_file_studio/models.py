@@ -42,6 +42,32 @@ class RmuAction(str, Enum):
     UNGROUP = "ungroup"
 
 
+class RmuStatusPosition(str, Enum):
+    """环网柜 channel_status 红色状态点在矩形框内的锚点位置。"""
+
+    TOP_LEFT = "top_left"
+    TOP_CENTER = "top_center"
+    TOP_RIGHT = "top_right"
+    MIDDLE_LEFT = "middle_left"
+    MIDDLE_RIGHT = "middle_right"
+    BOTTOM_LEFT = "bottom_left"
+    BOTTOM_CENTER = "bottom_center"
+    BOTTOM_RIGHT = "bottom_right"
+
+    @property
+    def label(self) -> str:
+        return {
+            self.TOP_LEFT: "左上角",
+            self.TOP_CENTER: "上边中点",
+            self.TOP_RIGHT: "右上角",
+            self.MIDDLE_LEFT: "左边中点",
+            self.MIDDLE_RIGHT: "右边中点",
+            self.BOTTOM_LEFT: "左下角",
+            self.BOTTOM_CENTER: "下边中点",
+            self.BOTTOM_RIGHT: "右下角",
+        }[self]
+
+
 class BasicOutputConflictAction(str, Enum):
     """基础处理输出文件发生冲突时的处理方式。"""
 
@@ -100,9 +126,10 @@ class BasicSettings(BaseModel):
     # 仅修改“框内存在 SMART Text”的环网柜外框颜色，不修改 SMART 字体。
     change_smart_rmu_frame_color: bool = False
     smart_rmu_frame_color: str = "#00A651"
-    normalize_busdis_rmu_spacing: bool = False
-    # 相邻带 BusDis 环网柜的顶部 Y 坐标间距。处理时仅整体平移 Y，柜体尺寸和 X 不变。
-    busdis_rmu_vertical_spacing: int = Field(default=300, ge=1, le=100000)
+    # 将 BusDis 环网柜内 devref 指向 channel_status 的红色状态点移动到框内指定锚点。
+    reposition_channel_status: bool = False
+    channel_status_position: RmuStatusPosition = RmuStatusPosition.BOTTOM_LEFT
+    channel_status_inner_margin: int = Field(default=5, ge=0, le=1000)
     remove_bus_rmu_frame_and_reposition_title: bool = False
 
     output_conflict_action: BasicOutputConflictAction = BasicOutputConflictAction.OVERWRITE

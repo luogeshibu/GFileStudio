@@ -1,5 +1,15 @@
 # 更新记录
 
+## v2.14.0（channel_status 状态点定位）
+
+- 删除“统一带 BusDis 的环网柜垂直间距”界面、配置和整体 Y 平移处理。
+- 新增“移动环网柜红色状态点（channel_status）”。
+- 仅识别带 BusDis 环网柜内 `devref` 包含 `channel_status.zt.icn.g:channel_status` 的 `<Status>`。
+- 支持框内四角和四边中点共 8 个位置，默认左下角。
+- 新增可配置框内边距，默认 5 像素。
+- 只移动 Status 本身，环网柜、母线、设备、标题、连接线、Merge 和画布均不移动。
+- 增加真实 MAK 文件及八锚点回归测试。
+
 ## v2.13.2（BusDis 环网柜垂直间距）
 
 - 基于 v2.13.1 更新。

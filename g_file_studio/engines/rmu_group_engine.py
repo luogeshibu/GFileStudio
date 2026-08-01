@@ -786,12 +786,11 @@ class RmuEnhancementResult:
     file_path: Path
     smart_rmu_rect_count: int = 0
     smart_frame_color_changed: int = 0
-    busdis_rect_count: int = 0
-    busdis_column_count: int = 0
-    busdis_target_spacing: float | None = None
-    busdis_spacing_changed: int = 0
-    busdis_moved_element_count: int = 0
-    canvas_height_expanded_to: float | None = None
+    channel_status_rect_count: int = 0
+    channel_status_found_count: int = 0
+    channel_status_moved_count: int = 0
+    channel_status_missing_count: int = 0
+    channel_status_position: str = ""
     bus_rect_count: int = 0
     bus_rect_removed: int = 0
     bus_title_moved: int = 0
@@ -860,25 +859,14 @@ def _rmu_rects_by_bus_tag(layer: ET.Element, tag_name: str) -> list[tuple[ET.Ele
 
 
 _PATH_COORD_PATTERN = re.compile(r'(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)')
-_LINE_LIKE_TAGS = {
-    'ConnectLine', 'FeedLine', 'Line', 'FlowLine', 'Bus', 'BusDis',
-    'Polyline', 'LWPolyline',
-}
-_Y_POSITION_ATTRS = ('y', 'y1', 'y2', 'cy', 'mergey')
 _X_POSITION_ATTRS = ('x', 'x1', 'x2', 'cx', 'mergex')
-
-
-@dataclass(frozen=True)
-class _BusDisRmuMove:
-    rect: ET.Element
-    bus: ET.Element
-    original_box: Box
-    column_index: int
-    order_index: int
-    target_top: float
-    delta_y: float
-    upper_boundary: float
-    lower_boundary: float
+_Y_POSITION_ATTRS = ('y', 'y1', 'y2', 'cy', 'mergey')
+_CHANNEL_STATUS_DEVREF_TOKEN = 'channel_status.zt.icn.g:channel_status'
+_CHANNEL_STATUS_POSITIONS = {
+    'top_left', 'top_center', 'top_right',
+    'middle_left', 'middle_right',
+    'bottom_left', 'bottom_center', 'bottom_right',
+}
 
 
 def _translate_number(value: str, delta: float) -> str:
@@ -888,290 +876,179 @@ def _translate_number(value: str, delta: float) -> str:
         return value
 
 
-def _translate_path_y(value: str, delta: float) -> str:
+def _translate_path_xy(value: str, delta_x: float, delta_y: float) -> str:
     return _PATH_COORD_PATTERN.sub(
-        lambda match: f'{match.group(1)},{_translate_number(match.group(2), delta)}',
+        lambda match: (
+            f'{_translate_number(match.group(1), delta_x)},'
+            f'{_translate_number(match.group(2), delta_y)}'
+        ),
         value,
     )
 
 
-def _translate_element_y(element: ET.Element, delta: float) -> bool:
-    """把一个图元作为刚体沿 Y 方向平移；尺寸和全部 X 坐标保持不变。"""
-    if abs(delta) <= 1e-9:
+def _translate_element_xy(element: ET.Element, delta_x: float, delta_y: float) -> bool:
+    """把状态图元作为刚体平移；尺寸、颜色、ID、引用与旋转缩放属性保持不变。"""
+    if abs(delta_x) <= 1e-9 and abs(delta_y) <= 1e-9:
         return False
     changed = False
     for node in element.iter():
+        for attr in _X_POSITION_ATTRS:
+            if attr in node.attrib:
+                old = node.get(attr, '')
+                new = _translate_number(old, delta_x)
+                if new != old:
+                    node.set(attr, new)
+                    changed = True
         for attr in _Y_POSITION_ATTRS:
             if attr in node.attrib:
                 old = node.get(attr, '')
-                new = _translate_number(old, delta)
+                new = _translate_number(old, delta_y)
                 if new != old:
                     node.set(attr, new)
                     changed = True
         if 'd' in node.attrib:
             old = node.get('d', '')
-            new = _translate_path_y(old, delta)
+            new = _translate_path_xy(old, delta_x, delta_y)
             if new != old:
                 node.set('d', new)
                 changed = True
     return changed
 
 
-def _horizontal_overlap(a: Box, b: Box) -> float:
-    return max(0.0, min(a.right, b.right) - max(a.left, b.left))
-
-
-def _group_busdis_columns(
-    pairs: list[tuple[ET.Element, ET.Element]],
-) -> list[list[tuple[ET.Element, ET.Element, Box]]]:
-    """把环网柜按 X 方向分成竖直列，防止不同馈线列互相串行排列。"""
-    items: list[tuple[ET.Element, ET.Element, Box]] = []
-    for rect, bus in pairs:
-        box = subtree_box(rect)
-        if box is not None:
-            items.append((rect, bus, box))
-    items.sort(key=lambda item: (item[2].center_x, item[2].top, item[0].get('id') or ''))
-
-    columns: list[list[tuple[ET.Element, ET.Element, Box]]] = []
-    for item in items:
-        box = item[2]
-        best_index: int | None = None
-        best_distance = math.inf
-        for index, column in enumerate(columns):
-            reference_boxes = [entry[2] for entry in column]
-            center_x = sum(candidate.center_x for candidate in reference_boxes) / len(reference_boxes)
-            typical_width = max(candidate.width for candidate in reference_boxes)
-            overlap = max(_horizontal_overlap(box, candidate) for candidate in reference_boxes)
-            distance = abs(box.center_x - center_x)
-            same_column = overlap > 0 or distance <= max(box.width, typical_width) * 0.60
-            if same_column and distance < best_distance:
-                best_index = index
-                best_distance = distance
-        if best_index is None:
-            columns.append([item])
-        else:
-            columns[best_index].append(item)
-
-    for column in columns:
-        column.sort(key=lambda item: (item[2].top, item[2].center_x, item[0].get('id') or ''))
-    columns.sort(key=lambda column: min(item[2].center_x for item in column))
-    return columns
-
-
-def _build_busdis_moves(
-    pairs: list[tuple[ET.Element, ET.Element]],
-    spacing: float,
-) -> list[_BusDisRmuMove]:
-    columns = _group_busdis_columns(pairs)
-    moves: list[_BusDisRmuMove] = []
-    for column_index, column in enumerate(columns):
-        if not column:
-            continue
-        maximum_height = max(item[2].height for item in column)
-        if spacing + 1e-6 < maximum_height:
-            raise RmuGroupingError(
-                f'相邻环网柜柜顶 Y 间距 {format_number(spacing)} 小于本列最大柜高 '
-                f'{format_number(maximum_height)}，会造成环网柜重叠。'
-            )
-        first_top = column[0][2].top
-        centers = [item[2].center_y for item in column]
-        for order_index, (rect, bus, box) in enumerate(column):
-            target_top = first_top + order_index * spacing
-            upper = -math.inf if order_index == 0 else (centers[order_index - 1] + centers[order_index]) / 2.0
-            lower = math.inf if order_index == len(column) - 1 else (centers[order_index] + centers[order_index + 1]) / 2.0
-            moves.append(
-                _BusDisRmuMove(
-                    rect=rect,
-                    bus=bus,
-                    original_box=box,
-                    column_index=column_index,
-                    order_index=order_index,
-                    target_top=target_top,
-                    delta_y=target_top - box.top,
-                    upper_boundary=upper,
-                    lower_boundary=lower,
-                )
-            )
-    return moves
-
-
-def _move_horizontal_margin(move: _BusDisRmuMove) -> float:
-    # 柜外标题、状态图标、H.T/SMR 及短出线都属于柜体周边；扩展范围只用于判定归属。
-    return max(450.0, move.original_box.width * 2.0)
-
-
-def _owner_for_point(x: float, y: float, moves: list[_BusDisRmuMove]) -> _BusDisRmuMove | None:
-    candidates: list[tuple[float, _BusDisRmuMove]] = []
-    for move in moves:
-        box = move.original_box
-        margin = _move_horizontal_margin(move)
-        if not (box.left - margin <= x <= box.right + margin):
-            continue
-        if not (move.upper_boundary <= y < move.lower_boundary):
-            continue
-        score = abs(y - box.center_y) + abs(x - box.center_x) * 0.20
-        candidates.append((score, move))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: (item[0], item[1].column_index, item[1].order_index))
-    return candidates[0][1]
-
-
-def _path_points(value: str) -> list[tuple[float, float]]:
-    return [(float(match.group(1)), float(match.group(2))) for match in _PATH_COORD_PATTERN.finditer(value or '')]
-
-
-def _move_line_by_owners(element: ET.Element, moves: list[_BusDisRmuMove]) -> bool:
-    """逐点调整连线 Y 坐标，使相邻柜移动后，柜间线段自动伸缩或平移。"""
-    path = element.get('d', '')
-    old_points = _path_points(path)
-    if not old_points:
-        box = subtree_box(element)
-        if box is None:
-            return False
-        owner = _owner_for_point(box.center_x, box.center_y, moves)
-        return bool(owner and _translate_element_y(element, owner.delta_y))
-
-    changed = False
-    transformed: list[tuple[float, float]] = []
-    for x, y in old_points:
-        owner = _owner_for_point(x, y, moves)
-        new_y = y + (owner.delta_y if owner is not None else 0.0)
-        transformed.append((x, new_y))
-        changed = changed or abs(new_y - y) > 1e-9
-    if not changed:
+def _is_channel_status(element: ET.Element) -> bool:
+    if local_name(element.tag) != 'Status':
         return False
+    devref = (element.get('devref') or '').strip().lower().replace('\\', '/')
+    return _CHANNEL_STATUS_DEVREF_TOKEN in devref
 
-    iterator = iter(transformed)
-    element.set(
-        'd',
-        _PATH_COORD_PATTERN.sub(
-            lambda _match: (
-                lambda point: f'{format_number(point[0])},{format_number(point[1])}'
-            )(next(iterator)),
-            path,
-        ),
+
+def _point_inside_box(x: float, y: float, box: Box, tolerance: float = 0.5) -> bool:
+    return (
+        box.left - tolerance <= x <= box.right + tolerance
+        and box.top - tolerance <= y <= box.bottom + tolerance
     )
 
-    old_min_y = min(y for _x, y in old_points)
-    old_max_y = max(y for _x, y in old_points)
-    new_min_y = min(y for _x, y in transformed)
-    new_max_y = max(y for _x, y in transformed)
 
-    # G 编辑器的线图元通常在真实路径外保留 3 像素包围盒；保留原有上下留白。
-    try:
-        old_y_attr = float(element.get('y', ''))
-        old_h_attr = float(element.get('h', ''))
-    except (TypeError, ValueError):
-        old_y_attr = old_min_y
-        old_h_attr = old_max_y - old_min_y
-    top_padding = old_min_y - old_y_attr
-    bottom_padding = old_y_attr + old_h_attr - old_max_y
-    if 'y' in element.attrib:
-        element.set('y', format_number(new_min_y - top_padding))
-    if 'h' in element.attrib:
-        element.set('h', format_number((new_max_y - new_min_y) + top_padding + bottom_padding))
-
-    for y_attr, x_attr, point_index in (('y1', 'x1', 0), ('y2', 'x2', -1)):
-        if y_attr not in element.attrib:
-            continue
-        try:
-            x_value = float(element.get(x_attr, transformed[point_index][0]))
-            y_value = float(element.get(y_attr, old_points[point_index][1]))
-        except (TypeError, ValueError):
-            continue
-        owner = _owner_for_point(x_value, y_value, moves)
-        if owner is not None:
-            element.set(y_attr, format_number(y_value + owner.delta_y))
-    return True
-
-
-def _move_merge_for_rect(merge: ET.Element, move: _BusDisRmuMove) -> bool:
-    merge_box = _merge_box(merge)
-    if merge_box is None or not _is_rmu_relation(move.original_box, merge_box):
-        return False
-    return _translate_element_y(merge, move.delta_y)
-
-
-def _normalize_busdis_rmu_spacing(
+def _find_channel_status_for_rect(
     layer: ET.Element,
-    result: RmuEnhancementResult,
-    target_spacing: float | None = None,
-) -> None:
-    """按柜顶 Y 坐标间距重新排列带 BusDis 的环网柜，不缩放任何柜体。"""
-    pairs = _rmu_rects_by_bus_tag(layer, 'BusDis')
-    result.busdis_rect_count = len(pairs)
-    if target_spacing is None:
-        target_spacing = 300.0
-    if target_spacing <= 0:
-        raise RmuGroupingError('带 BusDis 环网柜的相邻柜顶 Y 间距必须大于 0。')
-    spacing = float(target_spacing)
-    result.busdis_target_spacing = spacing
-    if len(pairs) <= 1:
-        result.busdis_column_count = len(pairs)
-        return
+    rect: ET.Element,
+    bus: ET.Element,
+    claimed: set[int],
+) -> ET.Element | None:
+    """为一个 BusDis 环网柜选择唯一的 channel_status 状态点。
 
-    moves = _build_busdis_moves(pairs, spacing)
-    result.busdis_column_count = len({move.column_index for move in moves})
-    moving = [move for move in moves if abs(move.delta_y) > 1e-9]
-    result.busdis_spacing_changed = len(moving)
-    if not moving:
-        return
-
-    forced_owner: dict[int, _BusDisRmuMove] = {}
-    for move in moves:
-        forced_owner[id(move.rect)] = move
-        for member in _elements_inside_rect(layer, move.rect):
-            forced_owner[id(member)] = move
-
-    moved_elements: set[int] = set()
-    busdis_rect_ids = {id(move.rect) for move in moves}
+    优先选择中心点位于 rect 内的状态点；兼容旧图中状态点略微压在线框上的情况，
+    其次允许在外框四周 40 像素范围内选择距离 BusDis 中心最近的状态点。
+    """
+    rect_box = subtree_box(rect)
+    bus_box = subtree_box(bus)
+    if rect_box is None:
+        return None
+    reference_x = bus_box.center_x if bus_box is not None else rect_box.center_x
+    reference_y = bus_box.center_y if bus_box is not None else rect_box.center_y
+    candidates: list[tuple[int, float, str, ET.Element]] = []
     for element in list(layer):
-        tag = local_name(element.tag)
-        if tag == 'rect' and id(element) not in busdis_rect_ids:
+        if id(element) in claimed or not _is_channel_status(element):
             continue
-
-        forced = forced_owner.get(id(element))
-        if forced is not None:
-            if _translate_element_y(element, forced.delta_y):
-                moved_elements.add(id(element))
-            continue
-
-        if tag == 'Merge':
-            for move in moves:
-                if _move_merge_for_rect(element, move):
-                    moved_elements.add(id(element))
-                    break
-            continue
-
-        if tag in _LINE_LIKE_TAGS:
-            if _move_line_by_owners(element, moves):
-                moved_elements.add(id(element))
-            continue
-
         box = subtree_box(element)
         if box is None:
             continue
-        owner = _owner_for_point(box.center_x, box.center_y, moves)
-        if owner is not None and _translate_element_y(element, owner.delta_y):
-            moved_elements.add(id(element))
+        inside = _point_inside_box(box.center_x, box.center_y, rect_box)
+        near = (
+            rect_box.left - 40.0 <= box.center_x <= rect_box.right + 40.0
+            and rect_box.top - 40.0 <= box.center_y <= rect_box.bottom + 40.0
+        )
+        if not inside and not near:
+            continue
+        distance = math.hypot(box.center_x - reference_x, box.center_y - reference_y)
+        candidates.append((0 if inside else 1, distance, element.get('id') or '', element))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+    return candidates[0][3]
 
-    result.busdis_moved_element_count = len(moved_elements)
 
-    # 强制复核：最上方柜保持不动，后续柜顶 Y 坐标差必须等于用户给定值。
-    for column in _group_busdis_columns(pairs):
-        final_boxes = [subtree_box(rect) for rect, _bus, _old_box in column]
-        if any(box is None for box in final_boxes):
-            raise RmuGroupingError('BusDis 环网柜移动后无法重新计算外框范围。')
-        resolved = [box for box in final_boxes if box is not None]
-        resolved.sort(key=lambda box: box.top)
-        for previous, current in zip(resolved, resolved[1:]):
-            actual = current.top - previous.top
-            if abs(actual - spacing) > 1e-6:
-                raise RmuGroupingError(
-                    f'BusDis 环网柜垂直间距验证失败：实际 {format_number(actual)}，'
-                    f'目标 {format_number(spacing)}。'
-                )
+def _channel_status_target(
+    rect_box: Box,
+    status_box: Box,
+    position: str,
+    margin: float,
+) -> tuple[float, float]:
+    if position not in _CHANNEL_STATUS_POSITIONS:
+        raise RmuGroupingError(f'不支持的 channel_status 框内位置：{position!r}。')
+    if status_box.width > rect_box.width + 1e-6 or status_box.height > rect_box.height + 1e-6:
+        raise RmuGroupingError('channel_status 状态点尺寸大于环网柜外框，无法放入框内。')
+
+    x_margin = min(max(0.0, margin), max(0.0, rect_box.width - status_box.width))
+    y_margin = min(max(0.0, margin), max(0.0, rect_box.height - status_box.height))
+
+    if position.endswith('left'):
+        left = rect_box.left + x_margin
+    elif position.endswith('right'):
+        left = rect_box.right - status_box.width - x_margin
+    else:
+        left = rect_box.center_x - status_box.width / 2.0
+
+    if position.startswith('top'):
+        top = rect_box.top + y_margin
+    elif position.startswith('bottom'):
+        top = rect_box.bottom - status_box.height - y_margin
+    else:
+        top = rect_box.center_y - status_box.height / 2.0
+    return left, top
+
+
+def _reposition_channel_statuses(
+    layer: ET.Element,
+    result: RmuEnhancementResult,
+    position: str = 'bottom_left',
+    inner_margin: float = 5.0,
+) -> None:
+    """将每个 BusDis 环网柜的 channel_status 红点移动到框内指定锚点。"""
+    position_value = getattr(position, 'value', position)
+    position_value = str(position_value)
+    if position_value not in _CHANNEL_STATUS_POSITIONS:
+        raise RmuGroupingError(f'不支持的 channel_status 框内位置：{position_value!r}。')
+    if inner_margin < 0:
+        raise RmuGroupingError('channel_status 框内边距不能小于 0。')
+
+    pairs = _rmu_rects_by_bus_tag(layer, 'BusDis')
+    result.channel_status_rect_count = len(pairs)
+    result.channel_status_position = position_value
+    claimed: set[int] = set()
+
+    for rect, bus in pairs:
+        status = _find_channel_status_for_rect(layer, rect, bus, claimed)
+        if status is None:
+            result.channel_status_missing_count += 1
+            continue
+        claimed.add(id(status))
+        result.channel_status_found_count += 1
+
+        rect_box = subtree_box(rect)
+        status_box = subtree_box(status)
+        if rect_box is None or status_box is None:
+            result.channel_status_missing_count += 1
+            continue
+        target_left, target_top = _channel_status_target(
+            rect_box,
+            status_box,
+            position_value,
+            float(inner_margin),
+        )
+        if _translate_element_xy(
+            status,
+            target_left - status_box.left,
+            target_top - status_box.top,
+        ):
+            result.channel_status_moved_count += 1
+
+    if result.channel_status_missing_count:
+        result.warnings.append(
+            f'有 {result.channel_status_missing_count} 个带 BusDis 的环网柜未找到 '
+            f'devref 包含 {_CHANNEL_STATUS_DEVREF_TOKEN} 的 Status 图元。'
+        )
+
 
 def _candidate_title_texts(layer: ET.Element, bus: ET.Element, rect: ET.Element) -> list[tuple[float, ET.Element]]:
     bus_box = subtree_box(bus)
@@ -1249,18 +1126,16 @@ def enhance_rmu_layer(
     *,
     change_smart_frame_color: bool = False,
     smart_frame_color: str = '#00A651',
-    normalize_busdis_spacing: bool = False,
-    busdis_vertical_spacing: float | None = None,
-    # 兼容旧调用参数；语义已升级为“垂直间距”，不再缩放柜高。
-    normalize_busdis_height: bool = False,
-    busdis_target_height: float | None = None,
+    reposition_channel_status: bool = False,
+    channel_status_position: str = 'bottom_left',
+    channel_status_inner_margin: float = 5.0,
     remove_bus_frame_and_reposition_title: bool = False,
 ) -> RmuEnhancementResult:
     """执行环网柜视觉和布局增强。
 
     SMART 着色只修改“框内存在 SMART Text”的 rect 外框，绝不修改 SMART
-    字体本身；BusDis 环网柜按用户给定的柜顶 Y 间距整体平移，柜体尺寸和
-    所有 X 坐标保持不变；带 Bus 的环网柜删除外框并把最近的业务标题放到母线上方。
+    字体本身；channel_status 只移动红色 Status 图元本身，不改变环网柜、母线、
+    设备、连接线或画布位置；带 Bus 的环网柜删除外框并把最近业务标题放到母线上方。
     """
     result = RmuEnhancementResult(file_path=file_path)
     rects = _direct_rects(layer)
@@ -1273,13 +1148,13 @@ def enhance_rmu_layer(
             if _set_static_line_color(rect, smart_frame_color):
                 result.smart_frame_color_changed += 1
 
-    if normalize_busdis_spacing or normalize_busdis_height:
-        spacing = (
-            busdis_vertical_spacing
-            if normalize_busdis_spacing
-            else busdis_target_height
+    if reposition_channel_status:
+        _reposition_channel_statuses(
+            layer,
+            result,
+            position=channel_status_position,
+            inner_margin=channel_status_inner_margin,
         )
-        _normalize_busdis_rmu_spacing(layer, result, spacing)
 
     if remove_bus_frame_and_reposition_title:
         bus_pairs = _rmu_rects_by_bus_tag(layer, 'Bus')
@@ -1302,47 +1177,9 @@ def enhance_rmu_layer(
     return result
 
 
-def _layer_content_bottom(layer: ET.Element) -> float:
-    bottoms = [
-        box.bottom
-        for element in list(layer)
-        if (box := subtree_box(element)) is not None
-    ]
-    return max(bottoms, default=0.0)
-
-
-def _root_canvas_height(root: ET.Element) -> float:
-    values: list[float] = []
-    for attr in ('h', 'height'):
-        try:
-            values.append(float(root.get(attr, '')))
-        except (TypeError, ValueError):
-            pass
-    return max(values, default=0.0)
-
-
 def enhance_rmu_tree(
     tree: ET.ElementTree,
     file_path: Path,
     **kwargs,
 ) -> RmuEnhancementResult:
-    root = tree.getroot()
-    layer = _single_layer(tree, file_path)
-    spacing_enabled = bool(
-        kwargs.get('normalize_busdis_spacing') or kwargs.get('normalize_busdis_height')
-    )
-    original_content_bottom = _layer_content_bottom(layer)
-    original_canvas_height = _root_canvas_height(root)
-    original_bottom_margin = max(0.0, original_canvas_height - original_content_bottom)
-
-    result = enhance_rmu_layer(layer, file_path, **kwargs)
-
-    # 用户增大间距时，必要时只扩展画布高度，避免下方图元被裁剪；不主动缩小画布。
-    if spacing_enabled and original_canvas_height > 0:
-        new_content_bottom = _layer_content_bottom(layer)
-        required_height = math.ceil(new_content_bottom + original_bottom_margin)
-        if required_height > original_canvas_height + 1e-6:
-            root.set('h', format_number(required_height))
-            root.set('height', format_number(required_height))
-            result.canvas_height_expanded_to = float(required_height)
-    return result
+    return enhance_rmu_layer(_single_layer(tree, file_path), file_path, **kwargs)

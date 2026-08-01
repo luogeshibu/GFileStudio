@@ -69,36 +69,3 @@ def test_bus_rect_removed_and_nearest_business_title_centered():
     bus_center = float(bus.get("x")) + float(bus.get("w")) / 2
     assert abs(title_center - bus_center) < 0.001
 
-
-def test_busdis_spacing_moves_whole_cabinet_without_resizing():
-    root = ET.Element("G")
-    layer = ET.SubElement(root, "Layer")
-    r1 = ET.SubElement(layer, "rect", id="20000001", x="100", y="100", w="220", h="220")
-    ET.SubElement(
-        layer, "BusDis", id="38000001", x="200", y="120", w="6", h="160",
-        x1="203", y1="120", x2="203", y2="280", d="203,120 203,280"
-    )
-    r2 = ET.SubElement(layer, "rect", id="20000002", x="100", y="430", w="220", h="220")
-    bus2 = ET.SubElement(
-        layer, "BusDis", id="38000002", x="200", y="450", w="6", h="160",
-        x1="203", y1="450", x2="203", y2="610", d="203,450 203,610"
-    )
-    title = ET.SubElement(
-        layer, "Text", id="80000002", x="120", y="380", w="160", h="40", ts="CAB-2"
-    )
-    tree = ET.ElementTree(root)
-
-    result = enhance_rmu_tree(
-        tree, Path("x.g"),
-        normalize_busdis_spacing=True,
-        busdis_vertical_spacing=300,
-    )
-
-    assert result.busdis_spacing_changed == 1
-    assert r1.get("y") == "100"
-    assert r2.get("y") == "400"
-    assert r2.get("h") == "220"
-    assert r2.get("x") == "100"
-    assert bus2.get("y") == "420"
-    assert bus2.get("x") == "200"
-    assert title.get("y") == "350"

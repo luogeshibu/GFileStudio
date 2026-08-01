@@ -243,8 +243,10 @@ def process_basic(
     total_dynamic_colors = 0
     total_smart_rmu_rects = 0
     total_smart_rmu_frames_changed = 0
-    total_busdis_spacing_changed = 0
-    total_busdis_moved_elements = 0
+    total_channel_status_rects = 0
+    total_channel_status_found = 0
+    total_channel_status_moved = 0
+    total_channel_status_missing = 0
     total_bus_rect_removed = 0
     total_bus_title_moved = 0
 
@@ -323,7 +325,7 @@ def process_basic(
 
             if (
                 settings.change_smart_rmu_frame_color
-                or settings.normalize_busdis_rmu_spacing
+                or settings.reposition_channel_status
                 or settings.remove_bus_rmu_frame_and_reposition_title
             ):
                 enhancement = enhance_rmu_tree(
@@ -331,16 +333,19 @@ def process_basic(
                     input_path,
                     change_smart_frame_color=settings.change_smart_rmu_frame_color,
                     smart_frame_color=settings.smart_rmu_frame_color,
-                    normalize_busdis_spacing=settings.normalize_busdis_rmu_spacing,
-                    busdis_vertical_spacing=settings.busdis_rmu_vertical_spacing,
+                    reposition_channel_status=settings.reposition_channel_status,
+                    channel_status_position=settings.channel_status_position.value,
+                    channel_status_inner_margin=settings.channel_status_inner_margin,
                     remove_bus_frame_and_reposition_title=(
                         settings.remove_bus_rmu_frame_and_reposition_title
                     ),
                 )
                 total_smart_rmu_rects += enhancement.smart_rmu_rect_count
                 total_smart_rmu_frames_changed += enhancement.smart_frame_color_changed
-                total_busdis_spacing_changed += enhancement.busdis_spacing_changed
-                total_busdis_moved_elements += enhancement.busdis_moved_element_count
+                total_channel_status_rects += enhancement.channel_status_rect_count
+                total_channel_status_found += enhancement.channel_status_found_count
+                total_channel_status_moved += enhancement.channel_status_moved_count
+                total_channel_status_missing += enhancement.channel_status_missing_count
                 total_bus_rect_removed += enhancement.bus_rect_removed
                 total_bus_title_moved += enhancement.bus_title_moved
                 if settings.change_smart_rmu_frame_color:
@@ -350,20 +355,14 @@ def process_basic(
                         f"{enhancement.smart_frame_color_changed} 个，颜色 "
                         f"{settings.smart_rmu_frame_color.upper()}；SMART 字体未修改。"
                     )
-                if settings.normalize_busdis_rmu_spacing:
-                    canvas_text = (
-                        f"；画布高度已扩展为 {int(enhancement.canvas_height_expanded_to)}"
-                        if enhancement.canvas_height_expanded_to is not None
-                        else ""
-                    )
+                if settings.reposition_channel_status:
                     log(
-                        f"[BusDis环网柜垂直间距] {input_path.name}：识别带 BusDis 的环网柜 "
-                        f"{enhancement.busdis_rect_count} 个、垂直列 {enhancement.busdis_column_count} 列；"
-                        f"以每列最上方环网柜为基准，相邻柜顶 Y 间距设为 "
-                        f"{settings.busdis_rmu_vertical_spacing} 像素，整体移动环网柜 "
-                        f"{enhancement.busdis_spacing_changed} 个、相关图元 "
-                        f"{enhancement.busdis_moved_element_count} 个；柜高、柜宽及全部 X 坐标未修改"
-                        f"{canvas_text}。"
+                        f"[环网柜红色状态点] {input_path.name}：识别带 BusDis 的环网柜 "
+                        f"{enhancement.channel_status_rect_count} 个，找到 channel_status 状态点 "
+                        f"{enhancement.channel_status_found_count} 个，移动 "
+                        f"{enhancement.channel_status_moved_count} 个到框内“"
+                        f"{settings.channel_status_position.label}”，距边 "
+                        f"{settings.channel_status_inner_margin} 像素；环网柜、母线、设备和连接线位置未修改。"
                     )
                 if settings.remove_bus_rmu_frame_and_reposition_title:
                     log(
@@ -456,8 +455,9 @@ def process_basic(
         f"实际修复 {total_repaired_ids} 个；环网柜 rect {total_rects} 个，重建组合 "
         f"{total_rmu_groups} 个，取消组合 {total_rmu_ungrouped} 个，外框下移 "
         f"{total_rmu_lowered_rects} 个；识别含 SMART 环网柜 {total_smart_rmu_rects} 个，"
-        f"SMART 环网柜外框改色 {total_smart_rmu_frames_changed} 个，BusDis 环网柜间距调整 "
-        f"{total_busdis_spacing_changed} 个、整体移动相关图元 {total_busdis_moved_elements} 个，"
+        f"SMART 环网柜外框改色 {total_smart_rmu_frames_changed} 个，channel_status 状态点"
+        f"找到 {total_channel_status_found} 个、移动 {total_channel_status_moved} 个、"
+        f"未找到 {total_channel_status_missing} 个，"
         f"带 Bus 外框删除 {total_bus_rect_removed} 个，"
         f"标题上移 {total_bus_title_moved} 个；线路/母线颜色修改 {total_color_changed} 个图元。"
     )
@@ -488,8 +488,10 @@ def process_basic(
             "dynamic_color_warning_count": total_dynamic_colors,
             "smart_rmu_rect_count": total_smart_rmu_rects,
             "smart_rmu_frame_color_changed_count": total_smart_rmu_frames_changed,
-            "busdis_rmu_spacing_changed_count": total_busdis_spacing_changed,
-            "busdis_rmu_moved_element_count": total_busdis_moved_elements,
+            "channel_status_rmu_rect_count": total_channel_status_rects,
+            "channel_status_found_count": total_channel_status_found,
+            "channel_status_moved_count": total_channel_status_moved,
+            "channel_status_missing_count": total_channel_status_missing,
             "bus_rmu_frame_removed_count": total_bus_rect_removed,
             "bus_rmu_title_moved_count": total_bus_title_moved,
         },

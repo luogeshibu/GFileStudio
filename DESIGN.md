@@ -1,53 +1,52 @@
-# G File Studio v2.13.2 设计说明
+# G File Studio v2.14.0 设计说明
 
-## 基线
+## 基线与删除项
 
-本版本以 v2.13.1 为基线。除 BusDis 环网柜垂直间距逻辑、对应界面文字、配置字段和日志外，其他数据处理流程保持不变。
+本版本以 v2.13.2 为基线，彻底移除 BusDis 环网柜垂直间距配置、界面控件、处理日志和整体 Y 平移引擎。旧配置键即使仍存在于用户设置中，也不会再被读取或执行。
 
-## BusDis 环网柜垂直间距
+## channel_status 状态点定位
 
 配置字段：
 
 ```text
-BasicSettings.normalize_busdis_rmu_spacing
-BasicSettings.busdis_rmu_vertical_spacing
+BasicSettings.reposition_channel_status
+BasicSettings.channel_status_position
+BasicSettings.channel_status_inner_margin
 ```
 
-默认柜顶 Y 间距为 300，合法范围 1～100000。
+### 环网柜识别
 
-### 列识别
+程序只处理直属 `Layer` 下的 `rect`，且该 rect 内必须存在直属 `<BusDis>`。每个柜体按几何范围寻找 `devref` 包含 `channel_status.zt.icn.g:channel_status` 的直属 `<Status>`。
 
-程序根据环网柜外框的 X 投影重叠和中心 X 距离，将带 `<BusDis>` 的环网柜划分为独立竖直列。不同馈线列不会互相串行排列。
+优先选择中心点位于 rect 内的状态点；为兼容旧图中状态点压在线框上的情况，也允许在 rect 外扩 40 像素范围内选择。候选超过一个时，选择距离本柜 BusDis 中心最近的状态点，并确保同一个 Status 不会分配给多个柜体。
 
-### 目标位置
+### 八个框内锚点
 
-每列按外框顶部 Y 升序排列。最上方外框保持不动，第 `i` 个环网柜目标位置为：
+支持：
 
 ```text
-target_top = first_top + i × vertical_spacing
+top_left      top_center      top_right
+middle_left                   middle_right
+bottom_left   bottom_center   bottom_right
 ```
 
-这里的 `vertical_spacing` 是相邻柜框顶部 Y 坐标之差，不是柜高，也不是两个外框之间的净空。
+目标坐标由 rect 边界、Status 实际宽高和用户内边距计算。默认 `bottom_left`，内边距 5 像素。
 
-### 整体移动
+### 坐标修改范围
 
-每个需要调整的环网柜采用刚体平移：
+只对选中的 Status 做二维刚体平移：
 
-- 外框及完整位于框内的直属图元使用相同 `delta_y`；
-- 同一垂直分区内的标题、状态图标、H.T/SMR 和其他周边元素同步移动；
-- `ConnectLine`、`FeedLine` 等线状图元按路径点所属柜体分别调整 Y，使柜间线段能够自动平移或伸缩；
-- 只修改 `y/y1/y2/cy/mergey` 和路径 `d` 中的 Y 坐标；
-- 不修改 `x/x1/x2/cx/mergex`、宽度、柜高或路径 X 坐标。
+```text
+x / x1 / x2 / cx / mergex
+y / y1 / y2 / cy / mergey
+d 路径坐标（若存在）
+```
 
-当用户输入的柜顶间距小于本列最大柜高时，程序停止该文件处理，避免外框重叠。
-
-### 验证
-
-处理后重新计算每列环网柜外框，强制验证相邻外框顶部 Y 差等于用户输入值。验证失败时不输出该文件。
+不修改宽高、颜色、ID、devref、业务属性、旋转、缩放，也不修改 rect、BusDis、设备、文字、连接线、Merge 或画布。
 
 ## UI
 
-- 字段名称：`相邻柜顶 Y 间距`；
-- 控件：防滚轮 `IntegerInput`；
-- 提示明确说明“整体移动 Y，不缩放柜体”；
-- ID 和环网柜组合的互斥选项仍使用 v2.13.1 的绿色圆形单选框样式。
+- 复选框：`移动环网柜红色状态点（channel_status）`；
+- 位置：防滚轮 `WheelSafeComboBox`，提供八个锚点；
+- 距边：防滚轮 `IntegerInput`，默认 5，范围 0～1000；
+- 默认选择“左下角”，对应用户示意图中的目标位置。
