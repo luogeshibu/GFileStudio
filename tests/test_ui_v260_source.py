@@ -55,4 +55,4 @@ def test_choice_controls_use_visible_exclusive_checkboxes():
     assert 'setProperty("optionChoice", True)' in basic
     assert 'setProperty("optionChoice", True)' in selector
     assert 'QCheckBox[optionChoice="true"]:checked' in theme
-    assert "border: 2px solid #2f6be8" in theme
+    assert "border: 2px solid #0b7a5a" in theme

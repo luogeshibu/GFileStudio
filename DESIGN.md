@@ -1,173 +1,152 @@
-# G File Studio v2.9.0 设计说明
+# G File Studio v2.10.0 设计说明
 
-## 1. 版本基线
+## 1. 版本目标
 
-v2.9.0 基于 v2.8.0。图形边距、馈线图合并、图框添加和重复 ID 逻辑保持不变，本版集中新增：
+v2.10.0 基于 v2.9.1，保持现有业务流程不变，主要完成：
 
-- 环网柜取消组合；
-- 非环网柜 Merge 保护；
-- FeedLine / ConnectLine / BusDis / Bus 颜色修改；
-- 基础处理输出冲突策略；
-- 互斥选择控件统一样式。
+1. 从用户提供的组合/未组合样本中重新学习 Merge 格式；
+2. 兼容历史 G 文件中不同的 `mergesize` 语义；
+3. 用几何关系替代脆弱的固定区间算法；
+4. 提升组合和取消组合在大型馈线文件中的稳定性；
+5. 将 UI 统一为电网图形工作台主题。
 
-## 2. 基础处理数据模型
+## 2. Merge 格式观察
 
-`BasicSettings` 新增：
+### 2.1 编辑器标准样本
 
-```text
-rmu_action: none | group | ungroup
-change_feedline_color / feedline_color
-change_connectline_color / connectline_color
-change_busdis_color / busdis_color
-change_bus_color / bus_color
-output_conflict_action: overwrite | timestamp
-task_timestamp
-```
-
-保留旧字段 `group_rmu_elements` 作为 v2.7/v2.8 兼容入口。当 `rmu_action=none` 且该旧字段为 true 时按 group 执行。
-
-## 3. Merge 连续成员模型
-
-G 文件中的组合不是 XML 嵌套，而是：
+`$combine-test.sln.pic.g` 中：
 
 ```xml
-<Merge mergesize="N" />
-<成员1 />
-...
-<成员N />
+<Merge mergesize="2" mergex="760" mergey="437" w="150" h="60" />
+<CBreaker x="760" y="437" w="40" h="40" />
+<CBreaker x="870" y="457" w="40" h="40" />
 ```
 
-扫描时校验：
+观察结论：
 
-- `mergesize` 必须是正整数；
-- 成员范围不得超出 Layer；
-- 不同 Merge 成员区间不得重叠。
+- `mergesize=2`，等于两个实际成员数量；
+- Merge 几何是成员可见边界的并集；
+- `tfr` 中的缩放值等于 `w/h × 100`；
+- Merge ID 继续使用 20 前缀编号。
 
-成员范围中包含 `<rect>` 的 Merge 视为环网柜 Merge；不包含 `<rect>` 的 Merge 视为其他业务 Merge。
+### 2.2 历史项目文件
 
-## 4. 环网柜组合
-
-识别范围：
+AJWD-22 中同时出现：
 
 ```text
-G → 直属 Layer → 直属 <rect>
+mergesize = 几何成员数量
+mergesize = 几何成员数量 + 1
 ```
 
-成员判定采用完整边界包含：
+因此读取逻辑不能把一种语义写死。
 
-```text
-member.left   >= rect.left
-member.top    >= rect.top
-member.right  <= rect.right
-member.bottom <= rect.bottom
-```
+## 3. Merge 扫描算法
 
-允许 0.5 坐标单位容差。只看中心点不够，任何部分伸出框外的图元都不组合。
+对每个直属 Merge：
 
-处理旧 Merge：
+1. 读取 `mergex、mergey、w、h`；
+2. 找到它与下一个 Merge 之间的直属元素；
+3. 计算每个元素真实可见边界；
+4. 选择完整位于 Merge 几何范围内的元素作为几何成员；
+5. 比较几何成员数与 `mergesize`：
+   - 相等：成员数量语义；
+   - 差 1：兼容头+成员语义；
+   - 其他：记录告警，仍以几何范围为准；
+6. Merge 缺少有效几何时才使用顺序兜底。
 
-- 环网柜 Merge 头先移除，再按严格框内规则重建；
-- 对应同一个 rect 的合法旧 Merge 尽量复用 ID 和样式；
-- 不含 rect 的其他业务 Merge 及其成员完整保留，并从环网柜成员候选中排除。
+不再使用“不同 Merge 区间不能重叠”作为读取历史文件的阻断条件。
 
-新 Merge 几何复现用户提供的手工组合文件：
+## 4. 环网柜 Merge 识别
+
+一个 Merge 被视为环网柜 Merge，需满足：
+
+- Merge 几何完整包含一个直属 `<rect>`；
+- Merge 与 rect 中心偏差在合理范围；
+- Merge 面积不超过 rect 面积的 4 倍；
+- 无几何的旧文件，仅在第一个连续成员就是 rect 时使用顺序兜底。
+
+这样可避免把后续无关 rect 或大型业务组合误判成环网柜。
+
+## 5. 组合
+
+1. 识别并移除已有环网柜 Merge 头；
+2. 保留其他业务 Merge，并保护其几何成员；
+3. 对每个 rect 收集完整边界位于框内的直属元素；
+4. 将成员整理为连续区间；
+5. 在成员前插入 Merge；
+6. 新建 Merge 使用：
 
 ```text
 mergex = rect.left - 1
 mergey = rect.top - 1
 w      = rect.width + 1
 h      = rect.height + 1
+mergesize = 实际成员数量
 ```
 
-右、下边界与 rect 保持一致。
+7. 输出后验证每个 rect 对应一个 Merge，成员均完整位于 rect 内。
 
-## 5. 新 Merge ID
+## 6. 取消组合
 
-优先级：
+取消操作不依赖 `mergesize` 单一语义，而是通过 Merge 与 rect 的几何关系识别环网柜 Merge。
 
-1. 当前文件已有 Merge 的主流 ID 格式；
-2. 当前文件中 20 前缀对象的固定总位数；
-3. 从各同类元素主流格式提取文件最大顺序号；
-4. 通用唯一 ID 兜底。
-
-用户样本中图元顺序号最大为 27，因此新 Merge 为 `20000028`。
-
-## 6. 取消环网柜组合
-
-取消操作只删除合法 Merge 块中成员包含 `<rect>` 的 Merge 头：
+图形编辑器的 Layer 直属元素按 XML 顺序绘制，越靠后的元素层级越高。用户提供的对照样本表明：
 
 ```text
-删除：<Merge ... />
-保留：其后的全部成员
+CBreaker
+CBreaker
+rect
 ```
 
-不修改：
-
-- 成员排列顺序；
-- ID；
-- 坐标和 d；
-- link / node_area / p_FatherObjId；
-- 颜色、字体、线宽和业务属性。
-
-不含 `<rect>` 的其他业务 Merge 保留。无法可靠解析 `mergesize` 的异常 Merge 不猜测删除，只记录日志告警。
-
-## 7. 颜色处理
-
-严格处理直属 Layer 的：
+会让 rect 外框覆盖在设备上；正确顺序应为：
 
 ```text
-FeedLine
-ConnectLine
-BusDis
-Bus
+rect
+CBreaker
+CBreaker
 ```
 
-每个启用规则只修改：
+因此取消组合按以下步骤处理：
+
+1. 删除对应环网柜 Merge 头；
+2. 找到该 rect 内完整包含的直属设备图元；
+3. 若 rect 位于任一柜内设备之后，则把 rect 移到最早柜内设备之前；
+4. 仅调整 Layer 顺序，不修改坐标、ID、引用、颜色和业务属性；
+5. 剩余非环网柜 Merge 保持不变。
+
+## 7. ID 与引用
+
+- 组合不会修改原成员 ID；
+- 新 Merge ID 优先参考已有 Merge 的同类格式；
+- 无现有 Merge 时参考当前文件的 20 前缀对象；
+- 所有新 ID 必须在 Layer ID 和引用 token 命名空间中唯一；
+- 取消组合不修改 `link`、`node_area`、`p_FatherObjId`。
+
+## 8. 电网工作台主题
+
+主色体系：
 
 ```text
-lcc = #RRGGBB
-lc  = R,G,B
+运行区深色：#0A1F29
+电网主绿：#0B7A5A
+拓扑青绿：#1BA39C
+工作区背景：#F3F7F6
+卡片边框：#CFDFDA
+告警红：#C94F50
 ```
 
-颜色输入经过 `#RRGGBB` 校验和标准化。不修改 `fc`、`fcc`、`lw`、`ls`、坐标、ID 或引用。
+设计原则：
 
-## 8. 输出冲突
+- 侧边栏用于运行导航，深色降低长时间使用疲劳；
+- 绿色仅用于主操作、当前页面、进度和选中状态；
+- 功能区保持白色卡片和高对比输入控件；
+- 互斥选项继续使用统一卡片式 QCheckBox；
+- 不绑定任何具体企业品牌。
 
-UI 在启动任务前枚举本次全部输入文件，并比较目标路径。以下情况视为冲突：
+## 9. 回归样本
 
-- 输入文件路径与输出文件路径相同；
-- 输出目录已经存在同名目标文件。
-
-处理策略：
-
-- `timestamp`：本批全部输出统一添加任务时间戳；若时间戳名称仍存在，追加 `-2`、`-3`。
-- `overwrite`：写 `.tmp` 文件，重新解析成功后使用 `os.replace` 原子替换。
-- 取消：不启动任务。
-
-## 9. UI 选择样式
-
-互斥选择使用 `QCheckBox + QButtonGroup(exclusive=True)`。所有选项设置 `optionChoice=true`，共享：
-
-- 20px 指示器；
-- 统一卡片内边距和最小高度；
-- 选中蓝色边框、浅蓝背景；
-- 统一 hover、disabled 状态。
-
-## 10. 处理顺序
-
-```text
-通用属性规则
-→ 环网柜组合/取消组合
-→ 线路与母线颜色
-→ 重复 ID 检查/修复
-→ XML 临时写出与重解析
-→ 安全输出
-```
-
-## 11. 回归样本
-
-- `tests/data/no-combine.sln.pic.g`：组合后生成 `Merge 20000028`，`mergesize=23`。
-- `tests/data/combine.sln.pic.g`：取消组合后所有 28 个原成员保留。
-- 用户提供的 `cancel-combine.sln.pic.g`：与取消组合结果的 Layer 标签、属性和顺序一致。
-- 颜色引擎测试验证只修改 `lc/lcc`。
-- 时间戳冲突测试验证源文件不被覆盖。
+- `generic-combine-test.sln.pic.g`：验证标准 `mergesize=成员数量`。
+- `combine.sln.pic.g` / `no-combine.sln.pic.g`：验证环网柜 23 个框内成员。
+- `JED-CTL-AJWD-22.sln.pic.g`：验证混合 mergesize 历史格式可取消并重建。
+- `rmu-frame-on-top.g` / `rmu-devices-on-top.g`：验证取消组合后 rect 自动下移到设备下层且坐标不变。
+- 其他现有合并、边距、图框、颜色和 ID 测试继续执行。

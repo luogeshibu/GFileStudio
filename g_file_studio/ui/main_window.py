@@ -31,7 +31,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.temp_workspace = temp_workspace
         self.user_settings = user_settings
-        self.setWindowTitle("G File Studio")
+        self.setWindowTitle("G File Studio · 电网图形处理")
         self.resize(1280, 860)
         self.setMinimumSize(1040, 720)
 
@@ -63,7 +63,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.setStyleSheet(build_app_style())
 
-        self.statusBar().showMessage("就绪。鼠标停留在控件上可查看提示，按 F1 打开帮助中心。")
+        self.statusBar().showMessage("电网图形工作台已就绪。鼠标停留在控件上可查看提示，按 F1 打开帮助中心。")
         self._install_help_shortcut()
 
     def _build_sidebar(self) -> QWidget:
@@ -93,12 +93,16 @@ class MainWindow(QMainWindow):
         brand_text_layout.setSpacing(1)
         title = QLabel("G File Studio")
         title.setObjectName("brandTitle")
-        subtitle = QLabel("XML 图形处理工作台")
+        subtitle = QLabel("电网 XML 图形处理工作台")
         subtitle.setObjectName("brandSubtitle")
         brand_text_layout.addWidget(title)
         brand_text_layout.addWidget(subtitle)
         brand_row.addWidget(badge)
         brand_row.addWidget(brand_text, 1)
+
+        grid_badge = QLabel("GRID GRAPHICS · 电网图形")
+        grid_badge.setObjectName("gridModeBadge")
+        grid_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.nav = QListWidget()
         self.nav.setObjectName("navigation")
@@ -122,7 +126,9 @@ class MainWindow(QMainWindow):
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         side_layout.addLayout(brand_row)
-        side_layout.addSpacing(24)
+        side_layout.addSpacing(14)
+        side_layout.addWidget(grid_badge)
+        side_layout.addSpacing(12)
         side_layout.addWidget(self.nav, 1)
         side_layout.addSpacing(10)
         side_layout.addWidget(version)

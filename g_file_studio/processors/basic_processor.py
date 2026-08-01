@@ -238,6 +238,7 @@ def process_basic(
     total_rmu_members = 0
     total_rmu_ungrouped = 0
     total_rmu_released_members = 0
+    total_rmu_lowered_rects = 0
     total_color_changed = 0
     total_dynamic_colors = 0
 
@@ -296,14 +297,21 @@ def process_basic(
                 ungrouping = ungroup_rmu_tree(tree, input_path)
                 total_rmu_ungrouped += ungrouping.removed_rmu_merge_count
                 total_rmu_released_members += ungrouping.released_member_count
+                total_rmu_lowered_rects += ungrouping.lowered_rect_count
                 log(
                     f"[取消环网柜组合] {input_path.name}：删除环网柜 Merge "
                     f"{ungrouping.removed_rmu_merge_count} 个，释放成员 "
-                    f"{ungrouping.released_member_count} 个，保留其他业务 Merge "
+                    f"{ungrouping.released_member_count} 个，将环网柜外框下移到设备下层 "
+                    f"{ungrouping.lowered_rect_count} 个，保留其他业务 Merge "
                     f"{ungrouping.preserved_non_rmu_merge_count} 个。"
                 )
                 for merge_id in ungrouping.removed_merge_ids:
-                    log(f"  - 已删除环网柜 Merge ID {merge_id or '<无ID>'}；成员保持不变。")
+                    log(f"  - 已删除环网柜 Merge ID {merge_id or '<无ID>'}。")
+                for rect_id in ungrouping.lowered_rect_ids:
+                    log(
+                        f"  - rect ID {rect_id or '<无ID>'} 已移动到柜内设备之前；"
+                        "仅调整图层顺序，坐标和业务属性不变。"
+                    )
                 for warning in ungrouping.warnings:
                     log(f"[取消环网柜组合告警] {warning}")
 
@@ -386,8 +394,8 @@ def process_basic(
         f"[基础处理汇总] 输入 {len(files)} 个文件，成功 {len(outputs)} 个，失败 {len(failed)} 个；"
         f"重复 ID {total_duplicate_kinds} 种，需处理图元 {total_duplicate_elements} 个，"
         f"实际修复 {total_repaired_ids} 个；环网柜 rect {total_rects} 个，重建组合 "
-        f"{total_rmu_groups} 个，取消组合 {total_rmu_ungrouped} 个；颜色修改 "
-        f"{total_color_changed} 个图元。"
+        f"{total_rmu_groups} 个，取消组合 {total_rmu_ungrouped} 个，外框下移 "
+        f"{total_rmu_lowered_rects} 个；颜色修改 {total_color_changed} 个图元。"
     )
 
     return ProcessingResult(
@@ -411,6 +419,7 @@ def process_basic(
             "rmu_grouped_member_count": total_rmu_members,
             "rmu_ungrouped_count": total_rmu_ungrouped,
             "rmu_released_member_count": total_rmu_released_members,
+            "rmu_lowered_rect_count": total_rmu_lowered_rects,
             "color_changed_count": total_color_changed,
             "dynamic_color_warning_count": total_dynamic_colors,
         },

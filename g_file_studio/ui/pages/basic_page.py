@@ -151,8 +151,8 @@ class BasicPage(BasePage):
         description = QLabel(
             "“组合所有环网柜”会将每个直属 <rect> 作为环网柜外框，只组合完整位于矩形框内部的直属图元；"
             "任何部分位于框外的连接线、状态图标和文字都不会进入组合。"
-            "“取消所有环网柜组合”只删除成员中含 <rect> 的 <Merge> 头元素，原成员、坐标、ID、引用和顺序保持不变；"
-            "其他业务 Merge 不受影响。"
+            "“取消所有环网柜组合”会删除成员中含 <rect> 的 <Merge> 头元素，并把 rect 外框移动到柜内设备之前，"
+            "使外框位于设备下层；坐标、ID、引用和业务属性不变，其他业务 Merge 不受影响。"
         )
         description.setWordWrap(True)
         description.setObjectName("mutedText")
@@ -170,7 +170,7 @@ class BasicPage(BasePage):
             "单文件模式处理所选文件；目录模式处理第一层全部 G 文件。每个 rect 对应一个 Merge，只组合框内图元。"
         )
         self.rmu_ungroup.setToolTip(
-            "删除所有成员中包含 rect 的环网柜 Merge，保留其全部成员；不删除其他业务 Merge。"
+            "删除所有成员中包含 rect 的环网柜 Merge，保留全部成员，并把 rect 调整到柜内设备下层；不删除其他业务 Merge。"
         )
         for button in (self.rmu_none, self.rmu_group, self.rmu_ungroup):
             button.setProperty("optionChoice", True)

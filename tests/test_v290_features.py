@@ -55,8 +55,8 @@ def test_ungroup_removes_only_merge_containing_rect():
     tree = ET.ElementTree(
         ET.fromstring(
             '<G><Layer>'
-            '<Merge id="900" mergesize="1"/><Text id="1" x="0" y="0" w="1" h="1"/>'
-            '<Merge id="901" mergesize="2"/><rect id="2" x="0" y="0" w="20" h="20"/>'
+            '<Merge id="900" mergesize="2"/><Text id="1" x="0" y="0" w="1" h="1"/>'
+            '<Merge id="901" mergesize="3"/><rect id="2" x="0" y="0" w="20" h="20"/>'
             '<Text id="3" x="1" y="1" w="2" h="2"/>'
             '</Layer></G>'
         )
@@ -73,7 +73,7 @@ def test_group_preserves_non_rmu_merge():
     tree = ET.ElementTree(
         ET.fromstring(
             '<G><Layer>'
-            '<Merge id="900" mergesize="1"/><Text id="1" x="500" y="500" w="2" h="2"/>'
+            '<Merge id="900" mergesize="2"/><Text id="1" x="500" y="500" w="2" h="2"/>'
             '<rect id="2000000" x="0" y="0" w="100" h="100"/>'
             '<Text id="8000001" x="10" y="10" w="10" h="10"/>'
             '</Layer></G>'
