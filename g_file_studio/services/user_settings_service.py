@@ -79,6 +79,13 @@ class UserSettingsService:
         value = self.get_value(key, "true" if default else "false").strip().lower()
         return value in {"1", "true", "yes", "on"}
 
+    def get_int(self, key: str, default: int = 0) -> int:
+        """读取整数设置；内容损坏或为空时安全回退到默认值。"""
+        try:
+            return int(self.get_value(key, str(default)).strip())
+        except (TypeError, ValueError):
+            return default
+
     def set_value(self, key: str, value: object) -> None:
         section, option = self._split_key(key)
         with self._lock:

@@ -7,7 +7,7 @@ from typing import Iterable
 
 from g_file_studio.engines.color_engine import ColorRule, apply_line_colors
 from g_file_studio.engines.id_engine import inspect_tree_ids, repair_tree_duplicate_ids
-from g_file_studio.engines.rmu_group_engine import group_rmu_tree, ungroup_rmu_tree
+from g_file_studio.engines.rmu_group_engine import enhance_rmu_tree, group_rmu_tree, ungroup_rmu_tree
 from g_file_studio.models import (
     BasicIdAction,
     BasicOutputConflictAction,
@@ -241,6 +241,12 @@ def process_basic(
     total_rmu_lowered_rects = 0
     total_color_changed = 0
     total_dynamic_colors = 0
+    total_smart_rmu_rects = 0
+    total_smart_rmu_frames_changed = 0
+    total_busdis_spacing_changed = 0
+    total_busdis_moved_elements = 0
+    total_bus_rect_removed = 0
+    total_bus_title_moved = 0
 
     if settings.output_conflict_action == BasicOutputConflictAction.TIMESTAMP:
         log(f"[输出策略] 检测到输出冲突，本批文件统一自动添加时间戳 {timestamp}。")
@@ -314,6 +320,60 @@ def process_basic(
                     )
                 for warning in ungrouping.warnings:
                     log(f"[取消环网柜组合告警] {warning}")
+
+            if (
+                settings.change_smart_rmu_frame_color
+                or settings.normalize_busdis_rmu_spacing
+                or settings.remove_bus_rmu_frame_and_reposition_title
+            ):
+                enhancement = enhance_rmu_tree(
+                    tree,
+                    input_path,
+                    change_smart_frame_color=settings.change_smart_rmu_frame_color,
+                    smart_frame_color=settings.smart_rmu_frame_color,
+                    normalize_busdis_spacing=settings.normalize_busdis_rmu_spacing,
+                    busdis_vertical_spacing=settings.busdis_rmu_vertical_spacing,
+                    remove_bus_frame_and_reposition_title=(
+                        settings.remove_bus_rmu_frame_and_reposition_title
+                    ),
+                )
+                total_smart_rmu_rects += enhancement.smart_rmu_rect_count
+                total_smart_rmu_frames_changed += enhancement.smart_frame_color_changed
+                total_busdis_spacing_changed += enhancement.busdis_spacing_changed
+                total_busdis_moved_elements += enhancement.busdis_moved_element_count
+                total_bus_rect_removed += enhancement.bus_rect_removed
+                total_bus_title_moved += enhancement.bus_title_moved
+                if settings.change_smart_rmu_frame_color:
+                    log(
+                        f"[SMART环网柜外框颜色] {input_path.name}：识别框内含 SMART 的环网柜 "
+                        f"{enhancement.smart_rmu_rect_count} 个，仅修改外框 "
+                        f"{enhancement.smart_frame_color_changed} 个，颜色 "
+                        f"{settings.smart_rmu_frame_color.upper()}；SMART 字体未修改。"
+                    )
+                if settings.normalize_busdis_rmu_spacing:
+                    canvas_text = (
+                        f"；画布高度已扩展为 {int(enhancement.canvas_height_expanded_to)}"
+                        if enhancement.canvas_height_expanded_to is not None
+                        else ""
+                    )
+                    log(
+                        f"[BusDis环网柜垂直间距] {input_path.name}：识别带 BusDis 的环网柜 "
+                        f"{enhancement.busdis_rect_count} 个、垂直列 {enhancement.busdis_column_count} 列；"
+                        f"以每列最上方环网柜为基准，相邻柜顶 Y 间距设为 "
+                        f"{settings.busdis_rmu_vertical_spacing} 像素，整体移动环网柜 "
+                        f"{enhancement.busdis_spacing_changed} 个、相关图元 "
+                        f"{enhancement.busdis_moved_element_count} 个；柜高、柜宽及全部 X 坐标未修改"
+                        f"{canvas_text}。"
+                    )
+                if settings.remove_bus_rmu_frame_and_reposition_title:
+                    log(
+                        f"[Bus环网柜处理] {input_path.name}：识别带 Bus 的环网柜 "
+                        f"{enhancement.bus_rect_count} 个，删除外框 {enhancement.bus_rect_removed} 个，"
+                        f"删除对应 Merge {enhancement.bus_merge_removed} 个，"
+                        f"将最近标题移到母线上方并居中 {enhancement.bus_title_moved} 个。"
+                    )
+                for warning in enhancement.warnings:
+                    log(f"[环网柜增强告警] {warning}")
 
             if color_rules:
                 color_result = apply_line_colors(tree, input_path, color_rules)
@@ -395,7 +455,11 @@ def process_basic(
         f"重复 ID {total_duplicate_kinds} 种，需处理图元 {total_duplicate_elements} 个，"
         f"实际修复 {total_repaired_ids} 个；环网柜 rect {total_rects} 个，重建组合 "
         f"{total_rmu_groups} 个，取消组合 {total_rmu_ungrouped} 个，外框下移 "
-        f"{total_rmu_lowered_rects} 个；颜色修改 {total_color_changed} 个图元。"
+        f"{total_rmu_lowered_rects} 个；识别含 SMART 环网柜 {total_smart_rmu_rects} 个，"
+        f"SMART 环网柜外框改色 {total_smart_rmu_frames_changed} 个，BusDis 环网柜间距调整 "
+        f"{total_busdis_spacing_changed} 个、整体移动相关图元 {total_busdis_moved_elements} 个，"
+        f"带 Bus 外框删除 {total_bus_rect_removed} 个，"
+        f"标题上移 {total_bus_title_moved} 个；线路/母线颜色修改 {total_color_changed} 个图元。"
     )
 
     return ProcessingResult(
@@ -422,5 +486,11 @@ def process_basic(
             "rmu_lowered_rect_count": total_rmu_lowered_rects,
             "color_changed_count": total_color_changed,
             "dynamic_color_warning_count": total_dynamic_colors,
+            "smart_rmu_rect_count": total_smart_rmu_rects,
+            "smart_rmu_frame_color_changed_count": total_smart_rmu_frames_changed,
+            "busdis_rmu_spacing_changed_count": total_busdis_spacing_changed,
+            "busdis_rmu_moved_element_count": total_busdis_moved_elements,
+            "bus_rmu_frame_removed_count": total_bus_rect_removed,
+            "bus_rmu_title_moved_count": total_bus_title_moved,
         },
     )

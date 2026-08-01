@@ -16,20 +16,17 @@ from PySide6.QtWidgets import (
 )
 
 from g_file_studio import __version__
-from g_file_studio.services.temp_workspace_service import TempWorkspaceService
 from g_file_studio.services.user_settings_service import UserSettingsService
-from g_file_studio.ui.pages import BasicPage, FramePage, HelpPage, MarginPage, MergePage, PipelinePage
+from g_file_studio.ui.pages import BasicPage, FramePage, HelpPage, MarginPage, MergePage
 from g_file_studio.ui.theme import build_app_style
 
 
 class MainWindow(QMainWindow):
     def __init__(
         self,
-        temp_workspace: TempWorkspaceService,
         user_settings: UserSettingsService,
     ) -> None:
         super().__init__()
-        self.temp_workspace = temp_workspace
         self.user_settings = user_settings
         self.setWindowTitle("G File Studio · 电网图形处理")
         self.resize(1280, 860)
@@ -45,7 +42,6 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.setObjectName("contentRoot")
         self.pages = [
-            PipelinePage(self.temp_workspace, self.user_settings),
             BasicPage(self.user_settings),
             MergePage(self.user_settings),
             MarginPage(self.user_settings),
@@ -108,8 +104,7 @@ class MainWindow(QMainWindow):
         self.nav.setObjectName("navigation")
         self.nav.setSpacing(1)
         navigation = [
-            ("一键处理", "运行完整或自定义处理流程"),
-            ("基础处理", "执行通用属性替换和元素删除规则"),
+            ("基础处理", "执行通用规则、ID、环网柜及颜色处理"),
             ("馈线图合并", "按用户选择顺序合并多个馈线 G 图"),
             ("图形边距调整", "调整主体四边距，并同步适配内置图框"),
             ("图框添加", "添加 SLD 外框、标题和签字栏"),
@@ -147,11 +142,10 @@ class MainWindow(QMainWindow):
             save_state = getattr(page, "save_state", None)
             if callable(save_state):
                 save_state()
-        self.temp_workspace.cleanup()
         super().closeEvent(event)
 
     def _install_help_shortcut(self) -> None:
         action = QAction(self)
         action.setShortcut(QKeySequence.StandardKey.HelpContents)
-        action.triggered.connect(lambda: self.nav.setCurrentRow(5))
+        action.triggered.connect(lambda: self.nav.setCurrentRow(4))
         self.addAction(action)

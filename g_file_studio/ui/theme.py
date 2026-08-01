@@ -13,7 +13,7 @@ QWidget {
     font-size: 13px;
 }
 
-QLabel, QCheckBox {
+QLabel, QCheckBox, QRadioButton {
     background: transparent;
 }
 
@@ -268,6 +268,65 @@ QCheckBox[optionChoice="true"]:disabled {
     color: #87999d;
 }
 
+
+QRadioButton {
+    color: #29464d;
+    spacing: 8px;
+    padding: 2px 0;
+}
+
+QRadioButton::indicator {
+    width: 20px;
+    height: 20px;
+    background: #ffffff;
+    border: 2px solid #708b8f;
+    border-radius: 10px;
+}
+
+QRadioButton::indicator:hover {
+    border-color: #0c8f69;
+    background: #eff9f5;
+}
+
+QRadioButton::indicator:checked {
+    background: transparent;
+    border: none;
+    border-radius: 10px;
+    image: url("__RADIO_CHECKED_ICON__");
+}
+
+QRadioButton::indicator:disabled {
+    background: #e9efee;
+    border-color: #bdcbc8;
+}
+
+QRadioButton[optionChoice="true"] {
+    background: #f8fbfa;
+    border: 1px solid #c9dad6;
+    border-radius: 8px;
+    padding: 8px 12px;
+    min-height: 28px;
+    color: #29464d;
+    font-weight: 620;
+}
+
+QRadioButton[optionChoice="true"]:hover {
+    background: #eef8f4;
+    border-color: #72b39f;
+}
+
+QRadioButton[optionChoice="true"]:checked {
+    background: #ddf3ea;
+    border: 2px solid #0b7a5a;
+    color: #075843;
+}
+
+QRadioButton[optionChoice="true"]:disabled {
+    background: #eef3f2;
+    border-color: #d2ddda;
+    color: #87999d;
+}
+
 QLabel#colorValue {
     color: #29464d;
     font-family: "Consolas", "Cascadia Mono", monospace;
@@ -455,4 +514,11 @@ def build_app_style() -> str:
     from g_file_studio.services.paths import resource_root
 
     check_icon = (resource_root() / "resources" / "icons" / "check.svg").as_posix()
-    return APP_STYLE.replace("__CHECK_ICON__", check_icon)
+    radio_checked_icon = (
+        resource_root() / "resources" / "icons" / "radio_checked.svg"
+    ).as_posix()
+    return (
+        APP_STYLE
+        .replace("__CHECK_ICON__", check_icon)
+        .replace("__RADIO_CHECKED_ICON__", radio_checked_icon)
+    )

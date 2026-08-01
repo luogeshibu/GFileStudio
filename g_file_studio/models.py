@@ -96,6 +96,15 @@ class BasicSettings(BaseModel):
     change_bus_color: bool = False
     bus_color: str = "#0000FF"
 
+    # 环网柜增强处理。可与组合/取消组合同时启用。
+    # 仅修改“框内存在 SMART Text”的环网柜外框颜色，不修改 SMART 字体。
+    change_smart_rmu_frame_color: bool = False
+    smart_rmu_frame_color: str = "#00A651"
+    normalize_busdis_rmu_spacing: bool = False
+    # 相邻带 BusDis 环网柜的顶部 Y 坐标间距。处理时仅整体平移 Y，柜体尺寸和 X 不变。
+    busdis_rmu_vertical_spacing: int = Field(default=300, ge=1, le=100000)
+    remove_bus_rmu_frame_and_reposition_title: bool = False
+
     output_conflict_action: BasicOutputConflictAction = BasicOutputConflictAction.OVERWRITE
     task_timestamp: str = ""
 
@@ -191,20 +200,6 @@ class FrameSettings(BaseModel):
             "files": {},
         }
 
-
-class PipelineSettings(BaseModel):
-    source_path: Path
-    input_mode: InputMode = InputMode.DIRECTORY
-    temp_work_dir: Path
-    output_dir: Path
-    run_basic: bool = True
-    run_merge: bool = True
-    run_margin: bool = True
-    run_frame: bool = True
-    basic: BasicSettings
-    merge: MergeSettings
-    margin: MarginSettings
-    frame: FrameSettings
 
 
 class ProcessingResult(BaseModel):

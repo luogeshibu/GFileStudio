@@ -66,7 +66,6 @@ def test_pages_use_complete_path_keys() -> None:
         "merge/output_directory",
         "margin/output_directory",
         "frame/output_directory",
-        "pipeline/output_directory",
     ):
         assert key in sources
 

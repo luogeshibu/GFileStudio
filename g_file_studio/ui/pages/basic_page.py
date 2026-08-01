@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QFormLayout,
+    QRadioButton,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -33,6 +34,7 @@ from g_file_studio.ui.widgets import (
     HelpLabel,
     InfoBanner,
     InputSourceSelector,
+    IntegerInput,
     PathRow,
     TaskPanel,
 )
@@ -53,7 +55,8 @@ class BasicPage(BasePage):
         self.layout.addWidget(
             InfoBanner(
                 "输入可以是单个 G 文件，也可以是 G 文件目录。属性替换、元素删除、重复 ID 检查/修复、"
-                "环网柜组合/取消组合，以及线路与母线颜色修改，都在点击“开始基础处理”后统一执行。"
+                "环网柜组合/取消组合、含 SMART 环网柜外框改色，以及线路与母线颜色修改，"
+                "都在点击“开始基础处理”后统一执行。"
                 "目录模式下每个文件独立处理。"
             )
         )
@@ -127,9 +130,9 @@ class BasicPage(BasePage):
         options.setSpacing(12)
         self.id_action_group = QButtonGroup(self)
         self.id_action_group.setExclusive(True)
-        self.id_none = QCheckBox("不处理 ID")
-        self.id_check = QCheckBox("检查重复 ID")
-        self.id_repair = QCheckBox("检查并修复重复 ID")
+        self.id_none = QRadioButton("不处理 ID")
+        self.id_check = QRadioButton("检查重复 ID")
+        self.id_repair = QRadioButton("检查并修复重复 ID")
         self.id_none.setToolTip("本次基础处理不执行重复 ID 检查。")
         self.id_check.setToolTip("只检查并将结果写入当前日志，不修改 ID。")
         self.id_repair.setToolTip(
@@ -144,7 +147,7 @@ class BasicPage(BasePage):
         self.layout.addWidget(box)
 
     def _build_rmu_options(self) -> None:
-        box = QGroupBox("环网柜组合处理")
+        box = QGroupBox("环网柜图元处理")
         layout = QVBoxLayout(box)
         layout.setContentsMargins(16, 18, 16, 14)
         layout.setSpacing(10)
@@ -162,9 +165,9 @@ class BasicPage(BasePage):
         options.setSpacing(12)
         self.rmu_action_group = QButtonGroup(self)
         self.rmu_action_group.setExclusive(True)
-        self.rmu_none = QCheckBox("不处理环网柜组合")
-        self.rmu_group = QCheckBox("组合所有环网柜")
-        self.rmu_ungroup = QCheckBox("取消所有环网柜组合")
+        self.rmu_none = QRadioButton("不处理环网柜组合")
+        self.rmu_group = QRadioButton("组合所有环网柜")
+        self.rmu_ungroup = QRadioButton("取消所有环网柜组合")
         self.rmu_none.setToolTip("保持文件现有 Merge 结构不变。")
         self.rmu_group.setToolTip(
             "单文件模式处理所选文件；目录模式处理第一层全部 G 文件。每个 rect 对应一个 Merge，只组合框内图元。"
@@ -178,6 +181,65 @@ class BasicPage(BasePage):
             options.addWidget(button)
         options.addStretch(1)
         layout.addLayout(options)
+
+        enhancement_title = QLabel("环网柜增强操作（可多选）")
+        enhancement_title.setObjectName("sectionCaption")
+        layout.addWidget(enhancement_title)
+
+        self.rmu_smart_frame_color = ColorRuleRow(
+            "含 SMART 的环网柜外框",
+            "rect + Text[ts=SMART]",
+            "#00A651",
+        )
+        self.rmu_smart_frame_color.enabled_box.setText(
+            "修改含 SMART 的环网柜外框颜色"
+        )
+        self.rmu_smart_frame_color.enabled_box.setToolTip(
+            "只识别框内存在 ts=SMART 的 Text 的直属 rect，并修改该 rect 的静态边框色 "
+            "lc 和 lcc；SMART 字体颜色以及不含 SMART 的其他环网柜外框均保持不变。"
+        )
+        layout.addWidget(self.rmu_smart_frame_color)
+
+        # 增强操作按竖列展示；每项仍是独立复选框，可按需多选。
+        height_row = QHBoxLayout()
+        height_row.setContentsMargins(0, 0, 0, 0)
+        height_row.setSpacing(10)
+        self.rmu_normalize_busdis_spacing = QCheckBox(
+            "统一带 BusDis 的环网柜垂直间距（仅整体移动 Y）"
+        )
+        self.rmu_normalize_busdis_spacing.setProperty("optionChoice", True)
+        self.rmu_normalize_busdis_spacing.setToolTip(
+            "按 Y 坐标从上到下排列同一竖列内带 BusDis 的环网柜。每列最上方环网柜保持不动，"
+            "后续环网柜及其柜内、柜外周边相关图元整体沿 Y 方向移动；不压缩或拉伸柜框，任何 X 坐标均不改变。"
+        )
+        self.rmu_busdis_vertical_spacing = IntegerInput(300, 1, 100000)
+        self.rmu_busdis_vertical_spacing.setFixedWidth(150)
+        self.rmu_busdis_vertical_spacing.setToolTip(
+            "输入相邻环网柜顶部 Y 坐标之间的距离。例如输入 300，后一个柜框顶部 Y = 前一个柜框顶部 Y + 300。"
+            "鼠标滚轮、方向键和 PageUp/PageDown 不会改变该值。"
+        )
+        height_label = QLabel("相邻柜顶 Y 间距")
+        height_label.setObjectName("mutedText")
+        height_unit = QLabel("像素")
+        height_unit.setObjectName("mutedText")
+        height_row.addWidget(self.rmu_normalize_busdis_spacing)
+        height_row.addWidget(height_label)
+        height_row.addWidget(self.rmu_busdis_vertical_spacing)
+        height_row.addWidget(height_unit)
+        height_row.addStretch(1)
+        layout.addLayout(height_row)
+        self.rmu_normalize_busdis_spacing.toggled.connect(
+            self.rmu_busdis_vertical_spacing.setEnabled
+        )
+
+        self.rmu_remove_bus_frame = QCheckBox(
+            "删除带 Bus 的环网柜外框，并将最近标题放到母线上方"
+        )
+        self.rmu_remove_bus_frame.setProperty("optionChoice", True)
+        self.rmu_remove_bus_frame.setToolTip(
+            "识别 rect 框内的 Bus，删除该 rect 及对应环网柜 Merge；寻找距离母线最近的业务标题 Text，移动到母线上方并水平居中。"
+        )
+        layout.addWidget(self.rmu_remove_bus_frame)
         self.layout.addWidget(box)
 
     def _build_color_options(self) -> None:
@@ -223,6 +285,36 @@ class BasicPage(BasePage):
         }
         rmu_buttons.get(rmu_value, self.rmu_none).setChecked(True)
 
+        legacy_frame_color = self.user_settings.get_value(
+            "basic/rmu/frame_color", "#00A651"
+        )
+        self.rmu_smart_frame_color.set_color(
+            self.user_settings.get_value(
+                "basic/rmu/smart_frame_color", legacy_frame_color
+            )
+        )
+        self.rmu_smart_frame_color.set_enabled(
+            self.user_settings.get_bool(
+                "basic/rmu/smart_frame_color_enabled",
+                self.user_settings.get_bool("basic/rmu/frame_color_enabled", False),
+            )
+        )
+        self.rmu_normalize_busdis_spacing.setChecked(
+            self.user_settings.get_bool(
+                "basic/rmu/normalize_busdis_spacing",
+                self.user_settings.get_bool("basic/rmu/normalize_busdis_height", False),
+            )
+        )
+        self.rmu_busdis_vertical_spacing.setValue(
+            self.user_settings.get_int("basic/rmu/busdis_vertical_spacing", 300)
+        )
+        self.rmu_busdis_vertical_spacing.setEnabled(
+            self.rmu_normalize_busdis_spacing.isChecked()
+        )
+        self.rmu_remove_bus_frame.setChecked(
+            self.user_settings.get_bool("basic/rmu/remove_bus_frame", False)
+        )
+
         color_rows = {
             "feedline": self.feedline_color,
             "connectline": self.connectline_color,
@@ -243,6 +335,24 @@ class BasicPage(BasePage):
     def _persist_options(self) -> None:
         self.user_settings.set_value("basic/id_action", self._selected_id_action().value)
         self.user_settings.set_value("basic/rmu_action", self._selected_rmu_action().value)
+        self.user_settings.set_value(
+            "basic/rmu/smart_frame_color", self.rmu_smart_frame_color.color()
+        )
+        self.user_settings.set_value(
+            "basic/rmu/smart_frame_color_enabled",
+            self.rmu_smart_frame_color.is_enabled(),
+        )
+        self.user_settings.set_value(
+            "basic/rmu/normalize_busdis_spacing",
+            self.rmu_normalize_busdis_spacing.isChecked(),
+        )
+        self.user_settings.set_value(
+            "basic/rmu/busdis_vertical_spacing",
+            self.rmu_busdis_vertical_spacing.value(),
+        )
+        self.user_settings.set_value(
+            "basic/rmu/remove_bus_frame", self.rmu_remove_bus_frame.isChecked()
+        )
         color_rows = {
             "feedline": self.feedline_color,
             "connectline": self.connectline_color,
@@ -369,6 +479,13 @@ class BasicPage(BasePage):
                 "busdis_color": self.busdis_color.color(),
                 "change_bus_color": self.bus_color.is_enabled(),
                 "bus_color": self.bus_color.color(),
+                "change_smart_rmu_frame_color": (
+                    self.rmu_smart_frame_color.is_enabled()
+                ),
+                "smart_rmu_frame_color": self.rmu_smart_frame_color.color(),
+                "normalize_busdis_rmu_spacing": self.rmu_normalize_busdis_spacing.isChecked(),
+                "busdis_rmu_vertical_spacing": self.rmu_busdis_vertical_spacing.value(),
+                "remove_bus_rmu_frame_and_reposition_title": self.rmu_remove_bus_frame.isChecked(),
             }
         )
 

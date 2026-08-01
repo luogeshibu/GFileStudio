@@ -8,7 +8,6 @@ from PySide6.QtWidgets import QApplication, QStyleFactory
 
 from g_file_studio import __version__
 from g_file_studio.services.paths import app_icon_ico, app_icon_png, ensure_default_workspace
-from g_file_studio.services.temp_workspace_service import TempWorkspaceService
 from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.main_window import MainWindow
 
@@ -49,11 +48,7 @@ def main() -> int:
         app.setWindowIcon(icon)
 
     user_settings = UserSettingsService()
-    temp_workspace = TempWorkspaceService()
-    temp_workspace.startup_cleanup()
-    app.aboutToQuit.connect(temp_workspace.cleanup)
-
-    window = MainWindow(temp_workspace, user_settings)
+    window = MainWindow(user_settings)
     if not icon.isNull():
         window.setWindowIcon(icon)
     window.show()
