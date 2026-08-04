@@ -24,7 +24,7 @@ if (-not (Test-Path $IconPath)) {
 
 $ReleaseDir = Join-Path $ProjectRoot "release"
 New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
-$ZipPath = Join-Path $ReleaseDir "GFileStudio_v2.14.0_Windows_x64.zip"
+$ZipPath = Join-Path $ReleaseDir "GFileStudio_v2.16.1_Windows_x64.zip"
 if (Test-Path $ZipPath) {
     Remove-Item $ZipPath -Force
 }

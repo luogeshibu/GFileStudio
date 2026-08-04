@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterable
 
 from g_file_studio.engines.color_engine import ColorRule, apply_line_colors
+from g_file_studio.engines.connection_engine import repair_tree_connections
 from g_file_studio.engines.id_engine import inspect_tree_ids, repair_tree_duplicate_ids
 from g_file_studio.engines.rmu_group_engine import enhance_rmu_tree, group_rmu_tree, ungroup_rmu_tree
 from g_file_studio.models import (
@@ -249,6 +250,14 @@ def process_basic(
     total_channel_status_missing = 0
     total_bus_rect_removed = 0
     total_bus_title_moved = 0
+    total_connection_aligned_devices = 0
+    total_connection_adjusted_lines = 0
+    total_connection_relations = 0
+    total_connection_added = 0
+    total_connection_updated = 0
+    total_connection_removed = 0
+    total_connection_changed_elements = 0
+    total_connection_changed_attributes = 0
 
     if settings.output_conflict_action == BasicOutputConflictAction.TIMESTAMP:
         log(f"[输出策略] 检测到输出冲突，本批文件统一自动添加时间戳 {timestamp}。")
@@ -393,6 +402,35 @@ def process_basic(
                     log(line)
                 log(f"[颜色处理] {input_path.name}：合计修改 {color_result.total_changed} 个图元。")
 
+            if settings.repair_connection_points:
+                connection = repair_tree_connections(tree, input_path)
+                total_connection_aligned_devices += connection.aligned_device_count
+                total_connection_adjusted_lines += connection.adjusted_line_endpoint_count
+                total_connection_relations += connection.inferred_relation_count
+                total_connection_added += connection.added_reference_count
+                total_connection_updated += connection.updated_reference_count
+                total_connection_removed += connection.removed_reference_count
+                total_connection_changed_elements += connection.changed_element_count
+                total_connection_changed_attributes += connection.changed_attribute_count
+                log(
+                    f"[连接点修复] {input_path.name}：连接线 {connection.line_count} 个、"
+                    f"母线 {connection.conductor_count} 个、可连接设备 {connection.device_count} 个；"
+                    f"半像素水平对齐设备 {connection.aligned_device_count} 个、连接线坐标修改 "
+                    f"{connection.adjusted_line_endpoint_count} 个；保守识别连接关系 "
+                    f"{connection.inferred_relation_count} 条，新增引用 "
+                    f"{connection.added_reference_count} 处；原引用改号 "
+                    f"{connection.updated_reference_count} 处、原引用删除 "
+                    f"{connection.removed_reference_count} 处，实际变更图元 "
+                    f"{connection.changed_element_count} 个、属性 "
+                    f"{connection.changed_attribute_count} 个。"
+                )
+                if connection.changed_element_ids:
+                    log("  - 变更图元 ID：" + ", ".join(connection.changed_element_ids))
+                else:
+                    log("  - 当前文件连接关系完整，无需修改。")
+                for warning in connection.warnings:
+                    log(f"[连接点修复告警] {input_path.name}：{warning}")
+
             if settings.id_action == BasicIdAction.CHECK:
                 kinds, elements = _log_id_inspection(input_path, tree, log)
                 total_duplicate_kinds += kinds
@@ -449,7 +487,7 @@ def process_basic(
         if progress:
             progress(round(index * 100 / len(files)))
 
-    log(
+    summary = (
         f"[基础处理汇总] 输入 {len(files)} 个文件，成功 {len(outputs)} 个，失败 {len(failed)} 个；"
         f"重复 ID {total_duplicate_kinds} 种，需处理图元 {total_duplicate_elements} 个，"
         f"实际修复 {total_repaired_ids} 个；环网柜 rect {total_rects} 个，重建组合 "
@@ -457,10 +495,20 @@ def process_basic(
         f"{total_rmu_lowered_rects} 个；识别含 SMART 环网柜 {total_smart_rmu_rects} 个，"
         f"SMART 环网柜外框改色 {total_smart_rmu_frames_changed} 个，channel_status 状态点"
         f"找到 {total_channel_status_found} 个、移动 {total_channel_status_moved} 个、"
-        f"未找到 {total_channel_status_missing} 个，"
-        f"带 Bus 外框删除 {total_bus_rect_removed} 个，"
-        f"标题上移 {total_bus_title_moved} 个；线路/母线颜色修改 {total_color_changed} 个图元。"
+        f"未找到 {total_channel_status_missing} 个，带 Bus 外框删除 "
+        f"{total_bus_rect_removed} 个，标题上移 {total_bus_title_moved} 个；"
+        f"线路/母线颜色修改 {total_color_changed} 个图元"
     )
+    if settings.repair_connection_points:
+        summary += (
+            f"；连接点半像素水平对齐设备 {total_connection_aligned_devices} 个、连接线坐标修改 "
+            f"{total_connection_adjusted_lines} 个，保守识别关系 {total_connection_relations} 条，新增引用 "
+            f"{total_connection_added} 处、原引用改号 {total_connection_updated} 处、"
+            f"原引用删除 {total_connection_removed} 处，"
+            f"变更图元 {total_connection_changed_elements} 个、属性 "
+            f"{total_connection_changed_attributes} 个"
+        )
+    log(summary + "。")
 
     return ProcessingResult(
         success=not failed,
@@ -494,5 +542,14 @@ def process_basic(
             "channel_status_missing_count": total_channel_status_missing,
             "bus_rmu_frame_removed_count": total_bus_rect_removed,
             "bus_rmu_title_moved_count": total_bus_title_moved,
+            "connection_repair_enabled": settings.repair_connection_points,
+            "aligned_connection_device_count": total_connection_aligned_devices,
+            "adjusted_connection_line_count": total_connection_adjusted_lines,
+            "inferred_connection_count": total_connection_relations,
+            "added_connection_reference_count": total_connection_added,
+            "updated_connection_reference_count": total_connection_updated,
+            "removed_connection_reference_count": total_connection_removed,
+            "changed_connection_element_count": total_connection_changed_elements,
+            "changed_connection_attribute_count": total_connection_changed_attributes,
         },
     )

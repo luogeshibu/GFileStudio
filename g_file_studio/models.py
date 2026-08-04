@@ -108,6 +108,8 @@ class BasicSettings(BaseModel):
 
     # 这些选项都由统一的“开始基础处理”按钮执行。
     id_action: BasicIdAction = BasicIdAction.NONE
+    # 勾选后先水平对齐已验证设备端口和直接连接线，再修复 node_area/link。
+    repair_connection_points: bool = False
     rmu_action: RmuAction = RmuAction.NONE
     # 兼容 v2.7/v2.8 代码；为 True 且 rmu_action=NONE 时按 GROUP 处理。
     group_rmu_elements: bool = False
@@ -132,6 +134,19 @@ class BasicSettings(BaseModel):
     channel_status_inner_margin: int = Field(default=5, ge=0, le=1000)
     remove_bus_rmu_frame_and_reposition_title: bool = False
 
+    output_conflict_action: BasicOutputConflictAction = BasicOutputConflictAction.OVERWRITE
+    task_timestamp: str = ""
+
+
+class ConnectionRepairSettings(BaseModel):
+    """连接点修复参数。
+
+    该独立操作只允许修改 ``node_area`` 和 ``link``，其他图元属性保持不变。
+    """
+
+    source_path: Path
+    input_mode: InputMode = InputMode.DIRECTORY
+    output_dir: Path
     output_conflict_action: BasicOutputConflictAction = BasicOutputConflictAction.OVERWRITE
     task_timestamp: str = ""
 

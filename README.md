@@ -1,6 +1,62 @@
-# G File Studio v2.14.0
+# G File Studio v2.16.1
 
-G File Studio 是用于处理 XML 格式 `.sln.pic.g` / `.g` 文件的 PySide6 桌面工具。本版基于 v2.13.2，删除 BusDis 环网柜整体 Y 间距调整功能，新增环网柜红色 `channel_status` 状态点的框内定位功能。其他业务逻辑保持不变。
+G File Studio 是用于处理 XML 格式 `.sln.pic.g` / `.g` 文件的 PySide6 桌面工具。本版修复 v2.16.0 连接点重建可能把原有断路器、刀闸端口编号交换或合并的问题。连接点修复改为“保守增量模式”：允许少修，禁止把原来正确的连接修坏。
+
+## v2.16.1 更新
+
+### 保守连接点修复
+
+继续使用基础处理中的复选框：
+
+```text
+☐ 修复连接点（补齐 node_area / link）
+```
+
+勾选后点击“开始基础处理”，程序遵循以下强制规则：
+
+1. 原文件中已有的 `node_area` / `link` 连接组原样冻结，不删除、不改号、不交换端口；
+2. 先根据设备端和连接线端已有的单边引用补齐另一边缺失引用；
+3. 只有连接线端点与设备真实端口唯一匹配时，才新增一组连接；存在多个等距候选时跳过并写入告警；
+4. 端口模板学习保留设备原来的 `own_port` 编号，不再按坐标排序重新编号；
+5. 设备签名包含 `tag + devref + rotate + w + h`，避免不同尺寸图标共用错误模板；
+6. 设备位置只处理已验证的正半像素 X 偏移，例如 `2197.5 → 2197`；只改设备 `x`，不修改任何连接线坐标；
+7. 每个设备移动前验证全部已知连接，验证失败立即跳过，相当于逐设备回滚；
+8. 输出前再次检查所有原连接仍完整存在，任何原连接丢失或改号时该文件处理失败，不输出错误结果。
+
+### 修改范围
+
+允许修改：
+
+```text
+设备：仅 x（且只限验证通过的半像素吸附）、缺失的 node_area
+ConnectLine / FeedLine：仅缺失的 node_area / link
+Bus / BusDis：仅缺失的 node_area
+```
+
+明确禁止：
+
+```text
+删除或改写原 node_area/link
+修改连接线 d/x/y/w/h
+修改设备 y、宽高、旋转、ID、文字、颜色、devref
+修改 Merge、rect、Status、画布或其他业务属性
+```
+
+### 回归验证
+
+- 小型连接问题文件仍新增 24 处缺失引用，Q1/Q2 和四个接地刀闸连接恢复；
+- AJWD-06 半像素样本保守吸附 41 个已验证设备，连接线坐标修改 0 个；
+- MODE-ZZZ 原文件新增缺失引用，但原有端口编号修改 0 处、删除 0 处；
+- 重复执行第二次无变化；
+- 自动化测试 112 项通过。
+
+## v2.15.1 更新
+
+### “修复连接点”改为复选框
+
+- 勾选后随“开始基础处理”统一执行；
+- 不勾选时完全跳过；
+- 选择状态保存到 `basic/repair_connection_points`。
 
 ## v2.14.0 更新
 
@@ -43,18 +99,18 @@ G File Studio 是用于处理 XML 格式 `.sln.pic.g` / `.g` 文件的 PySide6 �
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 Get-ChildItem -Path . -Recurse -File | Unblock-File
 .\setup_env.ps1 -Dev
-.un_dev.ps1
+.\run_dev.ps1
 ```
 
 ## 打包
 
 ```powershell
-.uild_exe.ps1
+.\build_exe.ps1
 ```
 
 输出：
 
 ```text
 dist\GFileStudio\GFileStudio.exe
-release\GFileStudio_v2.14.0_Windows_x64.zip
+release\GFileStudio_v2.16.1_Windows_x64.zip
 ```
