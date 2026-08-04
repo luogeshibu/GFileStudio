@@ -7,6 +7,7 @@ from typing import Iterable
 
 from g_file_studio.engines.color_engine import ColorRule, apply_line_colors
 from g_file_studio.engines.connection_engine import repair_tree_connections
+from g_file_studio.engines.feeder_title_engine import move_feeder_titles_above_buses
 from g_file_studio.engines.id_engine import inspect_tree_ids, repair_tree_duplicate_ids
 from g_file_studio.engines.rmu_group_engine import enhance_rmu_tree, group_rmu_tree, ungroup_rmu_tree
 from g_file_studio.models import (
@@ -258,6 +259,12 @@ def process_basic(
     total_connection_removed = 0
     total_connection_changed_elements = 0
     total_connection_changed_attributes = 0
+    total_feeder_title_bus_segments = 0
+    total_feeder_title_bus_groups = 0
+    total_feeder_title_candidates = 0
+    total_feeder_title_moved = 0
+    total_feeder_title_unchanged = 0
+    total_feeder_title_skipped = 0
 
     if settings.output_conflict_action == BasicOutputConflictAction.TIMESTAMP:
         log(f"[输出策略] 检测到输出冲突，本批文件统一自动添加时间戳 {timestamp}。")
@@ -383,6 +390,35 @@ def process_basic(
                 for warning in enhancement.warnings:
                     log(f"[环网柜增强告警] {warning}")
 
+            if settings.move_feeder_titles_above_bus:
+                feeder_titles = move_feeder_titles_above_buses(tree, input_path)
+                total_feeder_title_bus_segments += feeder_titles.bus_segment_count
+                total_feeder_title_bus_groups += feeder_titles.bus_group_count
+                total_feeder_title_candidates += feeder_titles.candidate_count
+                total_feeder_title_moved += feeder_titles.moved_count
+                total_feeder_title_unchanged += feeder_titles.unchanged_count
+                total_feeder_title_skipped += (
+                    feeder_titles.skipped_no_candidate_count
+                    + feeder_titles.skipped_ambiguous_count
+                    + feeder_titles.skipped_collision_count
+                )
+                log(
+                    f"[馈线名称定位] {input_path.name}：有效水平 Bus "
+                    f"{feeder_titles.bus_segment_count} 条、母线组 {feeder_titles.bus_group_count} 组、"
+                    f"候选 Text {feeder_titles.candidate_count} 个；移动 "
+                    f"{feeder_titles.moved_count} 个、已在目标位置 "
+                    f"{feeder_titles.unchanged_count} 个、跳过 "
+                    f"{feeder_titles.skipped_no_candidate_count + feeder_titles.skipped_ambiguous_count + feeder_titles.skipped_collision_count} 组。"
+                )
+                for move in feeder_titles.moves:
+                    log(
+                        f"  - Text {move.text_id} [{move.text}]：Bus "
+                        f"{','.join(move.bus_ids)}；({move.old_x}, {move.old_y}) → "
+                        f"({move.new_x}, {move.new_y})。"
+                    )
+                for warning in feeder_titles.warnings:
+                    log(f"[馈线名称定位告警] {input_path.name}：{warning}")
+
             if color_rules:
                 color_result = apply_line_colors(tree, input_path, color_rules)
                 total_color_changed += color_result.total_changed
@@ -499,6 +535,12 @@ def process_basic(
         f"{total_bus_rect_removed} 个，标题上移 {total_bus_title_moved} 个；"
         f"线路/母线颜色修改 {total_color_changed} 个图元"
     )
+    if settings.move_feeder_titles_above_bus:
+        summary += (
+            f"；馈线名称定位识别有效 Bus {total_feeder_title_bus_segments} 条、母线组 "
+            f"{total_feeder_title_bus_groups} 组，移动 Text {total_feeder_title_moved} 个、"
+            f"已在目标位置 {total_feeder_title_unchanged} 个、跳过 {total_feeder_title_skipped} 组"
+        )
     if settings.repair_connection_points:
         summary += (
             f"；连接点半像素水平对齐设备 {total_connection_aligned_devices} 个、连接线坐标修改 "
@@ -542,6 +584,13 @@ def process_basic(
             "channel_status_missing_count": total_channel_status_missing,
             "bus_rmu_frame_removed_count": total_bus_rect_removed,
             "bus_rmu_title_moved_count": total_bus_title_moved,
+            "move_feeder_titles_above_bus_enabled": settings.move_feeder_titles_above_bus,
+            "feeder_title_bus_segment_count": total_feeder_title_bus_segments,
+            "feeder_title_bus_group_count": total_feeder_title_bus_groups,
+            "feeder_title_candidate_count": total_feeder_title_candidates,
+            "feeder_title_moved_count": total_feeder_title_moved,
+            "feeder_title_unchanged_count": total_feeder_title_unchanged,
+            "feeder_title_skipped_count": total_feeder_title_skipped,
             "connection_repair_enabled": settings.repair_connection_points,
             "aligned_connection_device_count": total_connection_aligned_devices,
             "adjusted_connection_line_count": total_connection_adjusted_lines,

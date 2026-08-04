@@ -57,7 +57,7 @@ class BasicPage(BasePage):
         self.layout.addWidget(
             InfoBanner(
                 "输入可以是单个 G 文件，也可以是 G 文件目录。属性替换、元素删除、重复 ID 检查/修复、"
-                "环网柜组合/取消组合、SMART 外框改色、红色状态点定位、连接点修复，以及线路与母线颜色修改，"
+                "环网柜组合/取消组合、SMART 外框改色、红色状态点定位、馈线名称定位、连接点修复，以及线路与母线颜色修改，"
                 "都在点击“开始基础处理”后统一执行。连接点修复仅在勾选时处理 node_area/link；"
                 "未勾选时完全跳过。目录模式下每个文件独立处理。"
             )
@@ -108,6 +108,7 @@ class BasicPage(BasePage):
         self._build_id_options()
         self._build_rmu_options()
         self._build_color_options()
+        self._build_feeder_title_options()
         self._build_connection_repair()
         self._restore_options()
 
@@ -284,6 +285,32 @@ class BasicPage(BasePage):
             layout.addWidget(row)
         self.layout.addWidget(box)
 
+
+    def _build_feeder_title_options(self) -> None:
+        box = QGroupBox("母线馈线名称定位")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(16, 18, 16, 14)
+        layout.setSpacing(10)
+
+        description = QLabel(
+            "识别有效的水平 <Bus>，将上下平行且范围重叠的双母线视为一组；"
+            "再依据 Text 的内容、字号和局部几何位置选择唯一可确认的馈线名称，"
+            "移动到最上方母线的正上方并水平居中。识别不使用 key_name 或 keyid；"
+            "无法唯一判断时跳过。该操作只修改目标 Text 的 x、y，不修改文字内容、字体、颜色、"
+            "母线、设备、连接线、ID 或模型关联属性。"
+        )
+        description.setWordWrap(True)
+        description.setObjectName("mutedText")
+        layout.addWidget(description)
+
+        self.move_feeder_titles_above_bus = QCheckBox("将馈线名称移动到母线上方")
+        self.move_feeder_titles_above_bus.setProperty("optionChoice", True)
+        self.move_feeder_titles_above_bus.setToolTip(
+            "勾选后随‘开始基础处理’执行；不勾选时完全跳过。纯数字、设备标签和说明文字不会移动。"
+        )
+        layout.addWidget(self.move_feeder_titles_above_bus)
+        self.layout.addWidget(box)
+
     def _build_connection_repair(self) -> None:
         box = QGroupBox("连接点修复")
         layout = QVBoxLayout(box)
@@ -360,6 +387,9 @@ class BasicPage(BasePage):
         self.rmu_remove_bus_frame.setChecked(
             self.user_settings.get_bool("basic/rmu/remove_bus_frame", False)
         )
+        self.move_feeder_titles_above_bus.setChecked(
+            self.user_settings.get_bool("basic/move_feeder_titles_above_bus", False)
+        )
         self.repair_connection_points.setChecked(
             self.user_settings.get_bool("basic/repair_connection_points", False)
         )
@@ -405,6 +435,10 @@ class BasicPage(BasePage):
         )
         self.user_settings.set_value(
             "basic/rmu/remove_bus_frame", self.rmu_remove_bus_frame.isChecked()
+        )
+        self.user_settings.set_value(
+            "basic/move_feeder_titles_above_bus",
+            self.move_feeder_titles_above_bus.isChecked(),
         )
         self.user_settings.set_value(
             "basic/repair_connection_points", self.repair_connection_points.isChecked()
@@ -526,6 +560,7 @@ class BasicPage(BasePage):
             update={
                 "id_action": self._selected_id_action(),
                 "repair_connection_points": self.repair_connection_points.isChecked(),
+                "move_feeder_titles_above_bus": self.move_feeder_titles_above_bus.isChecked(),
                 "rmu_action": self._selected_rmu_action(),
                 "group_rmu_elements": False,
                 "change_feedline_color": self.feedline_color.is_enabled(),

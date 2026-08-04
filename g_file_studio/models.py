@@ -108,8 +108,10 @@ class BasicSettings(BaseModel):
 
     # 这些选项都由统一的“开始基础处理”按钮执行。
     id_action: BasicIdAction = BasicIdAction.NONE
-    # 勾选后先水平对齐已验证设备端口和直接连接线，再修复 node_area/link。
+    # 勾选后仅做保守的设备半像素吸附，并补齐缺失的 node_area/link。
     repair_connection_points: bool = False
+    # 仅依据 Bus/Text 几何和文字特征，将唯一可确认的馈线名称移到主母线正上方。
+    move_feeder_titles_above_bus: bool = False
     rmu_action: RmuAction = RmuAction.NONE
     # 兼容 v2.7/v2.8 代码；为 True 且 rmu_action=NONE 时按 GROUP 处理。
     group_rmu_elements: bool = False
