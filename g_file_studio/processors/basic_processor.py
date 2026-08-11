@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -8,16 +9,16 @@ from typing import Iterable
 from g_file_studio.engines.color_engine import ColorRule, apply_line_colors
 from g_file_studio.engines.connection_engine import repair_tree_connections
 from g_file_studio.engines.feeder_title_engine import move_feeder_titles_above_buses
-from g_file_studio.engines.id_engine import inspect_tree_ids, repair_tree_duplicate_ids
+from g_file_studio.engines.icon_upgrade_engine import analyze_icon_pairs, apply_icon_upgrade
 from g_file_studio.engines.rmu_group_engine import enhance_rmu_tree, group_rmu_tree, ungroup_rmu_tree
+from g_file_studio.engines.rmu_identification_engine import identify_rmus
 from g_file_studio.models import (
-    BasicIdAction,
     BasicOutputConflictAction,
     BasicSettings,
     ProcessingResult,
     RmuAction,
 )
-from g_file_studio.processors.common import LogCallback, ProgressCallback, discover_g_inputs
+from g_file_studio.processors.common import LogCallback, ProgressCallback, discover_g_inputs, enforce_confirmed_id_rules
 from g_file_studio.services.output_naming import (
     make_task_timestamp,
     marked_output_name,
@@ -111,6 +112,25 @@ def _validate_rules(settings: BasicSettings) -> None:
         if not settings.delete_target_attribute.strip():
             raise ValueError("启用‘删除匹配元素’后，属性名不能为空。")
 
+    if settings.identify_rmu_name_and_type and not any((
+        settings.rmu_name_top, settings.rmu_name_bottom, settings.rmu_name_left, settings.rmu_name_right
+    )):
+        raise ValueError("启用环网柜名称与柜型识别后，柜名位置至少选择一个方向。")
+
+    if settings.upgrade_icon_geometry:
+        analysis = analyze_icon_pairs(settings.old_icon_files, settings.new_icon_files)
+        problems: list[str] = []
+        if analysis.missing_old:
+            problems.append("缺少旧图元：" + ", ".join(analysis.missing_old))
+        if analysis.missing_new:
+            problems.append("缺少新图元：" + ", ".join(analysis.missing_new))
+        if analysis.incompatible:
+            problems.append("不兼容图元：" + " | ".join(analysis.incompatible))
+        if not analysis.rules:
+            problems.append("没有可用的旧/新图元配对。")
+        if problems:
+            raise ValueError("图元版本升级适配检查未通过：" + "；".join(problems))
+
 
 def _process_layer(
     layer: ET.Element,
@@ -148,23 +168,6 @@ def _process_layer(
             replaced += 1
 
     return replaced, removed_matching, removed_ids
-
-
-def _log_id_inspection(input_path: Path, tree: ET.ElementTree, log: LogCallback) -> tuple[int, int]:
-    inspection = inspect_tree_ids(tree, input_path)
-    duplicate_kinds = len(inspection.duplicate_groups)
-    duplicate_elements = inspection.duplicate_element_count
-    log(
-        f"[ID检查] {input_path.name}：Layer 直属图元 {inspection.direct_element_count} 个，"
-        f"带 ID 图元 {inspection.element_with_id_count} 个，重复 ID {duplicate_kinds} 种，"
-        f"需重新分配 {duplicate_elements} 个图元。"
-    )
-    for group in inspection.duplicate_groups:
-        tags = ", ".join(group.tags)
-        log(f"  - ID {group.value} 出现 {group.count} 次；元素类型：{tags}")
-    if not inspection.has_duplicates:
-        log(f"[ID检查] {input_path.name}：未发现重复 ID。")
-    return duplicate_kinds, duplicate_elements
 
 
 def _effective_rmu_action(settings: BasicSettings) -> RmuAction:
@@ -212,6 +215,25 @@ def _output_path_for(
     return settings.output_dir / input_path.name
 
 
+def _write_rmu_csv(output_path: Path, identification) -> Path:
+    stem, _suffix = strip_g_suffix(output_path.name)
+    csv_path = output_path.with_name(f"{stem}.rmu.csv")
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow([
+            "CabinetName", "CabinetType", "LCount", "TCount", "SMART",
+            "NamePosition", "Confidence", "RectID", "RectX", "RectY", "RectW", "RectH", "Warnings",
+        ])
+        for item in identification.items:
+            writer.writerow([
+                item.name, item.rmu_type, item.l_count, item.t_count, item.smart_count,
+                item.name_position, item.confidence, item.rect_id,
+                f"{item.rect_x:g}", f"{item.rect_y:g}", f"{item.rect_w:g}", f"{item.rect_h:g}",
+                " | ".join(item.warnings),
+            ])
+    return csv_path
+
+
 def process_basic(
     settings: BasicSettings,
     log: LogCallback = print,
@@ -225,6 +247,21 @@ def process_basic(
     timestamp = settings.task_timestamp.strip() or make_task_timestamp()
     rmu_action = _effective_rmu_action(settings)
     color_rules = _color_rules(settings)
+    icon_analysis = (
+        analyze_icon_pairs(settings.old_icon_files, settings.new_icon_files)
+        if settings.upgrade_icon_geometry
+        else None
+    )
+    icon_rules = icon_analysis.rules if icon_analysis is not None else {}
+    if settings.upgrade_icon_geometry:
+        log(f"[图元版本升级] 已加载并验证 {len(icon_rules)} 种旧/新图元配对。")
+        for name, rule in sorted(icon_rules.items()):
+            log(
+                f"  - {name}：{rule.old.width:g}×{rule.old.height:g} → "
+                f"{rule.new.width:g}×{rule.new.height:g}；AlignCenter "
+                f"{rule.old.align_center} → {rule.new.align_center}；Pins "
+                f"{len(rule.old.pins)} → {len(rule.new.pins)}。"
+            )
 
     outputs: list[Path] = []
     failed: list[str] = []
@@ -232,9 +269,6 @@ def process_basic(
     total_removed_matching = 0
     total_removed_reference_groups = 0
     total_cleared_single_references = 0
-    total_duplicate_kinds = 0
-    total_duplicate_elements = 0
-    total_repaired_ids = 0
     total_rects = 0
     total_rmu_groups = 0
     total_rmu_members = 0
@@ -265,6 +299,15 @@ def process_basic(
     total_feeder_title_moved = 0
     total_feeder_title_unchanged = 0
     total_feeder_title_skipped = 0
+    total_icon_upgraded_instances = 0
+    total_icon_adjusted_lines = 0
+    total_icon_already_new = 0
+    total_icon_skipped_unknown_size = 0
+    total_rmu_identified = 0
+    total_rmu_named = 0
+    total_rmu_typed = 0
+    total_rmu_ambiguous = 0
+    total_rmu_csv = 0
 
     if settings.output_conflict_action == BasicOutputConflictAction.TIMESTAMP:
         log(f"[输出策略] 检测到输出冲突，本批文件统一自动添加时间戳 {timestamp}。")
@@ -286,6 +329,39 @@ def process_basic(
             if not layers:
                 raise ValueError(f"文件 {input_path.name} 的 G 根节点下没有直属 Layer。")
 
+            rmu_identification = None
+            if settings.identify_rmu_name_and_type:
+                positions = tuple(
+                    key for key, enabled in (
+                        ("top", settings.rmu_name_top),
+                        ("bottom", settings.rmu_name_bottom),
+                        ("left", settings.rmu_name_left),
+                        ("right", settings.rmu_name_right),
+                    ) if enabled
+                )
+                rmu_identification = identify_rmus(
+                    tree, input_path, name_positions=positions, smart_in_type=settings.rmu_smart_in_type
+                )
+                total_rmu_identified += rmu_identification.cabinet_count
+                total_rmu_named += rmu_identification.named_count
+                total_rmu_typed += rmu_identification.typed_count
+                total_rmu_ambiguous += rmu_identification.ambiguous_name_count
+                log(
+                    f"[环网柜识别] {input_path.name}：识别环网柜 {rmu_identification.cabinet_count} 个，"
+                    f"柜名 {rmu_identification.named_count} 个，柜型 {rmu_identification.typed_count} 个，"
+                    f"待确认柜名 {rmu_identification.ambiguous_name_count} 个。"
+                )
+                for item in rmu_identification.items:
+                    name = item.name or "<未识别>"
+                    position_label = {"top": "上方", "bottom": "下方", "left": "左侧", "right": "右侧"}.get(item.name_position, item.name_position or "-")
+                    log(
+                        f"  - rect {item.rect_id or '<无ID>'}：柜名 {name}（{position_label}），"
+                        f"类型 {item.rmu_type}，L={item.l_count}，T={item.t_count}，SMART={item.smart_count}，"
+                        f"置信度 {item.confidence}。"
+                    )
+                for warning in rmu_identification.warnings:
+                    log(f"[环网柜识别告警] {input_path.name}：{warning}")
+
             for layer in layers:
                 one_replaced, one_removed, one_removed_ids = _process_layer(layer, settings)
                 replaced += one_replaced
@@ -294,6 +370,24 @@ def process_basic(
                 groups, singles = _clean_removed_references(layer, one_removed_ids)
                 removed_reference_groups += groups
                 cleared_single_references += singles
+
+            if settings.upgrade_icon_geometry:
+                icon_result = apply_icon_upgrade(tree, icon_rules)
+                total_icon_upgraded_instances += icon_result.upgraded_instances
+                total_icon_adjusted_lines += icon_result.adjusted_lines
+                total_icon_already_new += icon_result.already_new_instances
+                total_icon_skipped_unknown_size += icon_result.skipped_unknown_size
+                log(
+                    f"[图元版本升级] {input_path.name}：升级实例 "
+                    f"{icon_result.upgraded_instances} 个，调整连接线 "
+                    f"{icon_result.adjusted_lines} 条；已是新尺寸 "
+                    f"{icon_result.already_new_instances} 个，未知尺寸跳过 "
+                    f"{icon_result.skipped_unknown_size} 个。"
+                )
+                if icon_result.changed_instance_ids:
+                    log("  - 升级图元 ID：" + ", ".join(icon_result.changed_instance_ids))
+                for warning in icon_result.warnings:
+                    log(f"[图元版本升级告警] {input_path.name}：{warning}")
 
             if rmu_action == RmuAction.GROUP:
                 grouping = group_rmu_tree(tree, input_path)
@@ -467,36 +561,6 @@ def process_basic(
                 for warning in connection.warnings:
                     log(f"[连接点修复告警] {input_path.name}：{warning}")
 
-            if settings.id_action == BasicIdAction.CHECK:
-                kinds, elements = _log_id_inspection(input_path, tree, log)
-                total_duplicate_kinds += kinds
-                total_duplicate_elements += elements
-            elif settings.id_action == BasicIdAction.REPAIR:
-                kinds, elements = _log_id_inspection(input_path, tree, log)
-                total_duplicate_kinds += kinds
-                total_duplicate_elements += elements
-                repair = repair_tree_duplicate_ids(tree, input_path)
-                total_repaired_ids += repair.changed_element_ids
-                if repair.changed_element_ids:
-                    log(
-                        f"[ID修复] {input_path.name}：重新分配 {repair.changed_element_ids} 个重复图元 ID。"
-                    )
-                    for tag, old_id, new_id in repair.changes:
-                        pattern = repair.pattern_sources.get(tag)
-                        rule = (
-                            f"参考同类 <{tag}>：前缀 {pattern.prefix}、固定总位数 {pattern.total_length}"
-                            if pattern is not None
-                            else "同类格式样本不足，使用原 ID 向上递增规则"
-                        )
-                        log(f"  - <{tag}> {old_id} → {new_id}；{rule}")
-                else:
-                    log(f"[ID修复] {input_path.name}：没有重复 ID，无需修改。")
-                log(
-                    f"[ID验证] {input_path.name}：修复后重复 ID {repair.final_duplicate_count} 种。"
-                )
-                if repair.final_duplicate_count:
-                    raise ValueError("重复 ID 修复后仍存在冲突。")
-
             if hasattr(ET, "indent"):
                 ET.indent(tree, space="    ")
 
@@ -505,7 +569,12 @@ def process_basic(
             ET.parse(tmp_path)
             os.replace(tmp_path, output_path)
 
+            enforce_confirmed_id_rules(output_path, log)
             outputs.append(output_path)
+            if rmu_identification is not None and settings.export_rmu_identification_csv:
+                rmu_csv = _write_rmu_csv(output_path, rmu_identification)
+                total_rmu_csv += 1
+                log(f"[环网柜识别] 已导出：{rmu_csv.name}")
             total_replaced += replaced
             total_removed_matching += removed_matching
             total_removed_reference_groups += removed_reference_groups
@@ -525,8 +594,7 @@ def process_basic(
 
     summary = (
         f"[基础处理汇总] 输入 {len(files)} 个文件，成功 {len(outputs)} 个，失败 {len(failed)} 个；"
-        f"重复 ID {total_duplicate_kinds} 种，需处理图元 {total_duplicate_elements} 个，"
-        f"实际修复 {total_repaired_ids} 个；环网柜 rect {total_rects} 个，重建组合 "
+        f"环网柜 rect {total_rects} 个，重建组合 "
         f"{total_rmu_groups} 个，取消组合 {total_rmu_ungrouped} 个，外框下移 "
         f"{total_rmu_lowered_rects} 个；识别含 SMART 环网柜 {total_smart_rmu_rects} 个，"
         f"SMART 环网柜外框改色 {total_smart_rmu_frames_changed} 个，channel_status 状态点"
@@ -535,6 +603,17 @@ def process_basic(
         f"{total_bus_rect_removed} 个，标题上移 {total_bus_title_moved} 个；"
         f"线路/母线颜色修改 {total_color_changed} 个图元"
     )
+    if settings.identify_rmu_name_and_type:
+        summary += (
+            f"；环网柜识别 {total_rmu_identified} 个、柜名成功 {total_rmu_named} 个、"
+            f"柜型成功 {total_rmu_typed} 个、待确认 {total_rmu_ambiguous} 个、导出 CSV {total_rmu_csv} 份"
+        )
+    if settings.upgrade_icon_geometry:
+        summary += (
+            f"；图元版本升级实例 {total_icon_upgraded_instances} 个、连接线端点适配 "
+            f"{total_icon_adjusted_lines} 条、已是新尺寸 {total_icon_already_new} 个、"
+            f"未知尺寸跳过 {total_icon_skipped_unknown_size} 个"
+        )
     if settings.move_feeder_titles_above_bus:
         summary += (
             f"；馈线名称定位识别有效 Bus {total_feeder_title_bus_segments} 条、母线组 "
@@ -565,9 +644,6 @@ def process_basic(
             "removed_matching_element_count": total_removed_matching,
             "removed_reference_group_count": total_removed_reference_groups,
             "cleared_single_reference_count": total_cleared_single_references,
-            "duplicate_id_kind_count": total_duplicate_kinds,
-            "duplicate_element_count": total_duplicate_elements,
-            "repaired_id_count": total_repaired_ids,
             "rmu_rect_count": total_rects,
             "rmu_group_count": total_rmu_groups,
             "rmu_grouped_member_count": total_rmu_members,
@@ -591,6 +667,18 @@ def process_basic(
             "feeder_title_moved_count": total_feeder_title_moved,
             "feeder_title_unchanged_count": total_feeder_title_unchanged,
             "feeder_title_skipped_count": total_feeder_title_skipped,
+            "rmu_identification_enabled": settings.identify_rmu_name_and_type,
+            "rmu_identified_count": total_rmu_identified,
+            "rmu_named_count": total_rmu_named,
+            "rmu_typed_count": total_rmu_typed,
+            "rmu_ambiguous_name_count": total_rmu_ambiguous,
+            "rmu_csv_count": total_rmu_csv,
+            "icon_upgrade_enabled": settings.upgrade_icon_geometry,
+            "icon_upgrade_rule_count": len(icon_rules),
+            "icon_upgraded_instance_count": total_icon_upgraded_instances,
+            "icon_adjusted_line_count": total_icon_adjusted_lines,
+            "icon_already_new_count": total_icon_already_new,
+            "icon_unknown_size_skipped_count": total_icon_skipped_unknown_size,
             "connection_repair_enabled": settings.repair_connection_points,
             "aligned_connection_device_count": total_connection_aligned_devices,
             "adjusted_connection_line_count": total_connection_adjusted_lines,

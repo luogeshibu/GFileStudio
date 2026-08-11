@@ -53,6 +53,9 @@ from g_file_studio.engines.merge_frame_inspector import (
 # 例如可修改为：300、400、500。
 FEEDER_GAP = 300
 
+# 每个馈线图的最小占用宽度；不包含 FEEDER_GAP。
+FEEDER_MIN_WIDTH = 1000
+
 # 最终合并图形与画布四个边框之间的实际边距。
 LEFT_MARGIN = 300
 TOP_MARGIN = 300
@@ -1611,6 +1614,7 @@ def merge_g_files(
     top_margin: Decimal,
     right_margin: Decimal,
     bottom_margin: Decimal,
+    feeder_min_width: Decimal = Decimal("1000"),
 ) -> None:
     parsed_files = [parse_g_file(info) for info in infos]
 
@@ -1639,9 +1643,15 @@ def merge_g_files(
         get_position_coordinate_extents(target_layer, base.info.path.name)
     )
 
-    # 保存各输入图合并后的坐标范围，用于最终验证相邻间隔。
+    # 每个馈线图都有一个“占用宽度”：max(实际宽度, 默认单线图宽度)。
+    # 用户设置的 gap 始终额外加在相邻占用区之间，不计入默认单线图宽度。
+    base_actual_width = current_max_x - base_min_x
+    base_slot_width = max(base_actual_width, feeder_min_width)
+    current_slot_right = base_min_x + base_slot_width
+
+    # 保存各输入图的占用区范围，用于最终验证“默认宽度 + 用户间隔”。
     input_ranges: list[tuple[int, Decimal, Decimal]] = [
-        (base.info.order, base_min_x, current_max_x)
+        (base.info.order, base_min_x, current_slot_right)
     ]
 
     print("处理顺序（App 用户顺序；未指定时按文件名自然排序）：")
@@ -1709,8 +1719,9 @@ def merge_g_files(
         # 所有输入图最终都与第一张基准图的统一对齐 Y 对齐。
         offset_y = base_alignment_y - source.alignment_y
 
-        # 使用当前图的最小 X，严格保证相邻馈线坐标范围间隔为 gap。
-        offset_x = current_max_x + gap - source_min_x
+        # 水平布局按“馈线占用区”排列：每张馈线至少占 feeder_min_width；
+        # 若实际宽度更大则按实际宽度。用户 gap 额外加在占用区之间。
+        offset_x = current_slot_right + gap - source_min_x
 
         # 输入坐标、gap、母线 Y 都已整数化，因此偏移也是整数。
         shift_graph_elements(copied_children, offset_x, offset_y)
@@ -1719,20 +1730,25 @@ def merge_g_files(
             get_position_coordinate_extents(copied_children, source.info.path.name)
         )
 
-        actual_gap = shifted_min_x - current_max_x
-        if actual_gap != gap:
+        slot_gap = shifted_min_x - current_slot_right
+        if slot_gap != gap:
             raise ValueError(
-                f"输入图 {source.info.order} 间隔计算失败："
-                f"目标 {format_integer(gap)}，实际 {format_decimal(actual_gap)}"
+                f"输入图 {source.info.order} 占用区间隔计算失败："
+                f"目标 {format_integer(gap)}，实际 {format_decimal(slot_gap)}"
             )
+        actual_graph_gap = shifted_min_x - current_max_x
 
         for child in copied_children:
             target_layer.append(child)
 
+        source_actual_width = shifted_max_x - shifted_min_x
+        source_slot_width = max(source_actual_width, feeder_min_width)
+        source_slot_right = shifted_min_x + source_slot_width
         input_ranges.append(
-            (source.info.order, shifted_min_x, shifted_max_x)
+            (source.info.order, shifted_min_x, source_slot_right)
         )
         current_max_x = max(current_max_x, shifted_max_x)
+        current_slot_right = source_slot_right
         current_max_y = max(current_max_y, shifted_max_y)
 
         print(f"\n输入图 {source.info.order}：")
@@ -1742,7 +1758,11 @@ def merge_g_files(
         print(f"  目标基准 Y：{format_integer(base_alignment_y)}")
         print(f"  X 偏移：{format_integer(offset_x)}")
         print(f"  Y 偏移：{format_integer(offset_y)}")
-        print(f"  与前面图形实际间隔：{format_integer(actual_gap)}")
+        print(f"  默认单线图宽度：{format_integer(feeder_min_width)}")
+        print(f"  本图实际宽度：{format_integer(source_actual_width)}")
+        print(f"  本图占用宽度：{format_integer(source_slot_width)}")
+        print(f"  与前一占用区间隔：{format_integer(slot_gap)}")
+        print(f"  图形实际边界间隔：{format_integer(actual_graph_gap)}")
         print(
             "  移动后坐标范围："
             f"minX={format_integer(shifted_min_x)}，"
@@ -1832,14 +1852,14 @@ def merge_g_files(
                 f"<{local_name(element.tag)}> id={element.get('id', '')!r}"
             )
 
-    # 最终重新验证每两个相邻输入图的间隔。全图统一平移不影响间隔。
+    # 最终重新验证每两个相邻馈线“占用区”的用户间隔。全图统一平移不影响间隔。
     for index in range(1, len(input_ranges)):
         previous_order, _previous_min, previous_max = input_ranges[index - 1]
         current_order, current_min, _current_max = input_ranges[index]
         measured_gap = current_min - previous_max
         if measured_gap != gap:
             raise ValueError(
-                f"输入图 {previous_order} 与 {current_order} 的间隔不是 "
+                f"输入图 {previous_order} 与 {current_order} 的占用区间隔不是 "
                 f"{format_integer(gap)}，实际为 {format_decimal(measured_gap)}"
             )
 
@@ -1899,7 +1919,8 @@ def merge_g_files(
     )
     print(f"  最终对齐基准：{final_alignment_mode}")
     print(f"  最终对齐基准 Y：{format_integer(final_alignment_y)}")
-    print(f"  相邻输入图间隔：{format_integer(gap)}")
+    print(f"  默认单线图宽度：{format_integer(feeder_min_width)}")
+    print(f"  相邻馈线用户间隔：{format_integer(gap)}")
     print(f"  G.w / G.width：{format_integer(final_width)}")
     print(f"  G.h / G.height：{format_integer(final_height)}")
     print(f"  输出文件：{output_path.resolve()}")
@@ -1960,6 +1981,10 @@ def main() -> int:
             parse_decimal(str(FEEDER_GAP), "FEEDER_GAP"),
             "FEEDER_GAP",
         )
+        feeder_min_width = require_nonnegative_integer(
+            parse_decimal(str(FEEDER_MIN_WIDTH), "FEEDER_MIN_WIDTH"),
+            "FEEDER_MIN_WIDTH",
+        )
         left_margin = require_nonnegative_integer(
             parse_decimal(str(LEFT_MARGIN), "LEFT_MARGIN"),
             "LEFT_MARGIN",
@@ -1978,6 +2003,7 @@ def main() -> int:
         )
 
         print("当前用户配置：")
+        print(f"  默认单线图宽度：{format_integer(feeder_min_width)}")
         print(f"  相邻馈线间隔：{format_integer(gap)}")
         print(
             "  最终画布边距："
@@ -2005,6 +2031,7 @@ def main() -> int:
             infos=infos,
             output_path=output_path,
             gap=gap,
+            feeder_min_width=feeder_min_width,
             left_margin=left_margin,
             top_margin=top_margin,
             right_margin=right_margin,

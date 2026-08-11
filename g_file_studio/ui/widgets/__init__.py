@@ -3,6 +3,7 @@ from g_file_studio.ui.widgets.color_rule_row import ColorRuleRow
 from g_file_studio.ui.widgets.file_order_editor import FileOrderEditor
 from g_file_studio.ui.widgets.help_widgets import HelpButton, HelpLabel, InfoBanner, PageHeader
 from g_file_studio.ui.widgets.input_source_selector import InputSourceSelector
+from g_file_studio.ui.widgets.icon_upgrade_editor import IconUpgradeEditor
 from g_file_studio.ui.widgets.integer_input import IntegerInput
 from g_file_studio.ui.widgets.path_row import PathRow
 from g_file_studio.ui.widgets.person_editor import PersonEditor
@@ -19,6 +20,7 @@ __all__ = [
     "HelpLabel",
     "InfoBanner",
     "InputSourceSelector",
+    "IconUpgradeEditor",
     "IntegerInput",
     "PageHeader",
     "PathRow",

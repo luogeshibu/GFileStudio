@@ -86,3 +86,41 @@ def discover_g_inputs(
         expected = ".sln.pic.g" if compound_suffix_only else ".g"
         raise FileNotFoundError(f"输入目录中没有以 {expected} 结尾的文件：{source_path}")
     return files
+
+
+def enforce_confirmed_id_rules(output_path: Path, log: LogCallback = print) -> dict[str, int]:
+    """对处理后的 G 文件强制应用用户确认的 ID 模板。
+
+    仅对已经存在确认规则的 XML 类型做格式规范；未知类型不擅自分配新 ID。
+    若未知类型存在重复 ID，则规范化引擎会报错，要求用户先在 ID 模块建立模板。
+    """
+    import os
+    import xml.etree.ElementTree as ET
+    from g_file_studio.engines.id_rule_engine import normalize_tree_ids_strict
+    from g_file_studio.services.id_rule_service import IdRuleService
+
+    tree = ET.parse(output_path)
+    rules = IdRuleService().load_rules()
+    result = normalize_tree_ids_strict(tree, output_path, rules)
+    if result.changed_element_ids:
+        if hasattr(ET, "indent"):
+            ET.indent(tree, space="    ")
+        tmp = output_path.with_name(output_path.name + ".idtmp")
+        tree.write(tmp, encoding="utf-8", xml_declaration=True)
+        ET.parse(tmp)
+        os.replace(tmp, output_path)
+        log(
+            f"[ID 模板] {output_path.name}：按已确认规则强制规范 ID {result.changed_element_ids} 个"
+            f"（格式 {result.format_fixed_count}，重复 {result.duplicate_fixed_count}）。"
+        )
+        for tag, old_id, new_id, reason in result.changes[:30]:
+            log(f"  - <{tag}> {old_id} → {new_id}（{reason}）")
+        if len(result.changes) > 30:
+            log(f"  - 其余 {len(result.changes) - 30} 个变更省略。")
+    else:
+        log(f"[ID 模板] {output_path.name}：所有已配置类型 ID 均符合模板。")
+    return {
+        "changed": result.changed_element_ids,
+        "format_fixed": result.format_fixed_count,
+        "duplicate_fixed": result.duplicate_fixed_count,
+    }

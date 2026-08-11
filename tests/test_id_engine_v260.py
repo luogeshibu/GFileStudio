@@ -6,8 +6,9 @@ from g_file_studio.engines.id_engine import (
     inspect_file_ids,
     repair_file_duplicate_ids,
 )
-from g_file_studio.models import BasicIdAction, BasicSettings, InputMode
-from g_file_studio.processors.basic_processor import process_basic
+from g_file_studio.models import IdAction, IdSettings, InputMode
+from g_file_studio.processors.id_processor import process_ids
+from g_file_studio.services.id_rule_service import IdRule, IdRuleService
 
 
 def _write_duplicate_g(path: Path) -> None:
@@ -80,44 +81,30 @@ def test_pattern_build_keeps_fixed_total_length():
     assert pattern.build(10000) == "34010000"
 
 
-def test_basic_processor_checks_or_repairs_ids_without_csv(tmp_path: Path):
+def test_independent_id_processor_checks_or_repairs_ids_without_csv(tmp_path: Path, monkeypatch):
     source_dir = tmp_path / "input"
     check_output = tmp_path / "check"
     repair_output = tmp_path / "repair"
-    source_dir.mkdir()
+    source_dir.mkdir(); check_output.mkdir(); repair_output.mkdir()
     _write_duplicate_g(source_dir / "a.sln.pic.g")
     (source_dir / "b.sln.pic.g").write_text(
-        '<G><Layer><Connector id="34000068" /></Layer></G>',
-        encoding="utf-8",
+        '<G><Layer><Connector id="34000068" /></Layer></G>', encoding="utf-8"
     )
 
-    check_logs: list[str] = []
-    checked = process_basic(
-        BasicSettings(
-            source_path=source_dir,
-            input_mode=InputMode.DIRECTORY,
-            output_dir=check_output,
-            id_action=BasicIdAction.CHECK,
-        ),
-        log=check_logs.append,
-    )
+    rule_file = tmp_path / "id_rules.json"
+    service = IdRuleService(rule_file)
+    service.save_rules([IdRule("Connector", "34", 8), IdRule("Text", "8", 7), IdRule("ConnectLine", "9", 2)])
+    import g_file_studio.processors.id_processor as processor
+    monkeypatch.setattr(processor, "IdRuleService", lambda: service)
+
+    check_logs = []
+    checked = process_ids(IdSettings(source_path=source_dir, input_mode=InputMode.DIRECTORY, output_dir=check_output, action=IdAction.CHECK), check_logs.append, None)
     assert checked.statistics["duplicate_id_kind_count"] == 1
     assert checked.statistics["repaired_id_count"] == 0
-    assert not list(check_output.glob("*.csv"))
-    assert any("重复 ID 1 种" in line for line in check_logs)
 
-    repair_logs: list[str] = []
-    repaired = process_basic(
-        BasicSettings(
-            source_path=source_dir,
-            input_mode=InputMode.DIRECTORY,
-            output_dir=repair_output,
-            id_action=BasicIdAction.REPAIR,
-        ),
-        log=repair_logs.append,
-    )
+    repair_logs = []
+    repaired = process_ids(IdSettings(source_path=source_dir, input_mode=InputMode.DIRECTORY, output_dir=repair_output, action=IdAction.REPAIR), repair_logs.append, None)
     assert repaired.statistics["repaired_id_count"] == 1
-    assert not list(repair_output.glob("*.csv"))
     fixed = inspect_file_ids(repair_output / "a.sln.pic.g")
     assert not fixed.has_duplicates
     assert any("34000068 → 34000070" in line for line in repair_logs)

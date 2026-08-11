@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
 )
 
 from g_file_studio.models import (
-    BasicIdAction,
     BasicOutputConflictAction,
     RmuAction,
     RmuStatusPosition,
@@ -35,6 +34,7 @@ from g_file_studio.ui.widgets import (
     HelpLabel,
     InfoBanner,
     InputSourceSelector,
+    IconUpgradeEditor,
     IntegerInput,
     PathRow,
     TaskPanel,
@@ -56,9 +56,9 @@ class BasicPage(BasePage):
 
         self.layout.addWidget(
             InfoBanner(
-                "输入可以是单个 G 文件，也可以是 G 文件目录。属性替换、元素删除、重复 ID 检查/修复、"
+                "输入可以是单个 G 文件，也可以是 G 文件目录。属性替换、元素删除、"
                 "环网柜组合/取消组合、SMART 外框改色、红色状态点定位、馈线名称定位、连接点修复，以及线路与母线颜色修改，"
-                "都在点击“开始基础处理”后统一执行。连接点修复仅在勾选时处理 node_area/link；"
+                "都在点击“开始基础处理”后统一执行。ID 检查/修复已移到独立“ID 规则模板”模块。连接点修复仅在勾选时处理 node_area/link；"
                 "未勾选时完全跳过。目录模式下每个文件独立处理。"
             )
         )
@@ -105,10 +105,11 @@ class BasicPage(BasePage):
         rules_layout.addWidget(self.rules_editor)
         self.layout.addWidget(rules_box)
 
-        self._build_id_options()
         self._build_rmu_options()
+        self._build_rmu_identification_options()
         self._build_color_options()
         self._build_feeder_title_options()
+        self._build_icon_upgrade_options()
         self._build_connection_repair()
         self._restore_options()
 
@@ -116,39 +117,6 @@ class BasicPage(BasePage):
         self.task.run_button.setText("开始基础处理")
         self.task.run_button.clicked.connect(self.run)
         self.layout.addWidget(self.task, 1)
-
-    def _build_id_options(self) -> None:
-        box = QGroupBox("ID 校验与修复")
-        layout = QVBoxLayout(box)
-        layout.setContentsMargins(16, 18, 16, 14)
-        layout.setSpacing(10)
-        description = QLabel(
-            "请选择本次基础处理的 ID 操作。只检查每个 G 文件自身直属 Layer 图元的重复 ID，"
-            "不比较不同文件之间的 ID。检查和修复结果只写入下方当前任务日志，不生成 CSV 报告。"
-        )
-        description.setWordWrap(True)
-        description.setObjectName("mutedText")
-        layout.addWidget(description)
-
-        options = QHBoxLayout()
-        options.setSpacing(12)
-        self.id_action_group = QButtonGroup(self)
-        self.id_action_group.setExclusive(True)
-        self.id_none = QRadioButton("不处理 ID")
-        self.id_check = QRadioButton("检查重复 ID")
-        self.id_repair = QRadioButton("检查并修复重复 ID")
-        self.id_none.setToolTip("本次基础处理不执行重复 ID 检查。")
-        self.id_check.setToolTip("只检查并将结果写入当前日志，不修改 ID。")
-        self.id_repair.setToolTip(
-            "检查并修复当前文件内部的重复 ID；保留第一处，后续重复图元参考同类元素主流前缀与固定总位数生成新 ID。"
-        )
-        for button in (self.id_none, self.id_check, self.id_repair):
-            button.setProperty("optionChoice", True)
-            self.id_action_group.addButton(button)
-            options.addWidget(button)
-        options.addStretch(1)
-        layout.addLayout(options)
-        self.layout.addWidget(box)
 
     def _build_rmu_options(self) -> None:
         box = QGroupBox("环网柜图元处理")
@@ -259,6 +227,52 @@ class BasicPage(BasePage):
         layout.addWidget(self.rmu_remove_bus_frame)
         self.layout.addWidget(box)
 
+
+    def _build_rmu_identification_options(self) -> None:
+        box = QGroupBox("环网柜名称与柜型识别")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(16, 18, 16, 14)
+        layout.setSpacing(10)
+
+        description = QLabel(
+            "直接解析 G 文件，不使用 OCR。只有 rect 框内同时存在 BusDis、CBreakerDis 和 ZhaiWaiJieDiDaoZha 才认定为环网柜；"
+            "柜名只从勾选方向上的绿色 Text 中选择。柜型优先按 Y1/Y2/... 与 Q1/Q2/... 名称计数，名称无法判断时才回退到设备 devref。"
+            "柜型始终输出如 2L1T、3L1T；SMART 单独识别成一列，不参与柜型字符串。"
+        )
+        description.setWordWrap(True)
+        description.setObjectName("mutedText")
+        layout.addWidget(description)
+
+        self.identify_rmu = QCheckBox("启用环网柜名称与柜型识别")
+        self.identify_rmu.setProperty("optionChoice", True)
+        layout.addWidget(self.identify_rmu)
+
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("柜名可能位置："))
+        self.rmu_name_top = QCheckBox("上方")
+        self.rmu_name_bottom = QCheckBox("下方")
+        self.rmu_name_left = QCheckBox("左侧")
+        self.rmu_name_right = QCheckBox("右侧")
+        self.rmu_name_top.setChecked(True)
+        for item in (self.rmu_name_top, self.rmu_name_bottom, self.rmu_name_left, self.rmu_name_right):
+            item.setProperty("optionChoice", True)
+            name_row.addWidget(item)
+        name_row.addStretch(1)
+        layout.addLayout(name_row)
+
+        self.rmu_smart_in_type = QCheckBox("识别 SMART（单独列，不参与柜型）")
+        self.rmu_smart_in_type.setProperty("optionChoice", True)
+        self.rmu_smart_in_type.setToolTip(
+            "启用后在识别结果/CSV 的 SMART 列输出 1 或 0；CabinetType 始终只输出 2L1T、3L1T 等 L/T 柜型。"
+        )
+        layout.addWidget(self.rmu_smart_in_type)
+
+        for item in (self.rmu_name_top, self.rmu_name_bottom, self.rmu_name_left, self.rmu_name_right, self.rmu_smart_in_type):
+            item.setEnabled(False)
+            self.identify_rmu.toggled.connect(item.setEnabled)
+
+        self.layout.addWidget(box)
+
     def _build_color_options(self) -> None:
         box = QGroupBox("线路与母线颜色")
         layout = QVBoxLayout(box)
@@ -311,6 +325,37 @@ class BasicPage(BasePage):
         layout.addWidget(self.move_feeder_titles_above_bus)
         self.layout.addWidget(box)
 
+
+    def _build_icon_upgrade_options(self) -> None:
+        box = QGroupBox("图元版本升级适配")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(16, 18, 16, 14)
+        layout.setSpacing(10)
+
+        description = QLabel(
+            "用于将仍使用旧图元几何参数的主 G 文件适配到新图元库。请分别添加本次涉及的旧图元 G 和新图元 G，"
+            "程序按完全相同的文件名强制一一配对，并直接从图元文件读取 w/h、AlignCenter 和 pin(cx,cy)。"
+            "任何图元只存在旧版或只存在新版、主体类型/ID 不一致、端口数量变化时都会禁止执行。"
+            "处理时保持旧电气对齐中心的绝对位置不变，并把对应连接线端点移动到新图元真实 pin；不需要正常参考主 G。"
+        )
+        description.setWordWrap(True)
+        description.setObjectName("mutedText")
+        layout.addWidget(description)
+
+        self.upgrade_icon_geometry = QCheckBox("启用图元版本升级适配")
+        self.upgrade_icon_geometry.setProperty("optionChoice", True)
+        self.upgrade_icon_geometry.setToolTip(
+            "只处理主 G 中 devref 命中已配对图元、且当前 w/h 与旧图元尺寸完全一致的实例；"
+            "已经是新尺寸的实例会跳过，未知自定义尺寸会告警并跳过。"
+        )
+        layout.addWidget(self.upgrade_icon_geometry)
+
+        self.icon_upgrade_editor = IconUpgradeEditor()
+        self.icon_upgrade_editor.setEnabled(False)
+        self.upgrade_icon_geometry.toggled.connect(self.icon_upgrade_editor.setEnabled)
+        layout.addWidget(self.icon_upgrade_editor)
+        self.layout.addWidget(box)
+
     def _build_connection_repair(self) -> None:
         box = QGroupBox("连接点修复")
         layout = QVBoxLayout(box)
@@ -336,14 +381,6 @@ class BasicPage(BasePage):
         self.layout.addWidget(box)
 
     def _restore_options(self) -> None:
-        id_value = self.user_settings.get_value("basic/id_action", BasicIdAction.NONE.value)
-        id_buttons = {
-            BasicIdAction.NONE.value: self.id_none,
-            BasicIdAction.CHECK.value: self.id_check,
-            BasicIdAction.REPAIR.value: self.id_repair,
-        }
-        id_buttons.get(id_value, self.id_none).setChecked(True)
-
         rmu_value = self.user_settings.get_value("basic/rmu_action", RmuAction.NONE.value)
         rmu_buttons = {
             RmuAction.NONE.value: self.rmu_none,
@@ -387,9 +424,26 @@ class BasicPage(BasePage):
         self.rmu_remove_bus_frame.setChecked(
             self.user_settings.get_bool("basic/rmu/remove_bus_frame", False)
         )
+        self.identify_rmu.setChecked(
+            self.user_settings.get_bool("basic/rmu/identify_name_type", False)
+        )
+        self.rmu_name_top.setChecked(self.user_settings.get_bool("basic/rmu/name_top", True))
+        self.rmu_name_bottom.setChecked(self.user_settings.get_bool("basic/rmu/name_bottom", False))
+        self.rmu_name_left.setChecked(self.user_settings.get_bool("basic/rmu/name_left", False))
+        self.rmu_name_right.setChecked(self.user_settings.get_bool("basic/rmu/name_right", False))
+        self.rmu_smart_in_type.setChecked(
+            self.user_settings.get_bool("basic/rmu/smart_in_type", False)
+        )
+        rmu_ident_enabled = self.identify_rmu.isChecked()
+        for item in (self.rmu_name_top, self.rmu_name_bottom, self.rmu_name_left, self.rmu_name_right, self.rmu_smart_in_type):
+            item.setEnabled(rmu_ident_enabled)
         self.move_feeder_titles_above_bus.setChecked(
             self.user_settings.get_bool("basic/move_feeder_titles_above_bus", False)
         )
+        self.upgrade_icon_geometry.setChecked(
+            self.user_settings.get_bool("basic/upgrade_icon_geometry", False)
+        )
+        self.icon_upgrade_editor.setEnabled(self.upgrade_icon_geometry.isChecked())
         self.repair_connection_points.setChecked(
             self.user_settings.get_bool("basic/repair_connection_points", False)
         )
@@ -412,7 +466,6 @@ class BasicPage(BasePage):
         self._persist_options()
 
     def _persist_options(self) -> None:
-        self.user_settings.set_value("basic/id_action", self._selected_id_action().value)
         self.user_settings.set_value("basic/rmu_action", self._selected_rmu_action().value)
         self.user_settings.set_value(
             "basic/rmu/smart_frame_color", self.rmu_smart_frame_color.color()
@@ -436,9 +489,18 @@ class BasicPage(BasePage):
         self.user_settings.set_value(
             "basic/rmu/remove_bus_frame", self.rmu_remove_bus_frame.isChecked()
         )
+        self.user_settings.set_value("basic/rmu/identify_name_type", self.identify_rmu.isChecked())
+        self.user_settings.set_value("basic/rmu/name_top", self.rmu_name_top.isChecked())
+        self.user_settings.set_value("basic/rmu/name_bottom", self.rmu_name_bottom.isChecked())
+        self.user_settings.set_value("basic/rmu/name_left", self.rmu_name_left.isChecked())
+        self.user_settings.set_value("basic/rmu/name_right", self.rmu_name_right.isChecked())
+        self.user_settings.set_value("basic/rmu/smart_in_type", self.rmu_smart_in_type.isChecked())
         self.user_settings.set_value(
             "basic/move_feeder_titles_above_bus",
             self.move_feeder_titles_above_bus.isChecked(),
+        )
+        self.user_settings.set_value(
+            "basic/upgrade_icon_geometry", self.upgrade_icon_geometry.isChecked()
         )
         self.user_settings.set_value(
             "basic/repair_connection_points", self.repair_connection_points.isChecked()
@@ -463,13 +525,6 @@ class BasicPage(BasePage):
         self.source.persist_current()
         self.output_path.persist_valid_path()
         return True
-
-    def _selected_id_action(self) -> BasicIdAction:
-        if self.id_repair.isChecked():
-            return BasicIdAction.REPAIR
-        if self.id_check.isChecked():
-            return BasicIdAction.CHECK
-        return BasicIdAction.NONE
 
     def _selected_rmu_action(self) -> RmuAction:
         if self.rmu_group.isChecked():
@@ -558,7 +613,9 @@ class BasicPage(BasePage):
         )
         return settings.model_copy(
             update={
-                "id_action": self._selected_id_action(),
+                "upgrade_icon_geometry": self.upgrade_icon_geometry.isChecked(),
+                "old_icon_files": self.icon_upgrade_editor.old_paths(),
+                "new_icon_files": self.icon_upgrade_editor.new_paths(),
                 "repair_connection_points": self.repair_connection_points.isChecked(),
                 "move_feeder_titles_above_bus": self.move_feeder_titles_above_bus.isChecked(),
                 "rmu_action": self._selected_rmu_action(),
@@ -581,12 +638,30 @@ class BasicPage(BasePage):
                 ),
                 "channel_status_inner_margin": self.rmu_channel_status_margin.value(),
                 "remove_bus_rmu_frame_and_reposition_title": self.rmu_remove_bus_frame.isChecked(),
+                "identify_rmu_name_and_type": self.identify_rmu.isChecked(),
+                "rmu_name_top": self.rmu_name_top.isChecked(),
+                "rmu_name_bottom": self.rmu_name_bottom.isChecked(),
+                "rmu_name_left": self.rmu_name_left.isChecked(),
+                "rmu_name_right": self.rmu_name_right.isChecked(),
+                "rmu_smart_in_type": self.rmu_smart_in_type.isChecked(),
+                "export_rmu_identification_csv": True,
             }
         )
 
     def run(self) -> None:
         if not self._validate_common_paths():
             return
+        if self.identify_rmu.isChecked() and not any((
+            self.rmu_name_top.isChecked(), self.rmu_name_bottom.isChecked(),
+            self.rmu_name_left.isChecked(), self.rmu_name_right.isChecked(),
+        )):
+            QMessageBox.warning(self, "环网柜识别设置", "柜名位置至少选择上方、下方、左侧或右侧中的一个。")
+            return
+        if self.upgrade_icon_geometry.isChecked():
+            ok, message = self.icon_upgrade_editor.validate_for_run()
+            if not ok:
+                QMessageBox.warning(self, "图元版本升级适配检查未通过", message)
+                return
         try:
             policy = self._resolve_output_policy()
         except Exception as exc:

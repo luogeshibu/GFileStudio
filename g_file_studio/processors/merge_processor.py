@@ -10,6 +10,7 @@ from g_file_studio.processors.common import (
     LogCallback,
     ProgressCallback,
     redirect_safe_callback,
+    enforce_confirmed_id_rules,
 )
 from g_file_studio.services.output_naming import (
     default_merge_output_path,
@@ -53,12 +54,14 @@ def merge_feeders(
             infos=infos,
             output_path=output_path,
             gap=Decimal(settings.feeder_gap),
+            feeder_min_width=Decimal(settings.feeder_min_width),
             left_margin=Decimal(settings.left_margin),
             top_margin=Decimal(settings.top_margin),
             right_margin=Decimal(settings.right_margin),
             bottom_margin=Decimal(settings.bottom_margin),
         )
     writer.flush()
+    enforce_confirmed_id_rules(output_path, log)
     if progress:
         progress(100)
 
@@ -69,6 +72,7 @@ def merge_feeders(
             "input_count": len(infos),
             "input_order": [info.path.name for info in infos],
             "feeder_gap": settings.feeder_gap,
+            "feeder_min_width": settings.feeder_min_width,
             "output_file": str(output_path),
         },
     )

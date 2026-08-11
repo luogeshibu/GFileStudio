@@ -1,0 +1,545 @@
+from __future__ import annotations
+
+import re
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from g_file_studio.engines.id_engine import direct_layer_elements, local_name
+
+
+@dataclass(frozen=True)
+class _Box:
+    left: float
+    top: float
+    right: float
+    bottom: float
+
+    @property
+    def width(self) -> float:
+        return self.right - self.left
+
+    @property
+    def height(self) -> float:
+        return self.bottom - self.top
+
+    @property
+    def center_x(self) -> float:
+        return (self.left + self.right) / 2.0
+
+    @property
+    def center_y(self) -> float:
+        return (self.top + self.bottom) / 2.0
+
+
+@dataclass
+class RmuIdentification:
+    rect_id: str
+    name: str
+    name_position: str
+    rmu_type: str
+    l_count: int
+    t_count: int
+    smart_count: int
+    confidence: str
+    rect_x: float
+    rect_y: float
+    rect_w: float
+    rect_h: float
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class RmuIdentificationResult:
+    file_path: Path
+    cabinet_count: int = 0
+    named_count: int = 0
+    typed_count: int = 0
+    ambiguous_name_count: int = 0
+    items: list[RmuIdentification] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+_Y_LABEL_RE = re.compile(r"^Y\s*(\d+)$", re.I)
+_Q_LABEL_RE = re.compile(r"^Q\s*(\d+)$", re.I)
+
+
+def _float(element: ET.Element, name: str, default: float = 0.0) -> float:
+    try:
+        return float(element.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _box(element: ET.Element) -> _Box | None:
+    width = _float(element, "w")
+    height = _float(element, "h")
+    if width <= 0 or height <= 0:
+        return None
+    left = _float(element, "x")
+    top = _float(element, "y")
+    return _Box(left, top, left + width, top + height)
+
+
+def _center_inside(element: ET.Element, outer: _Box, tolerance: float = 0.5) -> bool:
+    box = _box(element)
+    if box is None:
+        return False
+    return (
+        outer.left - tolerance <= box.center_x <= outer.right + tolerance
+        and outer.top - tolerance <= box.center_y <= outer.bottom + tolerance
+    )
+
+
+def _classify_switch(element: ET.Element) -> str | None:
+    """设备图元回退分类；柜型主判据仍然是 Y/Q 名称。"""
+    if local_name(element.tag) != "CBreakerDis":
+        return None
+    devref = (element.get("devref") or "").upper()
+    name = (element.get("p_NameString") or "").strip().upper()
+    if (
+        "LOAD_BREAKER_SWITCH" in devref
+        or "RMU_LBS" in devref
+        or re.fullmatch(r"Y\d+", name)
+    ):
+        return "L"
+    if (
+        "CIRCUIT_BREAKER" in devref
+        or "RMU_BRK" in devref
+        or re.fullmatch(r"Q\d+", name)
+    ):
+        return "T"
+    return None
+
+
+def _is_smart_device(element: ET.Element) -> bool:
+    devref = (element.get("devref") or "").upper()
+    if "NON-SMART" in devref or "NO-SMART" in devref:
+        return False
+    return "SMART" in devref or "RMU_LBS_S" in devref or "RMU_BRK_S" in devref
+
+
+def _is_green_name_text(element: ET.Element) -> bool:
+    """判断 Text 是否为绿色。绿色仅用于多候选柜名消歧，不再作为硬条件。"""
+    lcc = (element.get("lcc") or "").strip().lower()
+    lc = re.sub(r"\s+", "", (element.get("lc") or "").strip())
+    return lcc == "#00ff00" or lc == "0,255,0"
+
+
+def _valid_name_text(element: ET.Element) -> bool:
+    """柜名候选的基础过滤。
+
+    名称颜色不是硬条件。这里仅排除明确属于柜内设备/状态的短标签，
+    其余数字、字母数字、带连字符的名称均允许参与距离匹配。
+    """
+    value = (element.get("ts") or "").strip()
+    if not value or not any(ch.isalnum() for ch in value):
+        return False
+    compact = re.sub(r"\s+", "", value).upper()
+    if _Y_LABEL_RE.fullmatch(compact) or _Q_LABEL_RE.fullmatch(compact):
+        return False
+    if compact in {"SMART", "SMR", "G", "I"}:
+        return False
+    return True
+
+
+def _candidate_for_position(text: ET.Element, rect: _Box, position: str) -> tuple[float, float] | None:
+    box = _box(text)
+    if box is None:
+        return None
+
+    # 方向由用户选择，属于硬约束：只在选中的方向搜索，绝不跨方向补找。
+    # 柜名通常紧贴柜框，但 Text 的包围盒可能与虚线框轻微重叠，因此允许少量
+    # “压边”容差；同时设置有限近邻范围，远处文字绝不归到当前柜。
+    max_vertical = max(180.0, rect.height * 1.05)
+    max_horizontal = max(180.0, rect.width * 1.05)
+    side_margin_x = max(45.0, rect.width * 0.35)
+    side_margin_y = max(45.0, rect.height * 0.35)
+    overlap_tolerance = max(10.0, min(16.0, min(rect.width, rect.height) * 0.06))
+
+    if position == "top":
+        gap = rect.top - box.bottom
+        # 即使文字底部压到框顶几像素，只要文字中心仍位于框顶侧，就属于“上方”。
+        if (-overlap_tolerance <= gap <= max_vertical
+                and box.center_y < rect.top
+                and rect.left - side_margin_x <= box.center_x <= rect.right + side_margin_x):
+            return max(0.0, gap), abs(box.center_x - rect.center_x)
+    elif position == "bottom":
+        gap = box.top - rect.bottom
+        if (-overlap_tolerance <= gap <= max_vertical
+                and box.center_y > rect.bottom
+                and rect.left - side_margin_x <= box.center_x <= rect.right + side_margin_x):
+            return max(0.0, gap), abs(box.center_x - rect.center_x)
+    elif position == "left":
+        gap = rect.left - box.right
+        if (-overlap_tolerance <= gap <= max_horizontal
+                and box.center_x < rect.left
+                and rect.top - side_margin_y <= box.center_y <= rect.bottom + side_margin_y):
+            return max(0.0, gap), abs(box.center_y - rect.center_y)
+    elif position == "right":
+        gap = box.left - rect.right
+        if (-overlap_tolerance <= gap <= max_horizontal
+                and box.center_x > rect.right
+                and rect.top - side_margin_y <= box.center_y <= rect.bottom + side_margin_y):
+            return max(0.0, gap), abs(box.center_y - rect.center_y)
+    return None
+
+
+def _name_candidates_for_rect(
+    texts: list[ET.Element],
+    rect: _Box,
+    positions: tuple[str, ...],
+) -> list[tuple[float, float, str, str, str, bool]]:
+    """Return only candidates from user-selected directions.
+
+    The result is already reduced to the nearest local text group in each selected
+    direction.  No unselected direction is ever inspected or used as fallback.
+    """
+    candidates: list[tuple[float, float, str, str, str, bool]] = []
+    for text in texts:
+        if not _valid_name_text(text):
+            continue
+        value = (text.get("ts") or "").strip()
+        text_id = (text.get("id") or "").strip()
+        green = _is_green_name_text(text)
+        for position in positions:
+            metric = _candidate_for_position(text, rect, position)
+            if metric is None:
+                continue
+            gap, axis_offset = metric
+            candidates.append((gap, axis_offset, position, value, text_id, green))
+
+    if not candidates:
+        return []
+
+    # For each selected direction keep the group closest to the cabinet edge.
+    # A group can contain AK-xxxxx / K-xxxxx / A-x etc.; when that happens the
+    # green label gets preference later.  The wider band handles real drawings
+    # where several adjacent labels are stacked with unequal font heights.
+    group_band = max(42.0, min(96.0, max(rect.width, rect.height) * 0.36))
+    by_direction: dict[str, list[tuple[float, float, str, str, str, bool]]] = {}
+    for item in candidates:
+        by_direction.setdefault(item[2], []).append(item)
+
+    reduced: list[tuple[float, float, str, str, str, bool]] = []
+    for position in positions:
+        items = by_direction.get(position, [])
+        if not items:
+            continue
+        items.sort(key=lambda item: (item[0], item[1], item[3]))
+        min_gap = items[0][0]
+        group = [item for item in items if item[0] <= min_gap + group_band]
+        # If there are several adjacent names, green is the user's explicit
+        # discriminator.  Do not discard non-green labels when no green exists.
+        green_items = [item for item in group if item[5]]
+        if len(group) > 1 and green_items:
+            group = green_items
+        reduced.extend(group)
+
+    # De-duplicate the same Text if a small overlap tolerance lets it satisfy
+    # more than one selected direction.  Keep the geometrically closest form.
+    dedup: dict[str, tuple[float, float, str, str, str, bool]] = {}
+    for item in reduced:
+        key = item[4] or f"{item[3]}@{item[2]}@{item[0]:.3f}@{item[1]:.3f}"
+        current = dedup.get(key)
+        if current is None or (item[0], item[1], positions.index(item[2])) < (
+            current[0], current[1], positions.index(current[2])
+        ):
+            dedup[key] = item
+    return list(dedup.values())
+
+
+
+def _green_disambiguation_used(
+    texts: list[ET.Element],
+    rect: _Box,
+    positions: tuple[str, ...],
+    chosen_text_id: str,
+) -> bool:
+    """Whether a green chosen label won against adjacent non-green candidates."""
+    if not chosen_text_id:
+        return False
+    raw: dict[str, list[tuple[float, float, str, str, str, bool]]] = {}
+    for text in texts:
+        if not _valid_name_text(text):
+            continue
+        value = (text.get("ts") or "").strip()
+        text_id = (text.get("id") or "").strip()
+        green = _is_green_name_text(text)
+        for position in positions:
+            metric = _candidate_for_position(text, rect, position)
+            if metric is None:
+                continue
+            raw.setdefault(position, []).append((metric[0], metric[1], position, value, text_id, green))
+    group_band = max(42.0, min(96.0, max(rect.width, rect.height) * 0.36))
+    for position, items in raw.items():
+        items.sort(key=lambda item: (item[0], item[1], item[3]))
+        if not items:
+            continue
+        min_gap = items[0][0]
+        group = [item for item in items if item[0] <= min_gap + group_band]
+        if len(group) > 1 and any(item[4] == chosen_text_id and item[5] for item in group):
+            return True
+    return False
+
+def _candidate_score(
+    item: tuple[float, float, str, str, str, bool],
+    positions: tuple[str, ...],
+) -> float:
+    gap, axis_offset, position, _value, _text_id, _green = item
+    # Cabinet-edge distance is primary; center-axis alignment is secondary.
+    # Direction order only breaks exact ties and never introduces an unselected
+    # direction.
+    return gap * 4.0 + axis_offset + positions.index(position) * 0.001
+
+
+def _assign_names_globally(
+    texts: list[ET.Element],
+    cabinets: list[tuple[str, _Box]],
+    positions: tuple[str, ...],
+) -> dict[str, tuple[str, str, str, list[str]]]:
+    """One-to-one cabinet/name matching within selected directions only.
+
+    A Text can belong to at most one cabinet.  Cabinets compete for the same
+    nearby text using geometric score, so a label immediately above one cabinet
+    cannot also be consumed by the next cabinet in a dense row/column.
+    """
+    proposals: dict[str, list[tuple[float, tuple[float, float, str, str, str, bool], int]]] = {}
+    local_counts: dict[str, int] = {}
+    rect_by_id = {rect_id: rect for rect_id, rect in cabinets}
+    for rect_id, rect in cabinets:
+        items = _name_candidates_for_rect(texts, rect, positions)
+        local_counts[rect_id] = len(items)
+        ranked = sorted(
+            ((_candidate_score(item, positions), item, idx) for idx, item in enumerate(items)),
+            key=lambda entry: (entry[0], entry[1][0], entry[1][1], entry[1][3]),
+        )
+        proposals[rect_id] = ranked
+
+    # Deferred-acceptance style assignment.  Each cabinet proposes in score
+    # order; a Text keeps the cabinet with the better geometric score and the
+    # displaced cabinet tries its next candidate.  This gives deterministic
+    # one-to-one matching without allowing names from unselected directions.
+    next_index = {rect_id: 0 for rect_id, _rect in cabinets}
+    held_by_text: dict[str, tuple[str, float, tuple[float, float, str, str, str, bool]]] = {}
+    assigned: dict[str, tuple[float, float, str, str, str, bool]] = {}
+    queue = [rect_id for rect_id, _rect in cabinets if proposals.get(rect_id)]
+
+    while queue:
+        rect_id = queue.pop(0)
+        ranked = proposals.get(rect_id, [])
+        idx = next_index[rect_id]
+        if idx >= len(ranked):
+            continue
+        score, item, _ = ranked[idx]
+        next_index[rect_id] = idx + 1
+        text_key = item[4] or f"{item[3]}@{item[2]}@{item[0]:.3f}@{item[1]:.3f}"
+        current = held_by_text.get(text_key)
+        if current is None:
+            held_by_text[text_key] = (rect_id, score, item)
+            assigned[rect_id] = item
+            continue
+        current_rect, current_score, _current_item = current
+        if (score, rect_id) < (current_score, current_rect):
+            assigned.pop(current_rect, None)
+            held_by_text[text_key] = (rect_id, score, item)
+            assigned[rect_id] = item
+            if next_index[current_rect] < len(proposals.get(current_rect, [])):
+                queue.append(current_rect)
+        elif next_index[rect_id] < len(ranked):
+            queue.append(rect_id)
+
+    result: dict[str, tuple[str, str, str, list[str]]] = {}
+    for rect_id, _rect in cabinets:
+        item = assigned.get(rect_id)
+        if item is None:
+            result[rect_id] = ("", "", "未识别", [])
+            continue
+        gap, axis_offset, position, value, _text_id, green = item
+        warnings: list[str] = []
+        count = local_counts.get(rect_id, 0)
+        confidence = "高"
+        used_green_disambiguation = green and _green_disambiguation_used(
+            texts, rect_by_id[rect_id], positions, item[4]
+        )
+        if count > 1 or used_green_disambiguation:
+            confidence = "中"
+            if used_green_disambiguation:
+                warnings.append("指定方向附近存在多个柜名候选，按绿色优先并进行全局一对一匹配")
+            else:
+                warnings.append("指定方向附近存在多个柜名候选，按距离/中心位置进行全局一对一匹配")
+        return_value = (value, position, confidence, warnings)
+        result[rect_id] = return_value
+    return result
+
+
+def _find_name(texts: list[ET.Element], rect: _Box, positions: tuple[str, ...]) -> tuple[str, str, str, list[str]]:
+    """Compatibility wrapper used by focused unit tests/single-cabinet callers."""
+    matches = _assign_names_globally(texts, [("__single__", rect)], positions)
+    return matches["__single__"]
+
+
+def _bus_key_name_candidate(inside_buses: list[ET.Element]) -> str:
+    """Extract an RMU cabinet name encoded by BusDis.key_name, e.g. 30864_BUS.
+
+    This is a metadata fallback only.  It does not inspect any unselected text
+    direction, so the user's direction restriction remains a hard constraint for
+    geometric Text matching.
+    """
+    candidates: list[str] = []
+    for bus in inside_buses:
+        key_name = (bus.get("key_name") or "").strip()
+        if not key_name:
+            continue
+        match = re.fullmatch(r"(.+?)_BUS", key_name, re.I)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if value and value.upper() != "BUS":
+            candidates.append(value)
+    unique = []
+    seen = set()
+    for value in candidates:
+        key = value.upper()
+        if key not in seen:
+            seen.add(key)
+            unique.append(value)
+    return unique[0] if len(unique) == 1 else ""
+
+def _label_counts(inside_texts: list[ET.Element]) -> tuple[int, int, set[str], set[str]]:
+    y_labels: set[str] = set()
+    q_labels: set[str] = set()
+    for item in inside_texts:
+        value = (item.get("ts") or "").strip().upper().replace(" ", "")
+        if _Y_LABEL_RE.fullmatch(value):
+            y_labels.add(value)
+        elif _Q_LABEL_RE.fullmatch(value):
+            q_labels.add(value)
+    return len(y_labels), len(q_labels), y_labels, q_labels
+
+
+def identify_rmus(
+    tree: ET.ElementTree,
+    file_path: Path,
+    *,
+    name_positions: tuple[str, ...] = ("top",),
+    smart_in_type: bool = False,
+) -> RmuIdentificationResult:
+    """识别环网柜名称、L/T 柜型及 SMART 状态，不修改 XML。
+
+    v2.17.11 规则：
+    1. 必须存在环网柜 rect，且框内同时具有 BusDis、CBreakerDis、ZhaiWaiJieDiDaoZha。
+    2. 柜名只在用户指定方向寻找并做全局一对一匹配；单候选直接使用，多候选时绿色优先。
+       指定方向无可用 Text 时，仅允许使用柜内 BusDis.key_name 元数据回退，不跨方向找字。
+    3. 柜型优先按框内 Y1/Y2/... 与 Q1/Q2/... 名称计数；某一类名称完全缺失时，
+       才用 CBreakerDis 的 devref/p_NameString 回退识别该类。
+    4. 柜型始终只输出 nLmT；SMART 单独输出，不再追加到柜型字符串。
+
+    smart_in_type 参数为了兼容现有设置保留；现在表示是否识别 SMART 单独列。
+    """
+    if not name_positions:
+        raise ValueError("环网柜名称位置至少选择一个方向。")
+
+    elements = direct_layer_elements(tree.getroot())
+    rects = [element for element in elements if local_name(element.tag) == "rect"]
+    texts = [element for element in elements if local_name(element.tag) == "Text"]
+    switches = [element for element in elements if local_name(element.tag) == "CBreakerDis"]
+    buses = [element for element in elements if local_name(element.tag) == "BusDis"]
+    grounds = [element for element in elements if local_name(element.tag) == "ZhaiWaiJieDiDaoZha"]
+
+    result = RmuIdentificationResult(file_path=file_path)
+
+    # First determine the complete cabinet set.  Name assignment is deliberately
+    # done globally afterwards so adjacent cabinets cannot reuse/steal the same
+    # Text.  Only user-selected directions are ever considered.
+    valid_cabinets: list[tuple[ET.Element, _Box]] = []
+    for rect in rects:
+        rect_box = _box(rect)
+        if rect_box is None or rect_box.width < 100 or rect_box.height < 100:
+            continue
+        inside_switches = [item for item in switches if _center_inside(item, rect_box)]
+        inside_bus = [item for item in buses if _center_inside(item, rect_box)]
+        inside_ground = [item for item in grounds if _center_inside(item, rect_box)]
+        if not inside_bus or not inside_switches or not inside_ground:
+            continue
+        valid_cabinets.append((rect, rect_box))
+
+    cabinet_boxes = [((rect.get("id") or f"__rect_{index}"), rect_box)
+                     for index, (rect, rect_box) in enumerate(valid_cabinets)]
+    name_assignments = _assign_names_globally(texts, cabinet_boxes, name_positions)
+
+    for index, (rect, rect_box) in enumerate(valid_cabinets):
+        rect_key = rect.get("id") or f"__rect_{index}"
+        inside_switches = [item for item in switches if _center_inside(item, rect_box)]
+        inside_buses = [item for item in buses if _center_inside(item, rect_box)]
+        inside_texts = [item for item in texts if _center_inside(item, rect_box)]
+        y_count, q_count, y_labels, q_labels = _label_counts(inside_texts)
+        device_l = sum(1 for item in inside_switches if _classify_switch(item) == "L")
+        device_t = sum(1 for item in inside_switches if _classify_switch(item) == "T")
+
+        warnings: list[str] = []
+        # 名称是主判断。仅当该类名称一个都没有时，才退回设备图元判断。
+        l_count = y_count if y_count > 0 else device_l
+        t_count = q_count if q_count > 0 else device_t
+        if y_count == 0 and device_l:
+            warnings.append(f"未识别到 Y 名称，L 使用设备图元回退计数 {device_l}")
+        if q_count == 0 and device_t:
+            warnings.append(f"未识别到 Q 名称，T 使用设备图元回退计数 {device_t}")
+        if y_count and device_l and y_count != device_l:
+            warnings.append(f"Y 名称 {y_count} 个，与 L 图元 {device_l} 个不一致；柜型按 Y 名称计数")
+        if q_count and device_t and q_count != device_t:
+            warnings.append(f"Q 名称 {q_count} 个，与 T 图元 {device_t} 个不一致；柜型按 Q 名称计数")
+
+        name, position, confidence, name_warnings = name_assignments.get(
+            rect_key, ("", "", "未识别", [])
+        )
+        warnings.extend(name_warnings)
+
+        # Keep the user's selected directions as a hard constraint for Text
+        # matching.  If no Text can be assigned in those directions, use the
+        # cabinet's own BusDis.key_name metadata (e.g. 30864_BUS) rather than
+        # searching an unselected direction or stealing another cabinet's Text.
+        if not name:
+            metadata_name = _bus_key_name_candidate(inside_buses)
+            if metadata_name:
+                name = metadata_name
+                position = "/".join(name_positions)
+                confidence = "中"
+                warnings.append("指定方向未匹配到独立柜名 Text，使用柜内 BusDis.key_name 回退识别")
+
+        smart_count = 0
+        if smart_in_type:
+            smart_text = any((item.get("ts") or "").strip().upper() == "SMART" for item in inside_texts)
+            smart_device = any(_is_smart_device(item) for item in inside_switches)
+            smart_count = 1 if smart_text or smart_device else 0
+
+        rmu_type = f"{l_count}L{t_count}T"
+        if warnings and confidence == "高":
+            confidence = "中"
+
+        result.items.append(RmuIdentification(
+            rect_id=(rect.get("id") or "").strip(),
+            name=name,
+            name_position=position,
+            rmu_type=rmu_type,
+            l_count=l_count,
+            t_count=t_count,
+            smart_count=smart_count,
+            confidence=confidence,
+            rect_x=rect_box.left,
+            rect_y=rect_box.top,
+            rect_w=rect_box.width,
+            rect_h=rect_box.height,
+            warnings=warnings,
+        ))
+
+    result.cabinet_count = len(result.items)
+    result.named_count = sum(1 for item in result.items if item.name)
+    result.typed_count = sum(1 for item in result.items if item.l_count or item.t_count)
+    result.ambiguous_name_count = sum(1 for item in result.items if item.confidence == "待确认")
+    for item in result.items:
+        if not item.name:
+            result.warnings.append(f"rect ID {item.rect_id or '<无ID>'} 未找到指定方向且距离足够近的柜名。")
+        for warning in item.warnings:
+            result.warnings.append(f"rect ID {item.rect_id or '<无ID>'}：{warning}")
+    return result

@@ -12,6 +12,7 @@ from g_file_studio.processors.common import (
     ProgressCallback,
     discover_g_inputs,
     redirect_safe_callback,
+    enforce_confirmed_id_rules,
 )
 from g_file_studio.services.output_naming import make_task_timestamp, marked_output_name
 
@@ -61,6 +62,7 @@ def add_drawing_frames(
                 edit_content=settings.edit_builtin_content,
             )
         writer.flush()
+        enforce_confirmed_id_rules(output_path, log)
         outputs.append(output_path)
         if progress:
             progress(round(index * 100 / len(files)))

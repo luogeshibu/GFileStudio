@@ -19,10 +19,10 @@ def test_navigation_and_page_names_are_updated():
 
 def test_basic_page_uses_selection_mode_and_one_run_button():
     source = _read("g_file_studio/ui/pages/basic_page.py")
-    assert 'QGroupBox("ID 校验与修复")' in source
-    assert 'QRadioButton("不处理 ID")' in source
-    assert 'QRadioButton("检查重复 ID")' in source
-    assert 'QRadioButton("检查并修复重复 ID")' in source
+    assert 'QGroupBox("ID 校验与修复")' not in source
+    id_page = _read("g_file_studio/ui/pages/id_page.py")
+    assert 'ID 检查与修复' in id_page
+    assert '检查并强制按模板修复 ID' in id_page
     assert 'QGroupBox("环网柜图元处理")' in source
     assert 'QRadioButton("不处理环网柜组合")' in source
     assert 'QRadioButton("组合所有环网柜")' in source

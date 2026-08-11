@@ -4,7 +4,7 @@ from pathlib import Path
 
 from g_file_studio.engines.margin_engine import adjust_one_file
 from g_file_studio.models import MarginSettings, ProcessingResult
-from g_file_studio.processors.common import LogCallback, ProgressCallback, discover_g_inputs
+from g_file_studio.processors.common import LogCallback, ProgressCallback, discover_g_inputs, enforce_confirmed_id_rules
 from g_file_studio.services.output_naming import make_task_timestamp, marked_output_name
 
 
@@ -49,6 +49,7 @@ def adjust_graph_margins(
             bottom_margin=settings.bottom_margin,
             preserve_existing_frame=settings.preserve_existing_frame,
         )
+        enforce_confirmed_id_rules(output_path, log)
         outputs.append(output_path)
         if result.had_existing_frame:
             files_with_frame.append(output_path.name)

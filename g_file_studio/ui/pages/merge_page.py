@@ -81,6 +81,7 @@ class MergePage(BasePage):
         settings_form.setHorizontalSpacing(16)
         settings_form.setVerticalSpacing(10)
         self.gap = self.spin(300)
+        self.feeder_min_width = self.spin(1000)
         self.left = self.spin(300)
         self.top = self.spin(300)
         self.right = self.spin(300)
@@ -88,6 +89,7 @@ class MergePage(BasePage):
         self.gap.setToolTip(FIELD_HELP["feeder_gap"])
         for widget in (self.left, self.top, self.right, self.bottom):
             widget.setToolTip(FIELD_HELP["merge_margin"])
+        settings_form.addRow(HelpLabel("默认单线图宽度", "每个馈线图的最小占用宽度。实际宽度小于该值时按该值预留；实际宽度超过该值时使用实际宽度。该宽度不包含相邻馈线间隔。"), self.feeder_min_width)
         settings_form.addRow(HelpLabel("相邻图形间隔", FIELD_HELP["feeder_gap"]), self.gap)
         settings_form.addRow(HelpLabel("左边距", FIELD_HELP["merge_margin"]), self.left)
         settings_form.addRow(HelpLabel("上边距", FIELD_HELP["merge_margin"]), self.top)
@@ -116,6 +118,7 @@ class MergePage(BasePage):
             output_name=self.output_name.text(),
             ordered_file_names=self.file_order.ordered_file_names(),
             feeder_gap=self.gap.value(),
+            feeder_min_width=self.feeder_min_width.value(),
             left_margin=self.left.value(),
             top_margin=self.top.value(),
             right_margin=self.right.value(),

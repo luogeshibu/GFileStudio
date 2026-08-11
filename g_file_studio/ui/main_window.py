@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from g_file_studio import __version__
 from g_file_studio.services.user_settings_service import UserSettingsService
-from g_file_studio.ui.pages import BasicPage, FramePage, HelpPage, MarginPage, MergePage
+from g_file_studio.ui.pages import BasicPage, FramePage, HelpPage, IdPage, MarginPage, MergePage
 from g_file_studio.ui.theme import build_app_style
 
 
@@ -43,6 +43,7 @@ class MainWindow(QMainWindow):
         self.stack.setObjectName("contentRoot")
         self.pages = [
             BasicPage(self.user_settings),
+            IdPage(self.user_settings),
             MergePage(self.user_settings),
             MarginPage(self.user_settings),
             FramePage(self.user_settings),
@@ -104,7 +105,8 @@ class MainWindow(QMainWindow):
         self.nav.setObjectName("navigation")
         self.nav.setSpacing(1)
         navigation = [
-            ("基础处理", "执行通用规则、ID、环网柜及颜色处理"),
+            ("基础处理", "执行通用规则、环网柜、图元升级及颜色处理"),
+            ("ID 检查与修复", "维护 ID 规则模板，扫描并强制修复格式异常或重复 ID"),
             ("馈线图合并", "按用户选择顺序合并多个馈线 G 图"),
             ("图形边距调整", "调整主体四边距，并同步适配内置图框"),
             ("图框添加", "添加 SLD 外框、标题和签字栏"),
@@ -147,5 +149,5 @@ class MainWindow(QMainWindow):
     def _install_help_shortcut(self) -> None:
         action = QAction(self)
         action.setShortcut(QKeySequence.StandardKey.HelpContents)
-        action.triggered.connect(lambda: self.nav.setCurrentRow(4))
+        action.triggered.connect(lambda: self.nav.setCurrentRow(5))
         self.addAction(action)

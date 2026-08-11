@@ -26,13 +26,11 @@ class InputMode(str, Enum):
     DIRECTORY = "directory"
 
 
-class BasicIdAction(str, Enum):
-    """基础处理中的重复 ID 操作方式。"""
+class IdAction(str, Enum):
+    """独立 ID 模块操作。"""
 
-    NONE = "none"
     CHECK = "check"
     REPAIR = "repair"
-
 
 class RmuAction(str, Enum):
     """基础处理中的环网柜组合操作。"""
@@ -106,8 +104,11 @@ class BasicSettings(BaseModel):
     delete_target_attribute: str = ""
     delete_target_value: str = ""
 
-    # 这些选项都由统一的“开始基础处理”按钮执行。
-    id_action: BasicIdAction = BasicIdAction.NONE
+    # 图元版本升级适配：旧、新图元 G 必须按同名文件一一配对。
+    upgrade_icon_geometry: bool = False
+    old_icon_files: list[Path] = Field(default_factory=list)
+    new_icon_files: list[Path] = Field(default_factory=list)
+
     # 勾选后仅做保守的设备半像素吸附，并补齐缺失的 node_area/link。
     repair_connection_points: bool = False
     # 仅依据 Bus/Text 几何和文字特征，将唯一可确认的馈线名称移到主母线正上方。
@@ -136,9 +137,30 @@ class BasicSettings(BaseModel):
     channel_status_inner_margin: int = Field(default=5, ge=0, le=1000)
     remove_bus_rmu_frame_and_reposition_title: bool = False
 
+    # 环网柜名称与柜型识别。只读取/统计，不修改 G 图元。
+    identify_rmu_name_and_type: bool = False
+    rmu_name_top: bool = True
+    rmu_name_bottom: bool = False
+    rmu_name_left: bool = False
+    rmu_name_right: bool = False
+    rmu_smart_in_type: bool = False
+    export_rmu_identification_csv: bool = True
+
     output_conflict_action: BasicOutputConflictAction = BasicOutputConflictAction.OVERWRITE
     task_timestamp: str = ""
 
+
+
+
+class IdSettings(BaseModel):
+    """独立 ID 规则模板模块参数。"""
+
+    source_path: Path
+    input_mode: InputMode = InputMode.DIRECTORY
+    output_dir: Path
+    action: IdAction = IdAction.CHECK
+    output_conflict_action: BasicOutputConflictAction = BasicOutputConflictAction.OVERWRITE
+    task_timestamp: str = ""
 
 class ConnectionRepairSettings(BaseModel):
     """连接点修复参数。
@@ -160,6 +182,7 @@ class MergeSettings(BaseModel):
     # App 中由用户定义的合并顺序；为空时由引擎按文件名自然排序。
     ordered_file_names: list[str] = Field(default_factory=list)
     feeder_gap: int = Field(default=300, ge=0)
+    feeder_min_width: int = Field(default=1000, ge=0)
     left_margin: int = Field(default=300, ge=0)
     top_margin: int = Field(default=300, ge=0)
     right_margin: int = Field(default=300, ge=0)

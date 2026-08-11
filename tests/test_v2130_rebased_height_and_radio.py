@@ -19,7 +19,7 @@ def test_model_keeps_mutually_exclusive_actions_and_new_status_fields():
 def test_ui_keeps_radio_buttons_and_uses_status_anchor_controls():
     source = (ROOT / "g_file_studio/ui/pages/basic_page.py").read_text(encoding="utf-8")
     theme = (ROOT / "g_file_studio/ui/theme.py").read_text(encoding="utf-8")
-    assert 'QRadioButton("不处理 ID")' in source
+    assert 'QRadioButton("不处理 ID")' not in source
     assert 'QRadioButton("组合所有环网柜")' in source
     assert 'QRadioButton("取消所有环网柜组合")' in source
     assert 'WheelSafeComboBox()' in source
