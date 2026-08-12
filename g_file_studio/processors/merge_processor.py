@@ -55,6 +55,7 @@ def merge_feeders(
             output_path=output_path,
             gap=Decimal(settings.feeder_gap),
             feeder_min_width=Decimal(settings.feeder_min_width),
+            merge_main_bus=bool(settings.merge_main_bus),
             left_margin=Decimal(settings.left_margin),
             top_margin=Decimal(settings.top_margin),
             right_margin=Decimal(settings.right_margin),
@@ -73,6 +74,7 @@ def merge_feeders(
             "input_order": [info.path.name for info in infos],
             "feeder_gap": settings.feeder_gap,
             "feeder_min_width": settings.feeder_min_width,
+            "merge_main_bus": settings.merge_main_bus,
             "output_file": str(output_path),
         },
     )

@@ -183,6 +183,7 @@ class MergeSettings(BaseModel):
     ordered_file_names: list[str] = Field(default_factory=list)
     feeder_gap: int = Field(default=300, ge=0)
     feeder_min_width: int = Field(default=1000, ge=0)
+    merge_main_bus: bool = False
     left_margin: int = Field(default=300, ge=0)
     top_margin: int = Field(default=300, ge=0)
     right_margin: int = Field(default=300, ge=0)

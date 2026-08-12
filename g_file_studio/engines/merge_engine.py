@@ -604,6 +604,113 @@ def find_top_horizontal_bus_y(layer: ET.Element, filename: str) -> Decimal | Non
     return candidates[0][0]
 
 
+
+
+def _unique_reference_groups(values: list[str]) -> str:
+    """Merge semicolon-separated reference groups while preserving order."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        for group in value.split(";"):
+            group = group.strip()
+            if group and group not in seen:
+                seen.add(group)
+                result.append(group)
+    return ";".join(result)
+
+
+def merge_aligned_top_buses(layer: ET.Element, filename: str) -> dict[str, object]:
+    """将已对齐馈线的顶部水平 Bus 合并为一条连续主母线。
+
+    规则：
+    - 仅处理标签严格为 ``Bus`` 的非零长度水平线；``BusDis`` 不参与。
+    - 仅处理最顶部母线 Y（允许 1 个坐标单位的取整误差）。
+    - 保留 XML 顺序中的第一条主母线 ID，删除其余主母线。
+    - 新主母线从全部候选的最左端延伸到最右端。
+    - 所有引用被删除 Bus ID 的 link/node_area/p_FatherObjId 均改为保留 Bus ID。
+    - 汇总各母线 node_area/link，使所有馈线仍与同一主母线建立拓扑关联。
+    """
+    candidates: list[tuple[ET.Element, Decimal, Decimal, Decimal]] = []
+    for element in iter_graph_elements(layer):
+        if local_name(element.tag) != "Bus":
+            continue
+        line = get_bus_line(element)
+        if line is None:
+            continue
+        x1, y1, x2, y2 = line
+        if abs(y2 - y1) > Decimal("0.000001") or abs(x2 - x1) <= Decimal("0.000001"):
+            continue
+        candidates.append((element, min(x1, x2), max(x1, x2), (y1 + y2) / Decimal("2")))
+
+    if len(candidates) <= 1:
+        return {"changed": False, "bus_count": len(candidates), "removed": 0}
+
+    top_y = min(item[3] for item in candidates)
+    tolerance = Decimal("1")
+    top = [item for item in candidates if abs(item[3] - top_y) <= tolerance]
+    if len(top) <= 1:
+        return {"changed": False, "bus_count": len(top), "removed": 0}
+
+    keeper, _kx1, _kx2, _ky = top[0]
+    keeper_id = (keeper.get("id") or "").strip()
+    if not keeper_id:
+        raise ValueError(f"{filename}：顶部主母线缺少 id，无法合并。")
+
+    min_x = min(item[1] for item in top)
+    max_x = max(item[2] for item in top)
+    merged_y = top_y
+    old_ids = [((item[0].get("id") or "").strip()) for item in top[1:]]
+    old_ids = [value for value in old_ids if value]
+    id_map = {old_id: keeper_id for old_id in old_ids}
+
+    # 先更新全图引用，确保删除多余 Bus 后所有馈线仍引用保留 Bus。
+    update_reference_attributes(list(layer), id_map)
+
+    # 汇总各原始主母线自身记录的连接关系。
+    node_groups = _unique_reference_groups([item[0].get("node_area", "") for item in top])
+    link_groups = _unique_reference_groups([item[0].get("link", "") for item in top])
+    if node_groups:
+        keeper.set("node_area", node_groups)
+    elif "node_area" in keeper.attrib:
+        keeper.set("node_area", "")
+    if link_groups:
+        keeper.set("link", link_groups)
+    elif "link" in keeper.attrib:
+        keeper.set("link", "")
+
+    # 将保留母线拉通为一条。边界框统一采用线路两侧 3 个单位留量。
+    keeper.set("x1", format_integer(min_x))
+    keeper.set("y1", format_integer(merged_y))
+    keeper.set("x2", format_integer(max_x))
+    keeper.set("y2", format_integer(merged_y))
+    keeper.set("d", f"{format_integer(min_x)},{format_integer(merged_y)} {format_integer(max_x)},{format_integer(merged_y)}")
+    keeper.set("x", format_integer(min_x - Decimal("3")))
+    keeper.set("y", format_integer(merged_y - Decimal("3")))
+    keeper.set("w", format_integer(max_x - min_x + Decimal("6")))
+    keeper.set("h", "6")
+
+    parent_map = {child: parent for parent in layer.iter() for child in list(parent)}
+    removed = 0
+    for element, _x1, _x2, _y in top[1:]:
+        parent = parent_map.get(element)
+        if parent is None:
+            raise ValueError(f"{filename}：无法定位待删除主母线 id={element.get('id', '')} 的父节点。")
+        parent.remove(element)
+        removed += 1
+
+    return {
+        "changed": True,
+        "bus_count": len(top),
+        "removed": removed,
+        "keeper_id": keeper_id,
+        "removed_id_map": id_map,
+        "min_x": min_x,
+        "max_x": max_x,
+        "y": merged_y,
+    }
+
 def resolve_alignment_y(layer: ET.Element, filename: str) -> tuple[Decimal, str]:
     """优先使用顶部有效水平 <Bus>；没有 <Bus> 时使用整张图最高元素的 Y。"""
     bus_y = find_top_horizontal_bus_y(layer, filename)
@@ -1615,6 +1722,7 @@ def merge_g_files(
     right_margin: Decimal,
     bottom_margin: Decimal,
     feeder_min_width: Decimal = Decimal("1000"),
+    merge_main_bus: bool = False,
 ) -> None:
     parsed_files = [parse_g_file(info) for info in infos]
 
@@ -1783,6 +1891,34 @@ def merge_g_files(
             f"{id_result.virtual_reference_tokens}（允许无同名 XML 图元）"
         )
 
+    if merge_main_bus:
+        bus_merge = merge_aligned_top_buses(target_layer, output_path.name)
+        if bus_merge.get("changed"):
+            # 顶部多条 Bus 已合法折叠为一条。required_target_ids 记录的是
+            # 合并前“确实被引用的真实图元 ID”，因此这里必须同步把被删除
+            # Bus 的必需目标映射到保留 Bus；否则最终完整性校验会把合法删除
+            # 误判成引用失效。
+            removed_bus_map = bus_merge.get("removed_id_map", {})
+            if removed_bus_map:
+                required_target_ids = {
+                    removed_bus_map.get(target_id, target_id)
+                    for target_id in required_target_ids
+                }
+
+            print("\n主母线合并：")
+            print(f"  原顶部主母线：{bus_merge['bus_count']} 条")
+            print(f"  保留 Bus ID：{bus_merge['keeper_id']}")
+            print(f"  删除多余 Bus：{bus_merge['removed']} 条")
+            print(
+                "  合并后范围："
+                f"X={format_integer(bus_merge['min_x'])} ~ {format_integer(bus_merge['max_x'])}，"
+                f"Y={format_integer(bus_merge['y'])}"
+            )
+            print("  原有馈线连接引用已全部改接到保留 Bus。")
+            print("  最终引用完整性校验已同步使用保留 Bus ID。")
+        else:
+            print("\n主母线合并：无需处理（有效顶部水平 Bus 不超过 1 条）。")
+
     # 完成全部对齐和水平排列后，再统一处理上边距和左边距。
     # 整体平移不会改变对齐关系和输入图之间的间隔。
     before_min_x, before_min_y, before_max_x, before_max_y = (
@@ -1921,6 +2057,7 @@ def merge_g_files(
     print(f"  最终对齐基准 Y：{format_integer(final_alignment_y)}")
     print(f"  默认单线图宽度：{format_integer(feeder_min_width)}")
     print(f"  相邻馈线用户间隔：{format_integer(gap)}")
+    print(f"  主母线合并为一条：{'是' if merge_main_bus else '否'}")
     print(f"  G.w / G.width：{format_integer(final_width)}")
     print(f"  G.h / G.height：{format_integer(final_height)}")
     print(f"  输出文件：{output_path.resolve()}")

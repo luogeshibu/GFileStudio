@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QFormLayout, QGroupBox, QLineEdit
+from PySide6.QtWidgets import QCheckBox, QFormLayout, QGroupBox, QLineEdit
 
 from g_file_studio.models import MergeSettings
 from g_file_studio.processors.merge_processor import merge_feeders
@@ -82,6 +82,8 @@ class MergePage(BasePage):
         settings_form.setVerticalSpacing(10)
         self.gap = self.spin(300)
         self.feeder_min_width = self.spin(1000)
+        self.merge_main_bus = QCheckBox("合并主母线为一条")
+        self.merge_main_bus.setToolTip("合并完成后，仅保留顶部对齐主母线中的第一条 Bus，并将其延伸到最后一张馈线的主母线末端；其余顶部主母线删除，所有原连接关系改接到保留的 Bus。BusDis 和其他非主母线不处理。")
         self.left = self.spin(300)
         self.top = self.spin(300)
         self.right = self.spin(300)
@@ -90,6 +92,7 @@ class MergePage(BasePage):
         for widget in (self.left, self.top, self.right, self.bottom):
             widget.setToolTip(FIELD_HELP["merge_margin"])
         settings_form.addRow(HelpLabel("默认单线图宽度", "每个馈线图的最小占用宽度。实际宽度小于该值时按该值预留；实际宽度超过该值时使用实际宽度。该宽度不包含相邻馈线间隔。"), self.feeder_min_width)
+        settings_form.addRow(HelpLabel("主母线处理", "勾选后，将所有馈线已对齐的顶部水平 <Bus> 合并成一条连续母线，从第一张馈线延伸到最后一张馈线，并保持所有馈线原有连接关系。"), self.merge_main_bus)
         settings_form.addRow(HelpLabel("相邻图形间隔", FIELD_HELP["feeder_gap"]), self.gap)
         settings_form.addRow(HelpLabel("左边距", FIELD_HELP["merge_margin"]), self.left)
         settings_form.addRow(HelpLabel("上边距", FIELD_HELP["merge_margin"]), self.top)
@@ -119,6 +122,7 @@ class MergePage(BasePage):
             ordered_file_names=self.file_order.ordered_file_names(),
             feeder_gap=self.gap.value(),
             feeder_min_width=self.feeder_min_width.value(),
+            merge_main_bus=self.merge_main_bus.isChecked(),
             left_margin=self.left.value(),
             top_margin=self.top.value(),
             right_margin=self.right.value(),
