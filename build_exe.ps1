@@ -24,7 +24,11 @@ if (-not (Test-Path $IconPath)) {
 
 $ReleaseDir = Join-Path $ProjectRoot "release"
 New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
-$ZipPath = Join-Path $ReleaseDir "GFileStudio_v2.17.1_Windows_x64.zip"
+$Version = (& $VenvPython -c "import g_file_studio; print(g_file_studio.__version__)" | Select-Object -Last 1).Trim()
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    throw "无法读取 G File Studio 版本号。"
+}
+$ZipPath = Join-Path $ReleaseDir ("GFileStudio_v{0}_Windows_x64.zip" -f $Version)
 if (Test-Path $ZipPath) {
     Remove-Item $ZipPath -Force
 }

@@ -9,6 +9,6 @@ def test_grid_theme_uses_green_operations_palette_and_grid_branding():
     assert "#0b7a5a" in theme
     assert "#0a1f29" in theme
     assert 'QLabel#gridModeBadge' in theme
-    assert "GRID GRAPHICS · 电网图形" in main
-    assert "电网 XML 图形处理工作台" in main
-    assert "G File Studio · 电网图形处理" in main
+    assert "G 文件处理工具" in main
+    assert "NARI 国际业务部" in main
+    assert "G File Studio · NARI 国际业务部" in main

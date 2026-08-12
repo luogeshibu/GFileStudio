@@ -99,6 +99,11 @@ class BasicSettings(BaseModel):
     replace_old_value: str = ""
     replace_new_value: str = ""
 
+    # 删除元素上的某个属性本身，不删除元素。
+    delete_attribute: bool = False
+    delete_attribute_target_tag: str = ""
+    delete_attribute_name: str = ""
+
     delete_matching_element: bool = False
     delete_target_tag: str = ""
     delete_target_attribute: str = ""
@@ -184,6 +189,7 @@ class MergeSettings(BaseModel):
     feeder_gap: int = Field(default=300, ge=0)
     feeder_min_width: int = Field(default=1000, ge=0)
     merge_main_bus: bool = False
+    main_bus_mode: str = "single"
     left_margin: int = Field(default=300, ge=0)
     top_margin: int = Field(default=300, ge=0)
     right_margin: int = Field(default=300, ge=0)

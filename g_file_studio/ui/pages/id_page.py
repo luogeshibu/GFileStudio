@@ -7,15 +7,19 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QCheckBox,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QPlainTextEdit,
+    QProgressDialog,
     QRadioButton,
     QTableWidget,
     QTableWidgetItem,
@@ -36,6 +40,39 @@ from g_file_studio.ui.path_validation import validate_existing_directory, valida
 from g_file_studio.ui.widgets import InfoBanner, InputSourceSelector, PathRow, TaskPanel
 
 
+class ScanResultDialog(QDialog):
+    """固定尺寸的扫描结果窗口，长内容通过滚动条查看。"""
+
+    def __init__(self, parent, title: str, text: str, *, warning: bool = False) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(760, 560)
+        self.setMinimumSize(640, 420)
+
+        header = QLabel(
+            "扫描发现需要关注的内容，请在下方滚动查看。"
+            if warning
+            else "扫描完成，详细结果如下。"
+        )
+        header.setWordWrap(True)
+        if warning:
+            header.setObjectName("warningText")
+
+        viewer = QPlainTextEdit()
+        viewer.setReadOnly(True)
+        viewer.setPlainText(text)
+        viewer.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        viewer.setMinimumHeight(320)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        buttons.accepted.connect(self.accept)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(header)
+        layout.addWidget(viewer, 1)
+        layout.addWidget(buttons)
+
+
 class RuleDialog(QDialog):
     def __init__(self, parent=None, rule: IdRule | None = None) -> None:
         super().__init__(parent)
@@ -49,7 +86,7 @@ class RuleDialog(QDialog):
         form.addRow("ID 固定前缀", self.prefix)
         form.addRow("ID 总位数", self.total_length)
         form.addRow("备注", self.note)
-        hint = QLabel("示例：ConnectLine 使用前缀 34、总位数 8，因此 34000053、34001838 合法，而 140、340123456 不合法。新增 ID 按同类型当前最大完整 ID + 1，并且结果必须继续满足前缀和总位数。只管理 id，不处理 Alias。")
+        hint = QLabel("示例：ConnectLine 使用前缀 34、总位数 8，因此 34000053、34001838 合法，而 140、340123456 不合法。新增 ID 按同类型当前最大完整 ID + 1，并且结果必须继续满足前缀和总位数。")
         hint.setWordWrap(True)
         hint.setObjectName("mutedText")
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -90,7 +127,7 @@ class IdPage(BasePage):
             parent,
         )
         self.layout.addWidget(InfoBanner(
-            "本模块只管理元素 id，不读取或修改 Alias。打开新 G 时会对照模板检查：发现新的元素类型会提醒是否加入模板；"
+            "打开新 G 时会对照模板检查：发现新的元素类型会提醒是否加入模板；"
             "已知类型只要固定前缀或总位数不符合模板就会告警。执行修复时会强制把格式不符和重复 ID 都更新为模板格式；同类型按当前最大合法完整 ID + 1。未知或未确认类型绝不擅自生成新 ID。"
         ))
 
@@ -125,10 +162,19 @@ class IdPage(BasePage):
 
         template_box = QGroupBox("ID 规则模板")
         template_layout = QVBoxLayout(template_box)
-        intro = QLabel("规则格式：XML 元素类型 + 固定数字起始前缀 + 固定 ID 总位数。新增 ID 按同类型当前最大完整 ID + 1，并始终校验前缀和位数。模板为人工确认后的唯一分配依据，不自动永久修改。")
+        intro = QLabel("规则格式：XML 元素类型 + 固定数字起始前缀 + 固定 ID 总位数。所有模块只允许使用这里已启用、已确认的规则；新增 ID 按同类型当前最大完整 ID + 1，并始终校验前缀和位数。")
         intro.setWordWrap(True)
         intro.setObjectName("mutedText")
         template_layout.addWidget(intro)
+
+        self.global_strict = QCheckBox("启用全局 ID 模板强制约束")
+        self.global_strict.setChecked(self.user_settings.get_bool("id_rules/global_strict", True))
+        self.global_strict.setToolTip(
+            "默认开启：处理输出时会把已有不符合模板的 ID 也强制修复。关闭后不会强制改写已有格式不符 ID；"
+            "但所有模块新生成的 ID 仍必须严格使用已确认模板。"
+        )
+        self.global_strict.toggled.connect(self._global_strict_toggled)
+        template_layout.addWidget(self.global_strict)
 
         buttons = QHBoxLayout()
         self.scan_button = QPushButton("扫描当前 G")
@@ -142,8 +188,8 @@ class IdPage(BasePage):
         buttons.addStretch(1)
         template_layout.addLayout(buttons)
 
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["状态", "元素类型", "ID 起始前缀", "总位数", "合法示例", "当前规则", "备注"])
+        self.table = QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels(["选择", "状态", "元素类型", "ID 起始前缀", "总位数", "合法示例", "当前规则", "备注"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -184,8 +230,13 @@ class IdPage(BasePage):
             row = self.table.rowCount()
             self.table.insertRow(row)
             example = rule.build(1)
+            select_item = QTableWidgetItem("")
+            select_item.setFlags(select_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            select_item.setCheckState(Qt.CheckState.Unchecked)
+            select_item.setData(Qt.ItemDataRole.UserRole, rule.tag)
+            self.table.setItem(row, 0, select_item)
             values = [
-                "✓ 已确认" if rule.verified and rule.enabled else "○ 未启用",
+                "✓ 已确认",
                 rule.tag,
                 rule.prefix,
                 str(rule.total_length),
@@ -193,18 +244,41 @@ class IdPage(BasePage):
                 "前缀 + 总位数；同类型最大 ID + 1",
                 rule.note,
             ]
-            for col, text in enumerate(values):
+            for offset, text in enumerate(values, start=1):
                 item = QTableWidgetItem(text)
-                if col == 1:
+                if offset == 2:
                     item.setData(Qt.ItemDataRole.UserRole, rule.tag)
-                self.table.setItem(row, col, item)
+                self.table.setItem(row, offset, item)
         self.table.resizeColumnsToContents()
+
+    def _global_strict_toggled(self, checked: bool) -> None:
+        if not checked:
+            answer = QMessageBox.warning(
+                self,
+                "关闭全局 ID 强制约束",
+                "关闭后，后续处理不会再强制改写 G 文件中已有但不符合模板的 ID。\n\n"
+                "注意：所有模块新生成的 ID 仍会严格按照 ID 规则模板生成。\n\n"
+                "确认关闭全局 ID 模板强制约束吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self.global_strict.blockSignals(True)
+                self.global_strict.setChecked(True)
+                self.global_strict.blockSignals(False)
+                return
+        self.user_settings.set_value("id_rules/global_strict", "true" if checked else "false")
+        self.scan_summary.setText(
+            "全局 ID 模板强制约束已开启：已有格式不符 ID 会在处理输出时按模板修复。"
+            if checked
+            else "全局 ID 模板强制约束已关闭：已有格式不符 ID 保持不变；新生成 ID 仍严格使用模板。"
+        )
 
     def _selected_tag(self) -> str | None:
         row = self.table.currentRow()
         if row < 0:
             return None
-        item = self.table.item(row, 1)
+        item = self.table.item(row, 2)
         return item.data(Qt.ItemDataRole.UserRole) if item else None
 
     def add_rule(self) -> None:
@@ -242,17 +316,33 @@ class IdPage(BasePage):
         self.rule_service.upsert(new)
         self._refresh_table()
 
+    def _checked_tags(self) -> list[str]:
+        tags: list[str] = []
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is not None and item.checkState() == Qt.CheckState.Checked:
+                tag = item.data(Qt.ItemDataRole.UserRole)
+                if tag:
+                    tags.append(str(tag))
+        return tags
+
     def delete_rule(self) -> None:
-        tag = self._selected_tag()
-        if not tag:
-            QMessageBox.information(self, "请选择规则", "请先选择要删除的规则。")
+        tags = self._checked_tags()
+        if not tags:
+            QMessageBox.information(self, "请选择规则", "请先在表格第一列勾选一个或多个要删除的规则。")
             return
-        if QMessageBox.question(self, "删除规则", f"确认删除 <{tag}> 的 ID 规则？删除后立即生效，后续扫描不会自动恢复该规则。") != QMessageBox.StandardButton.Yes:
+        display = "、".join(f"<{tag}>" for tag in tags)
+        if QMessageBox.question(
+            self,
+            "删除规则",
+            f"确认删除以下 {len(tags)} 条 ID 规则？\n\n{display}\n\n删除后立即生效；再次扫描到对应元素类型时会重新提醒是否添加。",
+        ) != QMessageBox.StandardButton.Yes:
             return
-        self.rule_service.remove(tag)
-        self._last_scan_candidates.pop(tag, None)
+        for tag in tags:
+            self.rule_service.remove(tag)
+            self._last_scan_candidates.pop(tag, None)
         self._refresh_table()
-        self.scan_summary.setText(f"已立即删除 <{tag}> 的 ID 规则。再次扫描含该类型的 G 文件时，会作为未覆盖类型重新提醒你是否添加。")
+        self.scan_summary.setText(f"已立即删除 {len(tags)} 条 ID 规则：{display}。")
 
     def scan_current(self) -> None:
         if not validate_input_source(self, self.source, display_name="ID 扫描输入"):
@@ -262,12 +352,27 @@ class IdPage(BasePage):
         candidates: dict[str, IdRule] = {}
         new_messages: list[str] = []
         changed_messages: list[str] = []
+        invalid_ids_by_tag: dict[str, list[str]] = {}
         matched: set[str] = set()
         observed_all: set[str] = set()
         uninferable: set[str] = set()
         type_max_ids: dict[str, int] = {}
+        progress_dialog = QProgressDialog("正在扫描当前 G 文件并检查 ID 规则……", "取消", 0, max(len(files), 1), self)
+        progress_dialog.setWindowTitle("扫描当前 G")
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setAutoClose(False)
+        progress_dialog.setAutoReset(False)
+        progress_dialog.setValue(0)
+        progress_dialog.show()
+        QApplication.processEvents()
         try:
-            for path in files:
+            for index, path in enumerate(files, start=1):
+                if progress_dialog.wasCanceled():
+                    self.scan_summary.setText("扫描已取消。")
+                    return
+                progress_dialog.setLabelText(f"正在扫描：{path.name}  （{index}/{len(files)}）")
+                QApplication.processEvents()
                 scan = scan_file_against_rules(path, rules)
                 observed_all.update(scan.observed)
                 matched.update(scan.matched_tags)
@@ -287,14 +392,17 @@ class IdPage(BasePage):
                 for item in scan.unknown_uninferable:
                     uninferable.add(item.tag)
                 for item in scan.changed_formats:
-                    rule = rules.get(item.tag)
-                    changed_messages.append(
-                        f"<{item.tag}>：模板要求前缀 {rule.prefix}、总位数 {rule.total_length}；"
-                        f"发现 {', '.join(item.sample_ids[:4])}"
-                    )
+                    bucket = invalid_ids_by_tag.setdefault(item.tag, [])
+                    for value in item.sample_ids:
+                        if value not in bucket:
+                            bucket.append(value)
+                progress_dialog.setValue(index)
+                QApplication.processEvents()
         except Exception as exc:
             QMessageBox.warning(self, "扫描失败", str(exc))
             return
+        finally:
+            progress_dialog.close()
         self._last_scan_candidates = candidates
         self.add_detected_button.setEnabled(bool(candidates))
         covered_tags = observed_all & set(rules)
@@ -312,13 +420,24 @@ class IdPage(BasePage):
             parts.append("发现新元素类型：\n" + "\n".join(new_messages))
         if uninferable:
             parts.append("样本不足、不能自动推断：" + ", ".join(sorted(uninferable)) + "。请人工新增规则。")
-        if changed_messages:
-            parts.append("发现已有类型 ID 格式变化：\n" + "\n".join(changed_messages) + "\n请人工确认并更新模板，程序不会自动改模板。")
+        if invalid_ids_by_tag:
+            for tag in sorted(invalid_ids_by_tag):
+                rule = rules.get(tag)
+                values = invalid_ids_by_tag[tag]
+                changed_messages.append(
+                    f"<{tag}>：模板要求前缀 {rule.prefix}、总位数 {rule.total_length}；"
+                    f"不符合模板的完整 ID（{len(values)} 个）：{', '.join(values)}"
+                )
+            parts.append(
+                "发现已有类型 ID 不符合模板：\n"
+                + "\n".join(changed_messages)
+                + "\n以上数字均为 XML 中实际存在的完整 ID，不是前缀。模板不会自动修改。"
+            )
         self.scan_summary.setText("\n".join(parts))
         if new_messages or changed_messages or uninferable:
-            QMessageBox.warning(self, "ID 模板扫描有发现", self.scan_summary.text())
+            ScanResultDialog(self, "ID 模板扫描有发现", self.scan_summary.text(), warning=True).exec()
         else:
-            QMessageBox.information(self, "ID 模板扫描完成", self.scan_summary.text())
+            ScanResultDialog(self, "ID 模板扫描完成", self.scan_summary.text()).exec()
 
         # 发现可推断的新类型时，主动询问是否逐条打开“新增 ID 规则”窗口。
         # 前缀和总位数由扫描结果预填，最终必须由用户逐条确认。

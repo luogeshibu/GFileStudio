@@ -98,6 +98,33 @@ class BasicRulesEditor(QWidget):
         )
         self.replace_attribute_rule.options_layout.addLayout(replace_form)
 
+
+        self.delete_attribute_rule = RuleCard(
+            "删除元素属性",
+            "删除指定元素标签上的某个属性本身；不会删除元素，也不会把属性值改为空字符串。",
+            """
+<p>从输入 G 文件实际结构中选择元素标签和属性名。</p>
+<p>执行后会对直属 Layer 中所有匹配标签的元素删除该属性，例如删除 &lt;Text&gt; 的某个属性。</p>
+<p>这是“删除属性”，不是“修改属性值”，也不是“删除整个元素”。</p>
+<p>只处理 G 根节点直属 Layer 的直接子元素，不递归处理图元内部子元素。</p>
+""",
+        )
+        self.delete_attribute_rule.enabled.setChecked(False)
+        delete_attr_form = QFormLayout()
+        delete_attr_form.setHorizontalSpacing(16)
+        delete_attr_form.setVerticalSpacing(8)
+        self.delete_attr_tag = self._create_combo("请选择或输入元素标签")
+        self.delete_attr_name = self._create_combo("请先选择元素标签，再选择要删除的属性")
+        delete_attr_form.addRow(
+            HelpLabel("元素标签", "从输入 G 文件直属 Layer 的直接子元素中选择，也可手动输入。"),
+            self.delete_attr_tag,
+        )
+        delete_attr_form.addRow(
+            HelpLabel("删除属性", "匹配元素上存在该属性时，直接删除这个属性键。"),
+            self.delete_attr_name,
+        )
+        self.delete_attribute_rule.options_layout.addLayout(delete_attr_form)
+
         self.delete_element_rule = RuleCard(
             "删除匹配元素",
             "从实际 G 文件中选择元素标签和属性名，属性值由用户手动输入。",
@@ -134,11 +161,15 @@ class BasicRulesEditor(QWidget):
         self.replace_tag.currentTextChanged.connect(
             lambda text: self._update_attribute_combo(self.replace_attribute_name, text)
         )
+        self.delete_attr_tag.currentTextChanged.connect(
+            lambda text: self._update_attribute_combo(self.delete_attr_name, text)
+        )
         self.delete_tag.currentTextChanged.connect(
             lambda text: self._update_attribute_combo(self.delete_attribute, text)
         )
 
         root.addWidget(self.replace_attribute_rule)
+        root.addWidget(self.delete_attribute_rule)
         root.addWidget(self.delete_element_rule)
 
     @staticmethod
@@ -169,10 +200,15 @@ class BasicRulesEditor(QWidget):
         result = scan_direct_layer_schema(self._input_dir)
         self._schema = result
         self._populate_tag_combo(self.replace_tag)
+        self._populate_tag_combo(self.delete_attr_tag)
         self._populate_tag_combo(self.delete_tag)
         self._update_attribute_combo(
             self.replace_attribute_name,
             self.replace_tag.currentText(),
+        )
+        self._update_attribute_combo(
+            self.delete_attr_name,
+            self.delete_attr_tag.currentText(),
         )
         self._update_attribute_combo(
             self.delete_attribute,
@@ -231,6 +267,9 @@ class BasicRulesEditor(QWidget):
             replace_target_attribute=self.replace_attribute_name.currentText().strip(),
             replace_old_value=self.replace_old_value.text(),
             replace_new_value=self.replace_new_value.text(),
+            delete_attribute=self.delete_attribute_rule.enabled.isChecked(),
+            delete_attribute_target_tag=self.delete_attr_tag.currentText().strip(),
+            delete_attribute_name=self.delete_attr_name.currentText().strip(),
             delete_matching_element=self.delete_element_rule.enabled.isChecked(),
             delete_target_tag=self.delete_tag.currentText().strip(),
             delete_target_attribute=self.delete_attribute.currentText().strip(),

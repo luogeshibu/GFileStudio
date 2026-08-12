@@ -10,6 +10,7 @@ from g_file_studio.models import BasicOutputConflictAction, IdAction, IdSettings
 from g_file_studio.processors.common import LogCallback, ProgressCallback, discover_g_inputs
 from g_file_studio.services.id_rule_service import IdRuleService
 from g_file_studio.services.output_naming import marked_output_name
+from g_file_studio.services.user_settings_service import UserSettingsService
 
 
 def process_ids(settings: IdSettings, log: LogCallback, progress: ProgressCallback) -> ProcessingResult:
@@ -18,6 +19,7 @@ def process_ids(settings: IdSettings, log: LogCallback, progress: ProgressCallba
         raise ValueError("没有找到可处理的 G 文件。")
 
     rules = IdRuleService().load_rules()
+    strict_existing = UserSettingsService().get_bool("id_rules/global_strict", True)
     settings.output_dir.mkdir(parents=True, exist_ok=True)
     outputs: list[Path] = []
     warnings: list[str] = []
@@ -54,7 +56,7 @@ def process_ids(settings: IdSettings, log: LogCallback, progress: ProgressCallba
                 log(
                     f"[ID 格式变化] {input_path.name}：<{item.tag}> 当前模板 "
                     f"要求前缀 {rule.prefix}、总位数 {rule.total_length}，但发现：{', '.join(item.sample_ids)}。"
-                    "执行修复时将严格按当前模板强制更新这些 ID。"
+                    + ("执行修复时将严格按当前模板强制更新这些 ID。" if strict_existing else "全局强制约束已关闭：这些已有格式不符 ID 将保留不变。")
                 )
 
             inspection = inspect_tree_ids(tree, input_path)
@@ -72,7 +74,7 @@ def process_ids(settings: IdSettings, log: LogCallback, progress: ProgressCallba
                 outputs.append(report_path)
                 continue
 
-            repair = normalize_tree_ids_strict(tree, input_path, rules)
+            repair = normalize_tree_ids_strict(tree, input_path, rules, repair_invalid_formats=strict_existing)
             if repair.final_duplicate_count:
                 raise ValueError("严格模板修复后仍存在重复 ID。")
             repaired_count += repair.changed_element_ids

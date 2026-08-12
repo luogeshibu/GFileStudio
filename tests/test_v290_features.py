@@ -29,7 +29,7 @@ def test_group_and_ungroup_real_rmu_file_are_reversible_in_structure():
     assert grouped.rebuilt_group_count == 1
     layer = _layer(tree)
     merge = next(element for element in layer if local_name(element.tag) == "Merge")
-    assert merge.get("id") == "20000028"
+    assert merge.get("id") == "20000001"
     assert merge.get("mergesize") == "23"
 
     ungrouped = ungroup_rmu_tree(tree, source)

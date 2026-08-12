@@ -305,7 +305,22 @@ def _infer_merge_pattern_and_seed(
     elements: list[ET.Element],
     existing_merges: list[ET.Element],
 ) -> tuple[ElementIdPattern | None, str]:
-    """优先使用现有 Merge 规则；没有样本时从当前文件的 20 前缀对象推断。"""
+    """优先使用全局已确认 Merge 模板，再考虑旧文件推断。"""
+    from g_file_studio.services.id_rule_service import IdRuleService
+
+    rule = IdRuleService().load_rules().get("Merge")
+    if rule is not None and rule.enabled and rule.verified:
+        merge_pattern = ElementIdPattern("Merge", rule.prefix, rule.total_length)
+        values = [
+            (element.get("id") or "").strip()
+            for element in [*elements, *existing_merges]
+            if local_name(element.tag) == "Merge"
+            and merge_pattern.matches((element.get("id") or "").strip())
+        ]
+        if values:
+            return merge_pattern, max(values, key=int)
+        # generate_unique_id 会从该 seed 的下一号开始。
+        return merge_pattern, merge_pattern.build(0)
     patterns = infer_element_id_patterns(elements + existing_merges)
     merge_pattern = patterns.get("Merge")
     merge_ids = [

@@ -108,7 +108,7 @@ class IdRuleService:
                     tag=str(item["tag"]).strip(),
                     prefix=str(item["prefix"]).strip(),
                     total_length=int(total_length_raw),
-                    enabled=bool(item.get("enabled", True)),
+                    enabled=True,
                     verified=bool(item.get("verified", True)),
                     note=str(item.get("note", "")),
                 )
@@ -172,7 +172,7 @@ class IdRuleService:
         ordered = sorted(rules, key=lambda r: r.tag.lower())
         deleted = self._deleted_tags() if deleted_tags is None else set(deleted_tags)
         payload = {
-            "version": 5,
+            "version": 6,
             "allocation": "per_type_full_id_increment",
             "match": "prefix_and_total_length",
             "deleted_tags": sorted(deleted),

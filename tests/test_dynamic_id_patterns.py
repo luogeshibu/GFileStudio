@@ -52,7 +52,7 @@ def test_duplicate_short_id_uses_same_type_majority_format():
 
     assert result.source_internal_duplicates == 1
     assert ids[-2] == "130"  # v2.4.0 行为：第一次出现保持不变。
-    assert ids[-1] == "34000130"
+    assert ids[-1] == "34000126"
     assert len(ids[-1]) == 8
     assert ids[-1].startswith("34")
 

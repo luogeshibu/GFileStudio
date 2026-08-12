@@ -977,17 +977,31 @@ def allocate_template_ids(
 ) -> Dict[str, str]:
     """为模板元素分配唯一 ID。
 
-    优先参考目标 G 文件中相同 XML 标签元素使用最多的“前缀 + 固定总位数”
-    格式；目标中没有同类样本时，再参考模板自身同类格式。无法推断时才
-    回退到旧版的原数字递增方式。
+    新生成 ID 必须优先使用“ID 检查与修复”中的全局已确认模板；
+    同类型按当前最大合法完整 ID + 1 分配。只有确实没有模板的类型才
+    保留旧版推断逻辑，且随后会由业务层提示用户补充模板。
     """
+    from g_file_studio.services.id_rule_service import IdRuleService
+
     target_patterns = (
         infer_direct_id_patterns(list(target_layer))
         if target_layer is not None
         else {}
     )
     template_patterns = infer_direct_id_patterns(elements)
+    rules = IdRuleService().load_rules()
     mapping: Dict[str, str] = {}
+    seeds: Dict[str, str | None] = {}
+
+    if target_layer is not None:
+        for node in target_layer.iter():
+            tag = id_local_name(node.tag)
+            rule = rules.get(tag)
+            value = (node.get("id") or "").strip()
+            if rule is not None and rule.enabled and rule.verified and rule.matches(value):
+                current = seeds.get(tag)
+                if current is None or int(value) > int(current):
+                    seeds[tag] = value
 
     for element in elements:
         for node in element.iter():
@@ -995,8 +1009,16 @@ def allocate_template_ids(
             if not old_id or old_id in mapping:
                 continue
             tag = id_local_name(node.tag)
-            pattern = target_patterns.get(tag) or template_patterns.get(tag)
-            new_id = generate_pattern_unique_id(old_id, used_ids, pattern)
+            rule = rules.get(tag)
+            if rule is not None and rule.enabled and rule.verified:
+                candidate = rule.build_after(seeds.get(tag))
+                while candidate in used_ids:
+                    candidate = rule.build_after(candidate)
+                seeds[tag] = candidate
+                new_id = candidate
+            else:
+                pattern = target_patterns.get(tag) or template_patterns.get(tag)
+                new_id = generate_pattern_unique_id(old_id, used_ids, pattern)
             mapping[old_id] = new_id
             used_ids.add(new_id)
     return mapping

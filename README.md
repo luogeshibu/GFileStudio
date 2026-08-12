@@ -1,4 +1,4 @@
-# G File Studio v2.17.14
+# G File Studio v2.17.24
 
 G File Studio 是用于处理 XML 格式 `.sln.pic.g` / `.g` 文件的 PySide6 桌面工具。
 

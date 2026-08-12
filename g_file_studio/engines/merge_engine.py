@@ -196,6 +196,23 @@ class ElementIdPattern:
         return f"{self.prefix}{sequence:0{self.sequence_width}d}"
 
 
+def confirmed_id_patterns() -> dict[str, ElementIdPattern]:
+    """读取全局已确认 ID 模板；新生成 ID 一律以此为最高优先级。"""
+    from g_file_studio.services.id_rule_service import IdRuleService
+
+    patterns: dict[str, ElementIdPattern] = {}
+    for rule in IdRuleService().load_rules().values():
+        if rule.enabled and rule.verified:
+            patterns[rule.tag] = ElementIdPattern(rule.tag, rule.prefix, rule.total_length)
+    return patterns
+
+
+def apply_confirmed_id_patterns(patterns: dict[str, ElementIdPattern]) -> dict[str, ElementIdPattern]:
+    merged = dict(patterns)
+    merged.update(confirmed_id_patterns())
+    return merged
+
+
 def local_name(tag: object) -> str:
     """去掉 XML 命名空间，只保留标签名。"""
     if not isinstance(tag, str):
@@ -621,17 +638,10 @@ def _unique_reference_groups(values: list[str]) -> str:
     return ";".join(result)
 
 
-def merge_aligned_top_buses(layer: ET.Element, filename: str) -> dict[str, object]:
-    """将已对齐馈线的顶部水平 Bus 合并为一条连续主母线。
 
-    规则：
-    - 仅处理标签严格为 ``Bus`` 的非零长度水平线；``BusDis`` 不参与。
-    - 仅处理最顶部母线 Y（允许 1 个坐标单位的取整误差）。
-    - 保留 XML 顺序中的第一条主母线 ID，删除其余主母线。
-    - 新主母线从全部候选的最左端延伸到最右端。
-    - 所有引用被删除 Bus ID 的 link/node_area/p_FatherObjId 均改为保留 Bus ID。
-    - 汇总各母线 node_area/link，使所有馈线仍与同一主母线建立拓扑关联。
-    """
+
+def _top_horizontal_bus_candidates(layer: ET.Element) -> list[tuple[ET.Element, Decimal, Decimal, Decimal]]:
+    """Return top horizontal Bus candidates with geometry (element, min_x, max_x, y)."""
     candidates: list[tuple[ET.Element, Decimal, Decimal, Decimal]] = []
     for element in iter_graph_elements(layer):
         if local_name(element.tag) != "Bus":
@@ -643,72 +653,301 @@ def merge_aligned_top_buses(layer: ET.Element, filename: str) -> dict[str, objec
         if abs(y2 - y1) > Decimal("0.000001") or abs(x2 - x1) <= Decimal("0.000001"):
             continue
         candidates.append((element, min(x1, x2), max(x1, x2), (y1 + y2) / Decimal("2")))
-
-    if len(candidates) <= 1:
-        return {"changed": False, "bus_count": len(candidates), "removed": 0}
-
+    if not candidates:
+        return []
     top_y = min(item[3] for item in candidates)
     tolerance = Decimal("1")
-    top = [item for item in candidates if abs(item[3] - top_y) <= tolerance]
-    if len(top) <= 1:
-        return {"changed": False, "bus_count": len(top), "removed": 0}
+    return [item for item in candidates if abs(item[3] - top_y) <= tolerance]
 
-    keeper, _kx1, _kx2, _ky = top[0]
-    keeper_id = (keeper.get("id") or "").strip()
-    if not keeper_id:
-        raise ValueError(f"{filename}：顶部主母线缺少 id，无法合并。")
 
-    min_x = min(item[1] for item in top)
-    max_x = max(item[2] for item in top)
-    merged_y = top_y
-    old_ids = [((item[0].get("id") or "").strip()) for item in top[1:]]
-    old_ids = [value for value in old_ids if value]
-    id_map = {old_id: keeper_id for old_id in old_ids}
+def _horizontal_main_bus_candidates(layer: ET.Element) -> list[tuple[ET.Element, Decimal, Decimal, Decimal]]:
+    """Return horizontal Bus bars eligible for main-bus processing.
 
-    # 先更新全图引用，确保删除多余 Bus 后所有馈线仍引用保留 Bus。
-    update_reference_attributes(list(layer), id_map)
+    The dedicated main-bus feature ignores helper Bus elements whose XML ``w``
+    attribute is smaller than 10, exactly as requested by the distribution SLD
+    workflow.  This filter is intentionally local to main-bus processing and does
+    not change feeder alignment or any other merge behaviour.
+    """
+    candidates: list[tuple[ET.Element, Decimal, Decimal, Decimal]] = []
+    for element in iter_graph_elements(layer):
+        if local_name(element.tag) != "Bus":
+            continue
+        try:
+            xml_w = Decimal((element.get("w") or "0").strip())
+        except Exception:
+            xml_w = Decimal("0")
+        if xml_w < Decimal("10"):
+            continue
+        line = get_bus_line(element)
+        if line is None:
+            continue
+        x1, y1, x2, y2 = line
+        if abs(y2 - y1) > Decimal("0.000001"):
+            continue
+        if abs(x2 - x1) <= Decimal("0.000001"):
+            continue
+        candidates.append((element, min(x1, x2), max(x1, x2), (y1 + y2) / Decimal("2")))
+    return candidates
 
-    # 汇总各原始主母线自身记录的连接关系。
-    node_groups = _unique_reference_groups([item[0].get("node_area", "") for item in top])
-    link_groups = _unique_reference_groups([item[0].get("link", "") for item in top])
-    if node_groups:
-        keeper.set("node_area", node_groups)
-    elif "node_area" in keeper.attrib:
-        keeper.set("node_area", "")
-    if link_groups:
-        keeper.set("link", link_groups)
-    elif "link" in keeper.attrib:
-        keeper.set("link", "")
 
-    # 将保留母线拉通为一条。边界框统一采用线路两侧 3 个单位留量。
-    keeper.set("x1", format_integer(min_x))
-    keeper.set("y1", format_integer(merged_y))
-    keeper.set("x2", format_integer(max_x))
-    keeper.set("y2", format_integer(merged_y))
-    keeper.set("d", f"{format_integer(min_x)},{format_integer(merged_y)} {format_integer(max_x)},{format_integer(merged_y)}")
-    keeper.set("x", format_integer(min_x - Decimal("3")))
-    keeper.set("y", format_integer(merged_y - Decimal("3")))
-    keeper.set("w", format_integer(max_x - min_x + Decimal("6")))
-    keeper.set("h", "6")
+def _bus_span(item: tuple[ET.Element, Decimal, Decimal, Decimal]) -> Decimal:
+    return item[2] - item[1]
+
+
+def _select_main_bus_candidates(
+    layer: ET.Element,
+    mode: str,
+    filename: str,
+) -> list[tuple[ET.Element, Decimal, Decimal, Decimal]]:
+    """Select exactly the Bus bars relevant to the requested single/double-bus mode.
+
+    * single: only the highest (minimum-Y) real horizontal Bus is relevant;
+    * double: the highest Bus plus the nearest lower, parallel Bus whose length is
+      approximately the same and whose horizontal projection substantially overlaps.
+
+    All other Bus elements are ignored by this optional feature.  Helper Bus elements
+    with w < 10 never participate.
+    """
+    mode = (mode or "single").strip().lower()
+    if mode not in {"single", "double"}:
+        raise ValueError(f"{filename}：未知主母线类型 {mode!r}，只能选择单母线或双母线。")
+
+    buses = _horizontal_main_bus_candidates(layer)
+    if not buses:
+        raise ValueError(f"{filename}：未找到 w>=10 的有效水平 <Bus>，不能使用主母线处理。")
+
+    # Highest Bus; if several are effectively on the same Y, take the longest as the
+    # representative.  Per-file SLD input should normally expose one such Bus.
+    buses_sorted = sorted(buses, key=lambda item: (item[3], -_bus_span(item), item[1]))
+    top_y = buses_sorted[0][3]
+    same_top = [item for item in buses_sorted if abs(item[3] - top_y) <= Decimal("1")]
+    top = max(same_top, key=_bus_span)
+    if mode == "single":
+        return [top]
+
+    top_span = _bus_span(top)
+    second_candidates: list[tuple[Decimal, Decimal, tuple[ET.Element, Decimal, Decimal, Decimal]]] = []
+    for item in buses_sorted:
+        if item is top:
+            continue
+        y = item[3]
+        if y <= top[3] + Decimal("1"):
+            continue
+        span = _bus_span(item)
+        if top_span <= 0 or span <= 0:
+            continue
+        # "长度大致一样": allow 20% deviation.  Also require at least 60% horizontal
+        # overlap relative to the shorter Bus so unrelated internal buses cannot be
+        # mistaken for the second main bus.
+        ratio = span / top_span
+        if ratio < Decimal("0.8") or ratio > Decimal("1.2"):
+            continue
+        overlap = max(Decimal("0"), min(top[2], item[2]) - max(top[1], item[1]))
+        shorter = min(top_span, span)
+        if shorter <= 0 or overlap / shorter < Decimal("0.6"):
+            continue
+        second_candidates.append((y - top[3], abs(span - top_span), item))
+
+    if not second_candidates:
+        raise ValueError(
+            f"{filename}：已选择双母线，但在最高母线同方向下方未找到长度大致相同的第二条有效水平 <Bus>。"
+        )
+    second_candidates.sort(key=lambda row: (row[0], row[1], row[2][1]))
+    return [top, second_candidates[0][2]]
+
+
+def inspect_main_bus_metadata(path: Path, mode: str = "single") -> dict[str, object]:
+    """Inspect only the Bus bar(s) selected by the user's single/double-bus choice.
+
+    facID/facName are deliberately ignored.  Filename differences are UI warnings
+    only.  The hard requirement is that every selected Bus has a non-empty keyid.
+    """
+    tree = parse_xml(path)
+    root = tree.getroot()
+    if local_name(root.tag) != "G":
+        raise ValueError(f"{path.name}：根节点不是 G。")
+    layer = get_only_layer(root, path.name)
+    try:
+        selected = _select_main_bus_candidates(layer, mode, path.name)
+    except ValueError as exc:
+        return {"path": path, "buses": [], "keyids": [], "reason": str(exc)}
+
+    metadata_buses: list[dict[str, object]] = []
+    missing: list[str] = []
+    for element, min_x, max_x, y in selected:
+        bus_id = (element.get("id") or "").strip()
+        keyid = (element.get("keyid") or "").strip()
+        if not keyid:
+            missing.append(bus_id or "(无ID)")
+            continue
+        metadata_buses.append({
+            "id": bus_id,
+            "keyid": keyid,
+            "y": y,
+            "min_x": min_x,
+            "max_x": max_x,
+            "span": max_x - min_x,
+        })
+
+    if missing:
+        return {
+            "path": path,
+            "buses": metadata_buses,
+            "keyids": [str(item["keyid"]) for item in metadata_buses],
+            "reason": "选定主母线缺少 keyid 属性或 keyid 为空，Bus ID：" + ", ".join(missing[:20]),
+        }
+
+    keyids = [str(item["keyid"]) for item in metadata_buses]
+    if mode == "double" and len(set(keyids)) != 2:
+        return {
+            "path": path,
+            "buses": metadata_buses,
+            "keyids": keyids,
+            "reason": "双母线模式要求两条主母线分别具有独立 keyid，禁止把两条母线识别成同一母线。",
+        }
+    return {"path": path, "buses": metadata_buses, "keyids": keyids, "reason": ""}
+
+
+def validate_main_bus_keyid_sequence(paths: list[Path], mode: str = "single") -> list[dict[str, object]]:
+    """Validate selected main-bus keyids and require each keyid block to be contiguous."""
+    metadata = [inspect_main_bus_metadata(path, mode) for path in paths]
+    invalid = [item for item in metadata if item.get("reason")]
+    if invalid:
+        details = "；".join(f"{Path(item['path']).name}：{item['reason']}" for item in invalid[:10])
+        raise ValueError("主母线合并不可用：" + details)
+
+    positions: dict[str, list[int]] = {}
+    for index, item in enumerate(metadata):
+        for keyid in item.get("keyids", []):
+            positions.setdefault(str(keyid), []).append(index)
+
+    interrupted: list[str] = []
+    for keyid, indexes in positions.items():
+        if indexes and indexes != list(range(indexes[0], indexes[-1] + 1)):
+            interrupted.append(keyid)
+    if interrupted:
+        raise ValueError(
+            "馈线排序不准确，母线 keyid 被阻断。必须把包含同一 keyid 的馈线连续排列后才能使用主母线合并。"
+            " 被阻断 keyid：" + ", ".join(interrupted)
+        )
+    return metadata
+
+
+def merge_aligned_top_buses(
+    layer: ET.Element,
+    filename: str,
+    selected_keyid_y: dict[str, Decimal] | None = None,
+) -> dict[str, object]:
+    """Merge only validated main-bus rows, grouped by keyid.
+
+    ``selected_keyid_y`` is built from the per-file single/double-bus inspection after
+    feeder alignment.  It prevents unrelated Bus elements from joining merely because
+    they happen to reuse a keyid.  Different keyids are never merged.
+    """
+    buses = _horizontal_main_bus_candidates(layer)
+    if selected_keyid_y is not None:
+        buses = [
+            item for item in buses
+            if (item[0].get("keyid") or "").strip() in selected_keyid_y
+            and abs(item[3] - selected_keyid_y[(item[0].get("keyid") or "").strip()]) <= Decimal("1")
+        ]
+    if not buses:
+        return {"changed": False, "bus_count": 0, "removed": 0, "groups": []}
+
+    keyed: list[tuple[ET.Element, Decimal, Decimal, Decimal, str]] = []
+    for element, min_x, max_x, y in buses:
+        keyid = (element.get("keyid") or "").strip()
+        if not keyid:
+            # Non-selected/unrelated buses do not participate; selected buses were
+            # already hard-validated before entering merge_g_files.
+            continue
+        keyed.append((element, min_x, max_x, y, keyid))
+
+    grouped: dict[str, list[tuple[ET.Element, Decimal, Decimal, Decimal, str]]] = {}
+    key_order: list[str] = []
+    for item in keyed:
+        keyid = item[4]
+        if keyid not in grouped:
+            grouped[keyid] = []
+            key_order.append(keyid)
+        grouped[keyid].append(item)
 
     parent_map = {child: parent for parent in layer.iter() for child in list(parent)}
-    removed = 0
-    for element, _x1, _x2, _y in top[1:]:
-        parent = parent_map.get(element)
-        if parent is None:
-            raise ValueError(f"{filename}：无法定位待删除主母线 id={element.get('id', '')} 的父节点。")
-        parent.remove(element)
-        removed += 1
+    total_removed = 0
+    removed_id_map: dict[str, str] = {}
+    summaries: list[dict[str, object]] = []
+
+    for keyid in key_order:
+        run = grouped[keyid]
+        y_values = sorted({item[3] for item in run})
+        if len(y_values) > 1:
+            raise ValueError(
+                f"{filename}：keyid={keyid} 的母线没有处在同一水平线上，禁止合并。"
+                " 请先确认馈线垂直对齐和母线层级一致。"
+            )
+
+        if len(run) == 1:
+            element, min_x, max_x, y, _ = run[0]
+            summaries.append({
+                "keyid": keyid, "bus_count": 1, "removed": 0,
+                "keeper_id": (element.get("id") or "").strip(),
+                "min_x": min_x, "max_x": max_x, "y": y,
+            })
+            continue
+
+        run = sorted(run, key=lambda item: (item[1], item[2]))
+        keeper, _kx1, _kx2, merged_y, _ = run[0]
+        keeper_id = (keeper.get("id") or "").strip()
+        if not keeper_id:
+            raise ValueError(f"{filename}：keyid={keyid} 的水平主母线缺少 id，无法合并。")
+        min_x = min(item[1] for item in run)
+        max_x = max(item[2] for item in run)
+        old_ids = [((item[0].get("id") or "").strip()) for item in run[1:]]
+        old_ids = [value for value in old_ids if value]
+        id_map = {old_id: keeper_id for old_id in old_ids}
+        update_reference_attributes(list(layer), id_map)
+        removed_id_map.update(id_map)
+
+        node_groups = _unique_reference_groups([item[0].get("node_area", "") for item in run])
+        link_groups = _unique_reference_groups([item[0].get("link", "") for item in run])
+        if node_groups:
+            keeper.set("node_area", node_groups)
+        elif "node_area" in keeper.attrib:
+            keeper.set("node_area", "")
+        if link_groups:
+            keeper.set("link", link_groups)
+        elif "link" in keeper.attrib:
+            keeper.set("link", "")
+
+        keeper.set("x1", format_integer(min_x))
+        keeper.set("y1", format_integer(merged_y))
+        keeper.set("x2", format_integer(max_x))
+        keeper.set("y2", format_integer(merged_y))
+        keeper.set("d", f"{format_integer(min_x)},{format_integer(merged_y)} {format_integer(max_x)},{format_integer(merged_y)}")
+        keeper.set("x", format_integer(min_x - Decimal("3")))
+        keeper.set("y", format_integer(merged_y - Decimal("3")))
+        keeper.set("w", format_integer(max_x - min_x + Decimal("6")))
+        keeper.set("h", "6")
+
+        removed = 0
+        for element, *_ in run[1:]:
+            parent = parent_map.get(element)
+            if parent is None:
+                raise ValueError(f"{filename}：无法定位待删除主母线 id={element.get('id', '')} 的父节点。")
+            parent.remove(element)
+            removed += 1
+        total_removed += removed
+        summaries.append({
+            "keyid": keyid, "bus_count": len(run), "removed": removed,
+            "keeper_id": keeper_id, "min_x": min_x, "max_x": max_x, "y": merged_y,
+        })
 
     return {
-        "changed": True,
-        "bus_count": len(top),
-        "removed": removed,
-        "keeper_id": keeper_id,
-        "removed_id_map": id_map,
-        "min_x": min_x,
-        "max_x": max_x,
-        "y": merged_y,
+        "changed": total_removed > 0,
+        "bus_count": len(buses),
+        "removed": total_removed,
+        "removed_id_map": removed_id_map,
+        "groups": summaries,
     }
 
 def resolve_alignment_y(layer: ET.Element, filename: str) -> tuple[Decimal, str]:
@@ -1360,13 +1599,17 @@ def generate_unique_id(
     """
     if old_id.isdigit():
         if pattern is not None:
-            if pattern.matches(old_id):
-                sequence = int(old_id[len(pattern.prefix) :]) + 1
+            # 全局模板语义：同类型当前最大合法完整 ID + 1，不补空号。
+            matching = [
+                int(value) for value in blocked_ids
+                if isinstance(value, str) and pattern.matches(value)
+            ]
+            if matching:
+                sequence = int(str(max(matching))[len(pattern.prefix):]) + 1
+            elif pattern.matches(old_id):
+                sequence = int(old_id[len(pattern.prefix):]) + 1
             else:
-                # 短 ID 通常只剩顺序号，例如 Connector 的 130。优先
-                # 保留其数值含义，按同类前缀恢复为固定总位数 ID。
-                sequence_text = old_id[-pattern.sequence_width :]
-                sequence = int(sequence_text)
+                sequence = 1
 
             while sequence <= pattern.max_sequence:
                 candidate = pattern.build(sequence)
@@ -1480,7 +1723,7 @@ def remap_source_identifier_namespace(
     result = IdUpdateResult()
     direct_children = list(children)
     elements = list(iter_graph_elements(direct_children))
-    patterns = infer_element_id_patterns(direct_children)
+    patterns = apply_confirmed_id_patterns(infer_element_id_patterns(direct_children))
 
     element_ids = [
         element.get("id", "").strip()
@@ -1575,7 +1818,7 @@ def normalize_base_layer_duplicate_ids(
     """
     result = IdUpdateResult()
     seen: set[str] = set()
-    patterns = infer_element_id_patterns(layer)
+    patterns = apply_confirmed_id_patterns(infer_element_id_patterns(layer))
 
     for element in iter_graph_elements(layer):
         old_id_raw = element.get("id")
@@ -1723,8 +1966,13 @@ def merge_g_files(
     bottom_margin: Decimal,
     feeder_min_width: Decimal = Decimal("1000"),
     merge_main_bus: bool = False,
+    main_bus_mode: str = "single",
 ) -> None:
     parsed_files = [parse_g_file(info) for info in infos]
+
+    main_bus_metadata: list[dict[str, object]] = []
+    if merge_main_bus:
+        main_bus_metadata = validate_main_bus_keyid_sequence([info.path for info in infos], main_bus_mode)
 
     # 当前顺序中的第一个文件完整作为输出基础。它在合并阶段不单独移动；
     # 最后会与整个合并图一起做统一的上/左边距平移。
@@ -1892,7 +2140,25 @@ def merge_g_files(
         )
 
     if merge_main_bus:
-        bus_merge = merge_aligned_top_buses(target_layer, output_path.name)
+        # Convert every selected Bus Y to the post-feeder-alignment coordinate system.
+        # The same keyid must land on exactly one horizontal level; otherwise merging
+        # would bridge two physical bus rows and is forbidden.
+        metadata_by_path = {str(Path(item["path"]).resolve()): item for item in main_bus_metadata}
+        selected_keyid_y: dict[str, Decimal] = {}
+        for parsed in parsed_files:
+            meta = metadata_by_path.get(str(parsed.info.path.resolve()))
+            if not meta:
+                continue
+            for bus in meta.get("buses", []):
+                keyid = str(bus["keyid"])
+                normalized_y = base_alignment_y + (Decimal(bus["y"]) - parsed.alignment_y)
+                previous = selected_keyid_y.get(keyid)
+                if previous is not None and abs(previous - normalized_y) > Decimal("1"):
+                    raise ValueError(
+                        f"keyid={keyid} 的主母线在馈线对齐后不处于同一水平线上，禁止合并。"
+                    )
+                selected_keyid_y[keyid] = normalized_y
+        bus_merge = merge_aligned_top_buses(target_layer, output_path.name, selected_keyid_y)
         if bus_merge.get("changed"):
             # 顶部多条 Bus 已合法折叠为一条。required_target_ids 记录的是
             # 合并前“确实被引用的真实图元 ID”，因此这里必须同步把被删除
@@ -1905,19 +2171,20 @@ def merge_g_files(
                     for target_id in required_target_ids
                 }
 
-            print("\n主母线合并：")
+            print("\n主母线按 keyid 分组合并：")
             print(f"  原顶部主母线：{bus_merge['bus_count']} 条")
-            print(f"  保留 Bus ID：{bus_merge['keeper_id']}")
             print(f"  删除多余 Bus：{bus_merge['removed']} 条")
-            print(
-                "  合并后范围："
-                f"X={format_integer(bus_merge['min_x'])} ~ {format_integer(bus_merge['max_x'])}，"
-                f"Y={format_integer(bus_merge['y'])}"
-            )
-            print("  原有馈线连接引用已全部改接到保留 Bus。")
-            print("  最终引用完整性校验已同步使用保留 Bus ID。")
+            for group in bus_merge.get("groups", []):
+                print(
+                    f"  keyid={group['keyid']}：{group['bus_count']} 条 -> 1 条，"
+                    f"保留 Bus ID={group['keeper_id']}，删除 {group['removed']} 条，"
+                    f"X={format_integer(group['min_x'])} ~ {format_integer(group['max_x'])}"
+                )
+            print("  仅相邻且 keyid 相同的馈线共用一条母线；不同 keyid 保持独立。")
+            print("  原有馈线连接引用已全部改接到各自分组保留 Bus。")
+            print("  最终引用完整性校验已同步使用各分组保留 Bus ID。")
         else:
-            print("\n主母线合并：无需处理（有效顶部水平 Bus 不超过 1 条）。")
+            print("\n主母线按 keyid 分组合并：无需删除；没有连续的相同 keyid 主母线组需要合并。")
 
     # 完成全部对齐和水平排列后，再统一处理上边距和左边距。
     # 整体平移不会改变对齐关系和输入图之间的间隔。
@@ -2057,7 +2324,9 @@ def merge_g_files(
     print(f"  最终对齐基准 Y：{format_integer(final_alignment_y)}")
     print(f"  默认单线图宽度：{format_integer(feeder_min_width)}")
     print(f"  相邻馈线用户间隔：{format_integer(gap)}")
-    print(f"  主母线合并为一条：{'是' if merge_main_bus else '否'}")
+    print(f"  按 Bus keyid 合并主母线：{'是' if merge_main_bus else '否'}")
+    if merge_main_bus:
+        print(f"  主母线类型：{'双母线' if main_bus_mode == 'double' else '单母线'}")
     print(f"  G.w / G.width：{format_integer(final_width)}")
     print(f"  G.h / G.height：{format_integer(final_height)}")
     print(f"  输出文件：{output_path.resolve()}")

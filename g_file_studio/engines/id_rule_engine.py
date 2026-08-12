@@ -99,7 +99,7 @@ def scan_tree_against_rules(tree: ET.ElementTree, file_path: Path, rules: dict[s
         if invalid:
             result.changed_formats.append(ObservedIdFormat(
                 tag=tag, sample_count=len(invalid),
-                sample_ids=tuple(list(dict.fromkeys(invalid))[:8]), prefix=suggestion,
+                sample_ids=tuple(dict.fromkeys(invalid)), prefix=suggestion,
                 total_length=pattern.total_length if pattern is not None else None,
             ))
         else:
@@ -153,7 +153,7 @@ def _replace_reference_token(value: str, mapping: dict[str, str]) -> str:
     return ";".join(groups)
 
 
-def normalize_tree_ids_strict(tree: ET.ElementTree, file_path: Path, rules: dict[str, IdRule]) -> StrictIdNormalizeResult:
+def normalize_tree_ids_strict(tree: ET.ElementTree, file_path: Path, rules: dict[str, IdRule], *, repair_invalid_formats: bool = True) -> StrictIdNormalizeResult:
     """强制把已配置类型的元素 ID 规范到用户确认模板。
 
     - 格式不符合模板：分配同类型当前最大合法完整 ID + 1；
@@ -202,7 +202,7 @@ def normalize_tree_ids_strict(tree: ET.ElementTree, file_path: Path, rules: dict
         tag = local_name(element.tag)
         rule = rules.get(tag)
         duplicate = old_id in seen
-        invalid = rule is not None and rule.enabled and rule.verified and not rule.matches(old_id)
+        invalid = repair_invalid_formats and rule is not None and rule.enabled and rule.verified and not rule.matches(old_id)
 
         if duplicate and (rule is None or not rule.enabled or not rule.verified):
             raise ValueError(

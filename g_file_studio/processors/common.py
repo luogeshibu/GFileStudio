@@ -99,9 +99,19 @@ def enforce_confirmed_id_rules(output_path: Path, log: LogCallback = print) -> d
     from g_file_studio.engines.id_rule_engine import normalize_tree_ids_strict
     from g_file_studio.services.id_rule_service import IdRuleService
 
+    from g_file_studio.services.user_settings_service import UserSettingsService
+
+    strict_existing = UserSettingsService().get_bool("id_rules/global_strict", True)
+    if not strict_existing:
+        log(
+            f"[ID 模板] {output_path.name}：全局强制约束已关闭，保留已有格式不符 ID；"
+            "新生成 ID 仍由各业务模块按已确认模板分配。"
+        )
+        return {"changed": 0, "format_fixed": 0, "duplicate_fixed": 0}
+
     tree = ET.parse(output_path)
     rules = IdRuleService().load_rules()
-    result = normalize_tree_ids_strict(tree, output_path, rules)
+    result = normalize_tree_ids_strict(tree, output_path, rules, repair_invalid_formats=True)
     if result.changed_element_ids:
         if hasattr(ET, "indent"):
             ET.indent(tree, space="    ")

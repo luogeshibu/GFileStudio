@@ -106,6 +106,12 @@ def _validate_rules(settings: BasicSettings) -> None:
         if not settings.replace_target_attribute.strip():
             raise ValueError("启用‘替换元素属性值’后，属性名不能为空。")
 
+    if settings.delete_attribute:
+        if not settings.delete_attribute_target_tag.strip():
+            raise ValueError("启用‘删除元素属性’后，元素标签不能为空。")
+        if not settings.delete_attribute_name.strip():
+            raise ValueError("启用‘删除元素属性’后，要删除的属性名不能为空。")
+
     if settings.delete_matching_element:
         if not settings.delete_target_tag.strip():
             raise ValueError("启用‘删除匹配元素’后，元素标签不能为空。")
@@ -135,19 +141,30 @@ def _validate_rules(settings: BasicSettings) -> None:
 def _process_layer(
     layer: ET.Element,
     settings: BasicSettings,
-) -> tuple[int, int, set[str]]:
+) -> tuple[int, int, int, set[str]]:
     """只处理 Layer 的直接子元素。"""
     replaced = 0
+    deleted_attributes = 0
     removed_matching = 0
     removed_ids: set[str] = set()
 
     replace_tag = settings.replace_target_tag.strip()
     replace_attribute = settings.replace_target_attribute.strip()
+    delete_attr_tag = settings.delete_attribute_target_tag.strip()
+    delete_attr_name = settings.delete_attribute_name.strip()
     delete_tag = settings.delete_target_tag.strip()
     delete_attribute = settings.delete_target_attribute.strip()
 
     for element in list(layer):
         tag = _local_name(element.tag)
+
+        if (
+            settings.delete_attribute
+            and tag == delete_attr_tag
+            and delete_attr_name in element.attrib
+        ):
+            del element.attrib[delete_attr_name]
+            deleted_attributes += 1
 
         if (
             settings.delete_matching_element
@@ -167,7 +184,7 @@ def _process_layer(
             element.set(replace_attribute, settings.replace_new_value)
             replaced += 1
 
-    return replaced, removed_matching, removed_ids
+    return replaced, deleted_attributes, removed_matching, removed_ids
 
 
 def _effective_rmu_action(settings: BasicSettings) -> RmuAction:
@@ -266,6 +283,7 @@ def process_basic(
     outputs: list[Path] = []
     failed: list[str] = []
     total_replaced = 0
+    total_deleted_attributes = 0
     total_removed_matching = 0
     total_removed_reference_groups = 0
     total_cleared_single_references = 0
@@ -321,6 +339,7 @@ def process_basic(
             root = tree.getroot()
 
             replaced = 0
+            deleted_attributes = 0
             removed_matching = 0
             removed_reference_groups = 0
             cleared_single_references = 0
@@ -363,8 +382,9 @@ def process_basic(
                     log(f"[环网柜识别告警] {input_path.name}：{warning}")
 
             for layer in layers:
-                one_replaced, one_removed, one_removed_ids = _process_layer(layer, settings)
+                one_replaced, one_deleted_attributes, one_removed, one_removed_ids = _process_layer(layer, settings)
                 replaced += one_replaced
+                deleted_attributes += one_deleted_attributes
                 removed_matching += one_removed
 
                 groups, singles = _clean_removed_references(layer, one_removed_ids)
@@ -576,12 +596,14 @@ def process_basic(
                 total_rmu_csv += 1
                 log(f"[环网柜识别] 已导出：{rmu_csv.name}")
             total_replaced += replaced
+            total_deleted_attributes += deleted_attributes
             total_removed_matching += removed_matching
             total_removed_reference_groups += removed_reference_groups
             total_cleared_single_references += cleared_single_references
 
             log(
-                f"✓ {input_path.name}：属性替换 {replaced} 处，匹配元素删除 {removed_matching} 个，"
+                f"✓ {input_path.name}：属性替换 {replaced} 处，删除元素属性 {deleted_attributes} 处，"
+                f"匹配元素删除 {removed_matching} 个，"
                 f"清理引用分组 {removed_reference_groups} 个，清空父引用 "
                 f"{cleared_single_references} 个；输出 {output_path.name}"
             )
@@ -641,6 +663,7 @@ def process_basic(
             "file_count": len(outputs),
             "failed_file_count": len(failed),
             "replaced_attribute_count": total_replaced,
+            "deleted_attribute_count": total_deleted_attributes,
             "removed_matching_element_count": total_removed_matching,
             "removed_reference_group_count": total_removed_reference_groups,
             "cleared_single_reference_count": total_cleared_single_references,
