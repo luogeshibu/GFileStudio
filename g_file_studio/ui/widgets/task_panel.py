@@ -22,6 +22,7 @@ from g_file_studio.workers import FunctionWorker
 
 class TaskPanel(QFrame):
     busyChanged = Signal(bool)
+    resultReceived = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -70,6 +71,7 @@ class TaskPanel(QFrame):
         title_row.addStretch(1)
 
         buttons = QHBoxLayout()
+        self.buttons_layout = buttons
         buttons.addWidget(self.run_button)
         buttons.addWidget(self.open_button)
         buttons.addWidget(self.clear_button)
@@ -113,6 +115,7 @@ class TaskPanel(QFrame):
 
     def on_result(self, result) -> None:
         self.progress.setValue(100)
+        self.resultReceived.emit(result)
         self.append_log("\n处理完成。")
         for path in result.output_files:
             self.append_log(f"输出：{path}")

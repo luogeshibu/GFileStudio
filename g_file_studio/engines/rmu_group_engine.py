@@ -797,10 +797,30 @@ def ungroup_rmu_tree(tree: ET.ElementTree, file_path: Path) -> RmuUngroupingResu
 
 
 @dataclass
+class RmuSmrFrameChange:
+    text_id: str
+    text_x: float
+    text_y: float
+    rect_id: str
+    rect_x: float
+    rect_y: float
+    rect_w: float
+    rect_h: float
+    distance: float
+    old_color: str
+    new_color: str
+    changed: bool
+
+
+@dataclass
 class RmuEnhancementResult:
     file_path: Path
     smart_rmu_rect_count: int = 0
     smart_frame_color_changed: int = 0
+    smr_text_count: int = 0
+    smr_matched_rect_count: int = 0
+    smr_frame_color_changed: int = 0
+    smr_changes: list[RmuSmrFrameChange] = field(default_factory=list)
     channel_status_rect_count: int = 0
     channel_status_found_count: int = 0
     channel_status_moved_count: int = 0
@@ -855,6 +875,120 @@ def _rect_contains_smart_text(layer: ET.Element, rect: ET.Element) -> bool:
         if (element.get('ts') or '').strip().upper() == 'SMART':
             return True
     return False
+
+
+def _center_inside_box(element: ET.Element, box: Box, tolerance: float = 0.5) -> bool:
+    candidate = subtree_box(element)
+    if candidate is None:
+        return False
+    return (
+        box.left - tolerance <= candidate.center_x <= box.right + tolerance
+        and box.top - tolerance <= candidate.center_y <= box.bottom + tolerance
+    )
+
+
+def _valid_rmu_rects_for_smr(layer: ET.Element) -> list[ET.Element]:
+    """Return only real RMU frames, reusing the existing hard cabinet criteria.
+
+    This helper is intentionally separate from grouping/ungrouping logic so the
+    established RMU Merge behaviour remains untouched.
+    """
+    direct = list(layer)
+    buses = [e for e in direct if local_name(e.tag) == 'BusDis']
+    breakers = [e for e in direct if local_name(e.tag) == 'CBreakerDis']
+    grounds = [e for e in direct if local_name(e.tag) == 'ZhaiWaiJieDiDaoZha']
+    result: list[ET.Element] = []
+    for rect in _direct_rects(layer):
+        rect_box = subtree_box(rect)
+        if rect_box is None or rect_box.width < 100 or rect_box.height < 100:
+            continue
+        if not any(_center_inside_box(e, rect_box) for e in buses):
+            continue
+        if not any(_center_inside_box(e, rect_box) for e in breakers):
+            continue
+        if not any(_center_inside_box(e, rect_box) for e in grounds):
+            continue
+        result.append(rect)
+    return result
+
+
+def _point_to_box_distance(x: float, y: float, box: Box) -> float:
+    dx = max(box.left - x, 0.0, x - box.right)
+    dy = max(box.top - y, 0.0, y - box.bottom)
+    return math.hypot(dx, dy)
+
+
+def _current_line_color(element: ET.Element) -> str:
+    lcc = (element.get('lcc') or '').strip().upper()
+    if re.fullmatch(r'#[0-9A-F]{6}', lcc):
+        return lcc
+    lc = (element.get('lc') or '').strip()
+    try:
+        parts = [max(0, min(255, int(float(v.strip())))) for v in lc.split(',')]
+    except ValueError:
+        parts = []
+    if len(parts) == 3:
+        return '#' + ''.join(f'{v:02X}' for v in parts)
+    return lcc or lc
+
+
+def _color_smr_nearest_rmu_frames(
+    layer: ET.Element,
+    result: RmuEnhancementResult,
+    color: str,
+) -> None:
+    """Color the nearest *valid* RMU rect for every direct Text[ts=SMR].
+
+    Matching is geometry-only. It never changes SMR text, grouping, cabinet name/type
+    recognition, devices, connections or other existing RMU algorithms.
+    """
+    smr_texts = [
+        e for e in list(layer)
+        if local_name(e.tag) == 'Text' and (e.get('ts') or '').strip().upper() == 'SMR'
+    ]
+    result.smr_text_count = len(smr_texts)
+    rects = _valid_rmu_rects_for_smr(layer)
+    if smr_texts and not rects:
+        result.warnings.append('发现 SMR Text，但未找到满足 BusDis + CBreakerDis + ZhaiWaiJieDiDaoZha 条件的环网柜外框。')
+        return
+
+    matched_rect_ids: set[int] = set()
+    for text in smr_texts:
+        text_box = subtree_box(text)
+        if text_box is None:
+            result.warnings.append(f"SMR Text ID {(text.get('id') or '<无ID>')} 缺少有效几何坐标。")
+            continue
+        candidates: list[tuple[float, str, ET.Element, Box]] = []
+        for rect in rects:
+            rect_box = subtree_box(rect)
+            if rect_box is None:
+                continue
+            distance = _point_to_box_distance(text_box.center_x, text_box.center_y, rect_box)
+            candidates.append((distance, rect.get('id') or '', rect, rect_box))
+        if not candidates:
+            continue
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        distance, _rect_id, rect, rect_box = candidates[0]
+        old_color = _current_line_color(rect)
+        changed = _set_static_line_color(rect, color)
+        if changed:
+            result.smr_frame_color_changed += 1
+        matched_rect_ids.add(id(rect))
+        result.smr_changes.append(RmuSmrFrameChange(
+            text_id=(text.get('id') or '').strip(),
+            text_x=text_box.left,
+            text_y=text_box.top,
+            rect_id=(rect.get('id') or '').strip(),
+            rect_x=rect_box.left,
+            rect_y=rect_box.top,
+            rect_w=rect_box.width,
+            rect_h=rect_box.height,
+            distance=distance,
+            old_color=old_color,
+            new_color=(color or '').strip().upper(),
+            changed=changed,
+        ))
+    result.smr_matched_rect_count = len(matched_rect_ids)
 
 
 def _rmu_rects_by_bus_tag(layer: ET.Element, tag_name: str) -> list[tuple[ET.Element, ET.Element]]:
@@ -1141,6 +1275,8 @@ def enhance_rmu_layer(
     *,
     change_smart_frame_color: bool = False,
     smart_frame_color: str = '#00A651',
+    change_smr_frame_color: bool = False,
+    smr_frame_color: str = '#FF0000',
     reposition_channel_status: bool = False,
     channel_status_position: str = 'bottom_left',
     channel_status_inner_margin: float = 5.0,
@@ -1162,6 +1298,9 @@ def enhance_rmu_layer(
             result.smart_rmu_rect_count += 1
             if _set_static_line_color(rect, smart_frame_color):
                 result.smart_frame_color_changed += 1
+
+    if change_smr_frame_color:
+        _color_smr_nearest_rmu_frames(layer, result, smr_frame_color)
 
     if reposition_channel_status:
         _reposition_channel_statuses(

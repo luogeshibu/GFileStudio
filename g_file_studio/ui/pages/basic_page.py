@@ -57,7 +57,7 @@ class BasicPage(BasePage):
         self.layout.addWidget(
             InfoBanner(
                 "输入可以是单个 G 文件，也可以是 G 文件目录。属性替换、元素删除、"
-                "环网柜组合/取消组合、SMART 外框改色、红色状态点定位、馈线名称定位、连接点修复，以及线路与母线颜色修改，"
+                "馈线名称定位、连接点修复、图元版本升级以及线路与母线颜色修改，"
                 "都在点击“开始基础处理”后统一执行。ID 检查/修复已移到全局“ID 检查与修复”模块。连接点修复仅在勾选时处理 node_area/link；"
                 "未勾选时完全跳过。目录模式下每个文件独立处理。"
             )
@@ -105,8 +105,6 @@ class BasicPage(BasePage):
         rules_layout.addWidget(self.rules_editor)
         self.layout.addWidget(rules_box)
 
-        self._build_rmu_options()
-        self._build_rmu_identification_options()
         self._build_color_options()
         self._build_feeder_title_options()
         self._build_icon_upgrade_options()
@@ -381,62 +379,6 @@ class BasicPage(BasePage):
         self.layout.addWidget(box)
 
     def _restore_options(self) -> None:
-        rmu_value = self.user_settings.get_value("basic/rmu_action", RmuAction.NONE.value)
-        rmu_buttons = {
-            RmuAction.NONE.value: self.rmu_none,
-            RmuAction.GROUP.value: self.rmu_group,
-            RmuAction.UNGROUP.value: self.rmu_ungroup,
-        }
-        rmu_buttons.get(rmu_value, self.rmu_none).setChecked(True)
-
-        legacy_frame_color = self.user_settings.get_value(
-            "basic/rmu/frame_color", "#00A651"
-        )
-        self.rmu_smart_frame_color.set_color(
-            self.user_settings.get_value(
-                "basic/rmu/smart_frame_color", legacy_frame_color
-            )
-        )
-        self.rmu_smart_frame_color.set_enabled(
-            self.user_settings.get_bool(
-                "basic/rmu/smart_frame_color_enabled",
-                self.user_settings.get_bool("basic/rmu/frame_color_enabled", False),
-            )
-        )
-        self.rmu_reposition_channel_status.setChecked(
-            self.user_settings.get_bool("basic/rmu/reposition_channel_status", False)
-        )
-        status_position = self.user_settings.get_value(
-            "basic/rmu/channel_status_position", RmuStatusPosition.BOTTOM_LEFT.value
-        )
-        status_index = self.rmu_channel_status_position.findData(status_position)
-        self.rmu_channel_status_position.setCurrentIndex(
-            status_index if status_index >= 0 else self.rmu_channel_status_position.findData(
-                RmuStatusPosition.BOTTOM_LEFT.value
-            )
-        )
-        self.rmu_channel_status_margin.setValue(
-            self.user_settings.get_int("basic/rmu/channel_status_inner_margin", 5)
-        )
-        status_enabled = self.rmu_reposition_channel_status.isChecked()
-        self.rmu_channel_status_position.setEnabled(status_enabled)
-        self.rmu_channel_status_margin.setEnabled(status_enabled)
-        self.rmu_remove_bus_frame.setChecked(
-            self.user_settings.get_bool("basic/rmu/remove_bus_frame", False)
-        )
-        self.identify_rmu.setChecked(
-            self.user_settings.get_bool("basic/rmu/identify_name_type", False)
-        )
-        self.rmu_name_top.setChecked(self.user_settings.get_bool("basic/rmu/name_top", True))
-        self.rmu_name_bottom.setChecked(self.user_settings.get_bool("basic/rmu/name_bottom", False))
-        self.rmu_name_left.setChecked(self.user_settings.get_bool("basic/rmu/name_left", False))
-        self.rmu_name_right.setChecked(self.user_settings.get_bool("basic/rmu/name_right", False))
-        self.rmu_smart_in_type.setChecked(
-            self.user_settings.get_bool("basic/rmu/smart_in_type", False)
-        )
-        rmu_ident_enabled = self.identify_rmu.isChecked()
-        for item in (self.rmu_name_top, self.rmu_name_bottom, self.rmu_name_left, self.rmu_name_right, self.rmu_smart_in_type):
-            item.setEnabled(rmu_ident_enabled)
         self.move_feeder_titles_above_bus.setChecked(
             self.user_settings.get_bool("basic/move_feeder_titles_above_bus", False)
         )
@@ -466,35 +408,6 @@ class BasicPage(BasePage):
         self._persist_options()
 
     def _persist_options(self) -> None:
-        self.user_settings.set_value("basic/rmu_action", self._selected_rmu_action().value)
-        self.user_settings.set_value(
-            "basic/rmu/smart_frame_color", self.rmu_smart_frame_color.color()
-        )
-        self.user_settings.set_value(
-            "basic/rmu/smart_frame_color_enabled",
-            self.rmu_smart_frame_color.is_enabled(),
-        )
-        self.user_settings.set_value(
-            "basic/rmu/reposition_channel_status",
-            self.rmu_reposition_channel_status.isChecked(),
-        )
-        self.user_settings.set_value(
-            "basic/rmu/channel_status_position",
-            self.rmu_channel_status_position.currentData(),
-        )
-        self.user_settings.set_value(
-            "basic/rmu/channel_status_inner_margin",
-            self.rmu_channel_status_margin.value(),
-        )
-        self.user_settings.set_value(
-            "basic/rmu/remove_bus_frame", self.rmu_remove_bus_frame.isChecked()
-        )
-        self.user_settings.set_value("basic/rmu/identify_name_type", self.identify_rmu.isChecked())
-        self.user_settings.set_value("basic/rmu/name_top", self.rmu_name_top.isChecked())
-        self.user_settings.set_value("basic/rmu/name_bottom", self.rmu_name_bottom.isChecked())
-        self.user_settings.set_value("basic/rmu/name_left", self.rmu_name_left.isChecked())
-        self.user_settings.set_value("basic/rmu/name_right", self.rmu_name_right.isChecked())
-        self.user_settings.set_value("basic/rmu/smart_in_type", self.rmu_smart_in_type.isChecked())
         self.user_settings.set_value(
             "basic/move_feeder_titles_above_bus",
             self.move_feeder_titles_above_bus.isChecked(),
@@ -618,8 +531,6 @@ class BasicPage(BasePage):
                 "new_icon_files": self.icon_upgrade_editor.new_paths(),
                 "repair_connection_points": self.repair_connection_points.isChecked(),
                 "move_feeder_titles_above_bus": self.move_feeder_titles_above_bus.isChecked(),
-                "rmu_action": self._selected_rmu_action(),
-                "group_rmu_elements": False,
                 "change_feedline_color": self.feedline_color.is_enabled(),
                 "feedline_color": self.feedline_color.color(),
                 "change_connectline_color": self.connectline_color.is_enabled(),
@@ -628,34 +539,11 @@ class BasicPage(BasePage):
                 "busdis_color": self.busdis_color.color(),
                 "change_bus_color": self.bus_color.is_enabled(),
                 "bus_color": self.bus_color.color(),
-                "change_smart_rmu_frame_color": (
-                    self.rmu_smart_frame_color.is_enabled()
-                ),
-                "smart_rmu_frame_color": self.rmu_smart_frame_color.color(),
-                "reposition_channel_status": self.rmu_reposition_channel_status.isChecked(),
-                "channel_status_position": RmuStatusPosition(
-                    self.rmu_channel_status_position.currentData()
-                ),
-                "channel_status_inner_margin": self.rmu_channel_status_margin.value(),
-                "remove_bus_rmu_frame_and_reposition_title": self.rmu_remove_bus_frame.isChecked(),
-                "identify_rmu_name_and_type": self.identify_rmu.isChecked(),
-                "rmu_name_top": self.rmu_name_top.isChecked(),
-                "rmu_name_bottom": self.rmu_name_bottom.isChecked(),
-                "rmu_name_left": self.rmu_name_left.isChecked(),
-                "rmu_name_right": self.rmu_name_right.isChecked(),
-                "rmu_smart_in_type": self.rmu_smart_in_type.isChecked(),
-                "export_rmu_identification_csv": True,
             }
         )
 
     def run(self) -> None:
         if not self._validate_common_paths():
-            return
-        if self.identify_rmu.isChecked() and not any((
-            self.rmu_name_top.isChecked(), self.rmu_name_bottom.isChecked(),
-            self.rmu_name_left.isChecked(), self.rmu_name_right.isChecked(),
-        )):
-            QMessageBox.warning(self, "环网柜识别设置", "柜名位置至少选择上方、下方、左侧或右侧中的一个。")
             return
         if self.upgrade_icon_geometry.isChecked():
             ok, message = self.icon_upgrade_editor.validate_for_run()

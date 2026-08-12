@@ -31,15 +31,14 @@ def test_single_bus_checks_only_highest_and_ignores_other_bus_without_keyid(tmp_
     assert item['keyids'] == ['TOP']
 
 
-def test_bus_with_xml_w_less_than_10_is_completely_ignored(tmp_path: Path) -> None:
+def test_bus_with_xml_w_less_than_10_is_not_filtered_by_main_bus_feature(tmp_path: Path) -> None:
     p = tmp_path / 'helper.g'
     _write(p, [
         {"id": "39999999", "keyid": None, "y": 10, "w": 6, "x1": 100, "x2": 106},
         {"id": "30000001", "keyid": "REAL", "y": 30, "w": 133},
     ])
     item = inspect_main_bus_metadata(p, 'single')
-    assert item['reason'] == ''
-    assert item['keyids'] == ['REAL']
+    assert 'keyid' in item['reason']
 
 
 def test_double_bus_requires_two_parallel_similar_length_buses_and_both_keyids(tmp_path: Path) -> None:

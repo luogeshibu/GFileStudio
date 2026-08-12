@@ -154,7 +154,7 @@ def test_model_uses_channel_status_options_and_has_no_busdis_spacing_fields():
 
 
 def test_ui_removed_spacing_and_added_status_position_controls():
-    source = (ROOT / "g_file_studio/ui/pages/basic_page.py").read_text(encoding="utf-8")
+    source = (ROOT / "g_file_studio/ui/pages/rmu_page.py").read_text(encoding="utf-8")
     assert "统一带 BusDis 的环网柜垂直间距" not in source
     assert "busdis_vertical_spacing" not in source
     assert "normalize_busdis_spacing" not in source

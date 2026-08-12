@@ -31,7 +31,9 @@ def test_rmu_csv_marks_duplicate_and_html_colors(tmp_path: Path):
     assert "30839 × 2" in html_text
 
 
-def test_id_radio_layout_reserves_space():
+def test_id_actions_are_independent_buttons_in_task_panel():
     source = Path("g_file_studio/ui/pages/id_page.py").read_text(encoding="utf-8")
-    assert "self.check_only.setMinimumWidth(138)" in source
-    assert "self.repair.setMinimumWidth(300)" in source
+    assert "扫描当前 G（只检查 ID）" in source
+    assert "检查并强制修复 ID" in source
+    assert "QRadioButton" not in source
+    assert "self.task.buttons_layout.insertWidget(0, self.scan_button)" in source

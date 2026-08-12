@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from g_file_studio import __version__
 from g_file_studio.services.user_settings_service import UserSettingsService
-from g_file_studio.ui.pages import BasicPage, FramePage, HelpPage, IdPage, MarginPage, MergePage
+from g_file_studio.ui.pages import BasicPage, FramePage, HelpPage, IdPage, MarginPage, MergePage, RmuPage, SmallElementPage
 from g_file_studio.ui.theme import build_app_style
 
 
@@ -42,7 +42,9 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.setObjectName("contentRoot")
         self.pages = [
+            SmallElementPage(self.user_settings),
             IdPage(self.user_settings),
+            RmuPage(self.user_settings),
             BasicPage(self.user_settings),
             MergePage(self.user_settings),
             MarginPage(self.user_settings),
@@ -105,8 +107,10 @@ class MainWindow(QMainWindow):
         self.nav.setObjectName("navigation")
         self.nav.setSpacing(1)
         navigation = [
+            ("异常小尺寸图元检测", "检测 ConnectLine、FeedLine、Bus、BusDis 中 w/h 同时过小的疑似残留短线图元；通过首列勾选单选/多选/全选后统一执行处理"),
             ("ID 检查与修复", "全局 ID 规则中心：维护模板、扫描覆盖并强制修复格式异常或重复 ID"),
-            ("基础处理", "执行通用规则、环网柜、图元升级及颜色处理；涉及 ID 时强制使用全局模板"),
+            ("环网柜处理", "独立处理环网柜组合/取消组合、增强操作，以及柜名与柜型识别"),
+            ("基础处理", "执行通用属性、图元升级、馈线标题、连接点和线路/母线颜色处理；涉及 ID 时强制使用全局模板"),
             ("馈线图合并", "按用户选择顺序合并多个馈线 G 图"),
             ("图形边距调整", "调整主体四边距，并同步适配内置图框"),
             ("图框添加", "添加 SLD 外框、标题和签字栏"),
@@ -149,5 +153,5 @@ class MainWindow(QMainWindow):
     def _install_help_shortcut(self) -> None:
         action = QAction(self)
         action.setShortcut(QKeySequence.StandardKey.HelpContents)
-        action.triggered.connect(lambda: self.nav.setCurrentRow(5))
+        action.triggered.connect(lambda: self.nav.setCurrentRow(7))
         self.addAction(action)

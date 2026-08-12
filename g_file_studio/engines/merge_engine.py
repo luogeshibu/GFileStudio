@@ -661,22 +661,14 @@ def _top_horizontal_bus_candidates(layer: ET.Element) -> list[tuple[ET.Element, 
 
 
 def _horizontal_main_bus_candidates(layer: ET.Element) -> list[tuple[ET.Element, Decimal, Decimal, Decimal]]:
-    """Return horizontal Bus bars eligible for main-bus processing.
+    """Return all non-degenerate horizontal Bus bars eligible for main-bus processing.
 
-    The dedicated main-bus feature ignores helper Bus elements whose XML ``w``
-    attribute is smaller than 10, exactly as requested by the distribution SLD
-    workflow.  This filter is intentionally local to main-bus processing and does
-    not change feeder alignment or any other merge behaviour.
+    Small-size residual Bus elements are no longer filtered here. They are handled
+    centrally by the independent abnormal-small-element module.
     """
     candidates: list[tuple[ET.Element, Decimal, Decimal, Decimal]] = []
     for element in iter_graph_elements(layer):
         if local_name(element.tag) != "Bus":
-            continue
-        try:
-            xml_w = Decimal((element.get("w") or "0").strip())
-        except Exception:
-            xml_w = Decimal("0")
-        if xml_w < Decimal("10"):
             continue
         line = get_bus_line(element)
         if line is None:
@@ -705,8 +697,8 @@ def _select_main_bus_candidates(
     * double: the highest Bus plus the nearest lower, parallel Bus whose length is
       approximately the same and whose horizontal projection substantially overlaps.
 
-    All other Bus elements are ignored by this optional feature.  Helper Bus elements
-    with w < 10 never participate.
+    All other Bus elements are ignored by this optional feature. Small-size Bus
+    cleanup is intentionally delegated to the independent anomaly-detection module.
     """
     mode = (mode or "single").strip().lower()
     if mode not in {"single", "double"}:
@@ -714,7 +706,7 @@ def _select_main_bus_candidates(
 
     buses = _horizontal_main_bus_candidates(layer)
     if not buses:
-        raise ValueError(f"{filename}：未找到 w>=10 的有效水平 <Bus>，不能使用主母线处理。")
+        raise ValueError(f"{filename}：未找到有效水平 <Bus>，不能使用主母线处理。")
 
     # Highest Bus; if several are effectively on the same Y, take the longest as the
     # representative.  Per-file SLD input should normally expose one such Bus.

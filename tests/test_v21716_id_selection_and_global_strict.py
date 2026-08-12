@@ -33,8 +33,9 @@ def test_id_page_uses_single_row_selection_without_checkbox_column():
     assert 'def _checked_tags' not in source
     assert '请先在表格中选中一条要删除的规则。' in source
     assert 'self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)' in source
-    assert 'self.check_only.setMinimumWidth(138)' in source
-    assert 'self.repair.setMinimumWidth(300)' in source
+    assert '扫描当前 G（只检查 ID）' in source
+    assert '检查并强制修复 ID' in source
+    assert 'QRadioButton' not in source
     assert 'self.global_strict.setEnabled(False)' not in source
 
 

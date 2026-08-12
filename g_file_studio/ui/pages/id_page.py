@@ -4,7 +4,8 @@ import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -20,16 +21,16 @@ from PySide6.QtWidgets import (
     QPushButton,
     QPlainTextEdit,
     QProgressDialog,
-    QRadioButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
 )
 
+from g_file_studio.engines.id_engine import inspect_tree_ids
 from g_file_studio.engines.id_rule_engine import scan_file_against_rules
 from g_file_studio.models import BasicOutputConflictAction, IdAction, IdSettings
 from g_file_studio.processors.common import discover_g_inputs
-from g_file_studio.processors.id_processor import process_ids
+from g_file_studio.processors.id_processor import _write_id_reports, process_ids
 from g_file_studio.services.id_rule_service import IdRule, IdRuleService
 from g_file_studio.services.output_naming import make_task_timestamp
 from g_file_studio.services.paths import default_workspace
@@ -38,6 +39,7 @@ from g_file_studio.ui.help_content import APP_HELP, FIELD_HELP
 from g_file_studio.ui.pages.base_page import BasePage
 from g_file_studio.ui.path_validation import validate_existing_directory, validate_input_source
 from g_file_studio.ui.widgets import InfoBanner, InputSourceSelector, PathRow, TaskPanel
+from g_file_studio.ui.widgets.help_widgets import set_secondary
 
 
 class ScanResultDialog(QDialog):
@@ -118,6 +120,7 @@ class IdPage(BasePage):
         self.user_settings = user_settings
         self.rule_service = IdRuleService()
         self._last_scan_candidates: dict[str, IdRule] = {}
+        self.last_html_report: Path | None = None
         help_title, help_html = APP_HELP["id_rules"]
         super().__init__(
             "ID 检查与修复",
@@ -177,13 +180,10 @@ class IdPage(BasePage):
         template_layout.addWidget(self.global_strict)
 
         buttons = QHBoxLayout()
-        self.scan_button = QPushButton("扫描当前 G")
         self.add_button = QPushButton("新增规则")
         self.edit_button = QPushButton("编辑规则")
         self.delete_button = QPushButton("删除规则")
-        self.add_detected_button = QPushButton("加入扫描发现的规则")
-        self.add_detected_button.setEnabled(False)
-        for button in (self.scan_button, self.add_button, self.edit_button, self.delete_button, self.add_detected_button):
+        for button in (self.add_button, self.edit_button, self.delete_button):
             buttons.addWidget(button)
         buttons.addStretch(1)
         template_layout.addLayout(buttons)
@@ -195,36 +195,29 @@ class IdPage(BasePage):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.horizontalHeader().setStretchLastSection(True)
         template_layout.addWidget(self.table)
-        self.scan_summary = QLabel("尚未扫描 G 文件。")
-        self.scan_summary.setWordWrap(True)
-        self.scan_summary.setObjectName("mutedText")
-        template_layout.addWidget(self.scan_summary)
         self.layout.addWidget(template_box)
 
-        action_box = QGroupBox("ID 操作")
-        action_layout = QHBoxLayout(action_box)
-        action_layout.setSpacing(18)
-        self.check_only = QRadioButton("只检查 ID")
-        self.repair = QRadioButton("检查并强制按模板修复 ID")
-        self.check_only.setChecked(True)
-        self.check_only.setMinimumWidth(138)
-        self.repair.setMinimumWidth(300)
-        action_layout.addWidget(self.check_only)
-        action_layout.addSpacing(18)
-        action_layout.addWidget(self.repair)
-        action_layout.addStretch(1)
-        self.layout.addWidget(action_box)
-
         self.task = TaskPanel()
-        self.task.run_button.setText("开始 ID 处理")
+        self.scan_button = QPushButton("扫描当前G文件（只检查ID）")
+        self.scan_button.setToolTip("扫描完成后会生成/覆盖 ID 扫描 CSV/HTML 报告，可点击“打开报告”查看；发现新元素类型仍会逐条询问是否加入模板。")
+        self.task.run_button.setText("检查并强制修复 ID")
+        self.task.run_button.setToolTip("执行后会按已确认模板修复 ID，并生成/覆盖 ID 修复 CSV/HTML 报告，可点击“打开报告”查看。")
+        self.report_button = QPushButton("打开报告")
+        self.report_button.setEnabled(False)
+        set_secondary(self.report_button)
+        # ID 页面只保留两个明确动作：扫描/检查，以及强制修复。
+        # 报告、输出目录、清空日志均集中在“执行与日志”。
+        self.task.buttons_layout.insertWidget(0, self.scan_button)
+        self.task.buttons_layout.insertWidget(2, self.report_button)
         self.layout.addWidget(self.task, 1)
 
         self.scan_button.clicked.connect(self.scan_current)
         self.add_button.clicked.connect(self.add_rule)
         self.edit_button.clicked.connect(self.edit_rule)
         self.delete_button.clicked.connect(self.delete_rule)
-        self.add_detected_button.clicked.connect(self.add_detected_rules)
         self.task.run_button.clicked.connect(self.run)
+        self.report_button.clicked.connect(self.open_last_report)
+        self.task.resultReceived.connect(self._task_result)
         self._refresh_table()
 
     def _refresh_table(self) -> None:
@@ -267,7 +260,7 @@ class IdPage(BasePage):
                 self.global_strict.blockSignals(False)
                 return
         self.user_settings.set_value("id_rules/global_strict", "true" if checked else "false")
-        self.scan_summary.setText(
+        self.task.append_log(
             "全局 ID 模板强制约束已开启：已有格式不符 ID 会在处理输出时按模板修复。"
             if checked
             else "全局 ID 模板强制约束已关闭：已有格式不符 ID 保持不变；新生成 ID 仍严格使用模板。"
@@ -329,13 +322,16 @@ class IdPage(BasePage):
         self.rule_service.remove(tag)
         self._last_scan_candidates.pop(tag, None)
         self._refresh_table()
-        self.scan_summary.setText(f"已立即删除 ID 规则 <{tag}>。")
+        self.task.append_log(f"已立即删除 ID 规则 <{tag}>。")
 
     def scan_current(self) -> None:
         if not validate_input_source(self, self.source, display_name="ID 扫描输入"):
             return
         files = discover_g_inputs(self.source.path(), self.source.mode())
         rules = self.rule_service.load_rules()
+        self.task.log_view.clear()
+        self.task.progress.setValue(0)
+        self.task.append_log(f"开始扫描当前 G，共 {len(files)} 个文件。")
         candidates: dict[str, IdRule] = {}
         new_messages: list[str] = []
         changed_messages: list[str] = []
@@ -356,7 +352,7 @@ class IdPage(BasePage):
         try:
             for index, path in enumerate(files, start=1):
                 if progress_dialog.wasCanceled():
-                    self.scan_summary.setText("扫描已取消。")
+                    self.task.append_log("扫描已取消。")
                     return
                 progress_dialog.setLabelText(f"正在扫描：{path.name}  （{index}/{len(files)}）")
                 QApplication.processEvents()
@@ -384,6 +380,8 @@ class IdPage(BasePage):
                         if value not in bucket:
                             bucket.append(value)
                 progress_dialog.setValue(index)
+                self.task.progress.setValue(round(index * 100 / max(len(files), 1)))
+                self.task.append_log(f"[{index}/{len(files)}] 已扫描：{path.name}")
                 QApplication.processEvents()
         except Exception as exc:
             QMessageBox.warning(self, "扫描失败", str(exc))
@@ -391,7 +389,6 @@ class IdPage(BasePage):
         finally:
             progress_dialog.close()
         self._last_scan_candidates = candidates
-        self.add_detected_button.setEnabled(bool(candidates))
         covered_tags = observed_all & set(rules)
         missing_tags = observed_all - set(rules)
         parts = [f"模板覆盖检查：当前 G 共发现 {len(observed_all)} 类带 ID 元素；模板已覆盖 {len(covered_tags)} 类，未覆盖 {len(missing_tags)} 类。"]
@@ -420,11 +417,60 @@ class IdPage(BasePage):
                 + "\n".join(changed_messages)
                 + "\n以上数字均为 XML 中实际存在的完整 ID，不是前缀。模板不会自动修改。"
             )
-        self.scan_summary.setText("\n".join(parts))
-        if new_messages or changed_messages or uninferable:
-            ScanResultDialog(self, "ID 模板扫描有发现", self.scan_summary.text(), warning=True).exec()
-        else:
-            ScanResultDialog(self, "ID 模板扫描完成", self.scan_summary.text()).exec()
+        scan_text = "\n".join(parts)
+        self.task.append_log("\nID 模板扫描结果：")
+        self.task.append_log(scan_text)
+
+        # “扫描当前 G（只检查 ID）”同样生成独立 CSV/HTML 报告。
+        # 报告只记录实际发现的问题；无问题文件记录为“正常”。
+        report_rows: list[dict[str, str]] = []
+        for path in files:
+            try:
+                scan = scan_file_against_rules(path, rules)
+                file_rows = 0
+                for item in scan.new_rule_candidates:
+                    detail = (
+                        f"尚未加入模板；候选前缀 {item.prefix}、总位数 {item.total_length}（需人工确认）"
+                        if item.prefix is not None and item.total_length is not None
+                        else "尚未加入模板"
+                    )
+                    for value in item.sample_ids or [""]:
+                        report_rows.append({"File": path.name, "Category": "未配置模板", "ElementType": item.tag, "OriginalID": value, "NewID": "", "Detail": detail})
+                        file_rows += 1
+                for item in scan.unknown_uninferable:
+                    for value in item.sample_ids or [""]:
+                        report_rows.append({"File": path.name, "Category": "未配置模板", "ElementType": item.tag, "OriginalID": value, "NewID": "", "Detail": "样本不足，不能可靠推断 ID 模板"})
+                        file_rows += 1
+                for item in scan.changed_formats:
+                    rule = rules.get(item.tag)
+                    detail = f"模板要求前缀 {rule.prefix}、总位数 {rule.total_length}" if rule else "不符合当前模板"
+                    for value in item.sample_ids:
+                        report_rows.append({"File": path.name, "Category": "格式不符", "ElementType": item.tag, "OriginalID": value, "NewID": "", "Detail": detail})
+                        file_rows += 1
+                inspection = inspect_tree_ids(ET.parse(path), path)
+                for group in inspection.duplicate_groups:
+                    report_rows.append({"File": path.name, "Category": "重复 ID", "ElementType": ", ".join(group.tags), "OriginalID": group.value, "NewID": "", "Detail": f"出现 {group.count} 次"})
+                    file_rows += 1
+                if file_rows == 0:
+                    report_rows.append({"File": path.name, "Category": "正常", "ElementType": "", "OriginalID": "", "NewID": "", "Detail": "未发现模板格式异常或重复 ID"})
+            except Exception as exc:
+                report_rows.append({"File": path.name, "Category": "处理失败", "ElementType": "", "OriginalID": "", "NewID": "", "Detail": str(exc)})
+        output_dir = self.output_path.path()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = make_task_timestamp()
+        csv_path, html_path = _write_id_reports(output_dir, report_rows, timestamp, report_kind="scan")
+        self.last_html_report = html_path
+        self.report_button.setEnabled(True)
+        self.task._output_dir = output_dir
+        self.task.open_button.setEnabled(True)
+        self.task.append_log(f"CSV 报告：{csv_path}")
+        self.task.append_log(f"HTML 报告：{html_path}")
+        self.task.progress.setValue(100)
+        QMessageBox.information(
+            self,
+            "扫描完成",
+            "ID 扫描完成，扫描报告已生成并覆盖上一份扫描报告。\n可点击“打开报告”查看 HTML 报告。",
+        )
 
         # 发现可推断的新类型时，主动询问是否逐条打开“新增 ID 规则”窗口。
         # 前缀和总位数由扫描结果预填，最终必须由用户逐条确认。
@@ -470,7 +516,6 @@ class IdPage(BasePage):
             self.rule_service.upsert(confirmed)
             added.append(confirmed.tag)
             self._last_scan_candidates.pop(tag, None)
-        self.add_detected_button.setEnabled(bool(self._last_scan_candidates))
         self._refresh_table()
         pieces = []
         if added:
@@ -478,10 +523,27 @@ class IdPage(BasePage):
         if skipped:
             pieces.append("暂未加入：" + ", ".join(f"<{tag}>" for tag in skipped))
         if pieces:
-            self.scan_summary.setText("；".join(pieces) + "。")
+            self.task.append_log("；".join(pieces) + "。")
 
     def add_detected_rules(self) -> None:
         self._confirm_detected_rules()
+
+    def _task_result(self, result) -> None:
+        path_text = str(result.statistics.get("html_report_path", "")) if getattr(result, "statistics", None) else ""
+        if path_text:
+            self.last_html_report = Path(path_text)
+            self.report_button.setEnabled(self.last_html_report.exists())
+            QMessageBox.information(
+                self,
+                "ID 修复完成",
+                "ID 检查与强制修复已完成，修复报告已生成并覆盖上一份修复报告。\n可点击“打开报告”查看 HTML 报告。",
+            )
+
+    def open_last_report(self) -> None:
+        if not self.last_html_report or not self.last_html_report.exists():
+            QMessageBox.information(self, "暂无报告", "请先执行一次 ID 检查或修复。")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.last_html_report.resolve())))
 
     def save_state(self) -> None:
         self.source.persist_all_text()
@@ -493,13 +555,13 @@ class IdPage(BasePage):
     def run(self) -> None:
         if not validate_input_source(self, self.source, display_name="ID 处理输入"):
             return
-        action = IdAction.REPAIR if self.repair.isChecked() else IdAction.CHECK
+        action = IdAction.REPAIR
         output_dir = self.output_path.path()
         if not validate_existing_directory(self, output_dir, "ID 检查与修复输出目录"):
             return
         self.source.persist_current()
         self.output_path.persist_valid_path()
-        timestamp = ""
+        timestamp = make_task_timestamp()
         conflict_action = BasicOutputConflictAction.OVERWRITE
         if action == IdAction.REPAIR:
             files = discover_g_inputs(self.source.path(), self.source.mode())
@@ -515,7 +577,6 @@ class IdPage(BasePage):
                 if answer != QMessageBox.StandardButton.Yes:
                     return
                 conflict_action = BasicOutputConflictAction.TIMESTAMP
-                timestamp = make_task_timestamp()
         settings = IdSettings(
             source_path=self.source.path(),
             input_mode=self.source.mode(),

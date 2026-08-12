@@ -136,6 +136,9 @@ class BasicSettings(BaseModel):
     # 仅修改“框内存在 SMART Text”的环网柜外框颜色，不修改 SMART 字体。
     change_smart_rmu_frame_color: bool = False
     smart_rmu_frame_color: str = "#00A651"
+    # 根据直属 Text[ts=SMR] 与最近有效环网柜 rect 的几何关系修改外框颜色；不修改 SMR Text。
+    change_smr_rmu_frame_color: bool = False
+    smr_rmu_frame_color: str = "#FF0000"
     # 将 BusDis 环网柜内 devref 指向 channel_status 的红色状态点移动到框内指定锚点。
     reposition_channel_status: bool = False
     channel_status_position: RmuStatusPosition = RmuStatusPosition.BOTTOM_LEFT

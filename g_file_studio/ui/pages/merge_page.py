@@ -85,7 +85,7 @@ class MergePage(BasePage):
         self.gap = self.spin(300)
         self.feeder_min_width = self.spin(1000)
         self.merge_main_bus = QCheckBox("启用主网母线处理")
-        self.merge_main_bus.setToolTip("启用后必须选择单母线或双母线。只检查所选主母线；w<10 的 Bus 完全忽略。")
+        self.merge_main_bus.setToolTip("启用后必须选择单母线或双母线。只检查所选主母线；异常短线 Bus 不再在这里过滤，请统一使用“异常小尺寸图元检测”模块处理。")
         self.main_bus_mode = "single"
         self.main_bus_mode_button = QPushButton("母线类型：未选择")
         self.main_bus_mode_button.setEnabled(False)
@@ -106,7 +106,7 @@ class MergePage(BasePage):
         for widget in (self.left, self.top, self.right, self.bottom):
             widget.setToolTip(FIELD_HELP["merge_margin"])
         settings_form.addRow(HelpLabel("默认单线图宽度", "每个馈线图的最小占用宽度。实际宽度小于该值时按该值预留；实际宽度超过该值时使用实际宽度。该宽度不包含相邻馈线间隔。"), self.feeder_min_width)
-        settings_form.addRow(HelpLabel("主母线处理", "启用后先选择单母线或双母线。单母线只检查 Y 最小的最高有效水平 <Bus>；双母线检查最高母线和同方向下方长度大致相同的第二条母线。w<10 的 Bus 完全忽略。选中的母线必须有非空 keyid；相同 keyid 必须连续且合并后处于同一水平线。"), bus_row)
+        settings_form.addRow(HelpLabel("主母线处理", "启用后先选择单母线或双母线。单母线只检查 Y 最小的最高有效水平 <Bus>；双母线检查最高母线和同方向下方长度大致相同的第二条母线。选中的母线必须有非空 keyid；相同 keyid 必须连续且合并后处于同一水平线。"), bus_row)
         settings_form.addRow(HelpLabel("相邻图形间隔", FIELD_HELP["feeder_gap"]), self.gap)
         settings_form.addRow(HelpLabel("左边距", FIELD_HELP["merge_margin"]), self.left)
         settings_form.addRow(HelpLabel("上边距", FIELD_HELP["merge_margin"]), self.top)
@@ -139,8 +139,7 @@ class MergePage(BasePage):
         dialog.setText("请选择当前参与合并的馈线图属于单母线还是双母线。")
         dialog.setInformativeText(
             "单母线：只检查 Y 值最小的最高有效水平 <Bus>。\n"
-            "双母线：检查最高母线，以及同方向下方长度大致相同的第二条有效水平 <Bus>。\n"
-            "w<10 的 Bus 均忽略。"
+            "双母线：检查最高母线，以及同方向下方长度大致相同的第二条有效水平 <Bus>。"
         )
         single_button = dialog.addButton("单母线", QMessageBox.ButtonRole.AcceptRole)
         double_button = dialog.addButton("双母线", QMessageBox.ButtonRole.AcceptRole)
@@ -213,7 +212,7 @@ class MergePage(BasePage):
             "主母线 keyid 合并确认",
             "请人工确认当前参与合并的馈线确实属于允许共母线的范围。文件名差异只做提醒，程序不会依据文件名、facID 或 facName 禁止你启用该功能。\n\n"
             f"当前选择：{'双母线' if self.main_bus_mode == 'double' else '单母线'}。\n"
-            "硬性规则：只检查当前母线类型选中的主母线；w<10 的 Bus 完全忽略；选中的 Bus 必须存在非空 keyid；不同 keyid 永远不会连接；同一 keyid 的馈线必须连续排列；最终只有处于同一水平线的同 keyid Bus 才能合并。\n\n"
+            "硬性规则：只检查当前母线类型选中的主母线；选中的 Bus 必须存在非空 keyid；不同 keyid 永远不会连接；同一 keyid 的馈线必须连续排列；最终只有处于同一水平线的同 keyid Bus 才能合并。\n\n"
             + group_text,
             QMessageBox.StandardButton.Ok,
         )

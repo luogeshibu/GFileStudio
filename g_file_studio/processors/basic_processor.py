@@ -138,6 +138,22 @@ def _validate_rules(settings: BasicSettings) -> None:
             raise ValueError("图元版本升级适配检查未通过：" + "；".join(problems))
 
 
+def _write_smr_frame_reports(output_dir: Path, rows: list[dict[str, object]]) -> tuple[Path, Path]:
+    from html import escape
+    csv_path = output_dir / "rmu-smr-frame-report.csv"
+    html_path = output_dir / "rmu-smr-frame-report.html"
+    headers = ["File","SMRTextID","SMRX","SMRY","RectID","RectX","RectY","RectW","RectH","Distance","OldColor","NewColor","Result"]
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=headers); writer.writeheader(); writer.writerows(rows)
+    trs=[]
+    for row in rows:
+        cells="".join("<td>%s</td>" % escape(str(row.get(h,""))) for h in headers)
+        trs.append("<tr>%s</tr>" % cells)
+    html = "<!doctype html><html><head><meta charset='utf-8'><title>RMU SMR 外框处理报告</title></head><body><h2>RMU SMR 外框处理报告</h2><p>本报告每次执行覆盖上一份同类报告。</p><table border='1'><tr>" + "".join("<th>%s</th>" % escape(h) for h in headers) + "</tr>" + "".join(trs) + "</table></body></html>"
+    html_path.write_text(html, encoding="utf-8")
+    return csv_path, html_path
+
+
 def _process_layer(
     layer: ET.Element,
     settings: BasicSettings,
@@ -414,6 +430,10 @@ def process_basic(
     total_dynamic_colors = 0
     total_smart_rmu_rects = 0
     total_smart_rmu_frames_changed = 0
+    total_smr_texts = 0
+    total_smr_matched_rects = 0
+    total_smr_frames_changed = 0
+    smr_report_rows: list[dict[str, object]] = []
     total_channel_status_rects = 0
     total_channel_status_found = 0
     total_channel_status_moved = 0
@@ -572,6 +592,7 @@ def process_basic(
 
             if (
                 settings.change_smart_rmu_frame_color
+                or settings.change_smr_rmu_frame_color
                 or settings.reposition_channel_status
                 or settings.remove_bus_rmu_frame_and_reposition_title
             ):
@@ -580,6 +601,8 @@ def process_basic(
                     input_path,
                     change_smart_frame_color=settings.change_smart_rmu_frame_color,
                     smart_frame_color=settings.smart_rmu_frame_color,
+                    change_smr_frame_color=settings.change_smr_rmu_frame_color,
+                    smr_frame_color=settings.smr_rmu_frame_color,
                     reposition_channel_status=settings.reposition_channel_status,
                     channel_status_position=settings.channel_status_position.value,
                     channel_status_inner_margin=settings.channel_status_inner_margin,
@@ -589,6 +612,11 @@ def process_basic(
                 )
                 total_smart_rmu_rects += enhancement.smart_rmu_rect_count
                 total_smart_rmu_frames_changed += enhancement.smart_frame_color_changed
+                total_smr_texts += enhancement.smr_text_count
+                total_smr_matched_rects += enhancement.smr_matched_rect_count
+                total_smr_frames_changed += enhancement.smr_frame_color_changed
+                for change in enhancement.smr_changes:
+                    smr_report_rows.append({"File": input_path.name, "SMRTextID": change.text_id, "SMRX": f"{change.text_x:g}", "SMRY": f"{change.text_y:g}", "RectID": change.rect_id, "RectX": f"{change.rect_x:g}", "RectY": f"{change.rect_y:g}", "RectW": f"{change.rect_w:g}", "RectH": f"{change.rect_h:g}", "Distance": f"{change.distance:.2f}", "OldColor": change.old_color, "NewColor": change.new_color, "Result": "已修改" if change.changed else "已是目标颜色"})
                 total_channel_status_rects += enhancement.channel_status_rect_count
                 total_channel_status_found += enhancement.channel_status_found_count
                 total_channel_status_moved += enhancement.channel_status_moved_count
@@ -602,6 +630,8 @@ def process_basic(
                         f"{enhancement.smart_frame_color_changed} 个，颜色 "
                         f"{settings.smart_rmu_frame_color.upper()}；SMART 字体未修改。"
                     )
+                if settings.change_smr_rmu_frame_color:
+                    log(f"[SMR环网柜外框颜色] {input_path.name}：SMR Text {enhancement.smr_text_count} 个，匹配外框 {enhancement.smr_matched_rect_count} 个，改色 {enhancement.smr_frame_color_changed} 个；SMR Text 未修改。")
                 if settings.reposition_channel_status:
                     log(
                         f"[环网柜红色状态点] {input_path.name}：识别带 BusDis 的环网柜 "
@@ -732,12 +762,17 @@ def process_basic(
         if progress:
             progress(round(index * 100 / len(files)))
 
+    if settings.change_smr_rmu_frame_color:
+        csv_report, html_report = _write_smr_frame_reports(settings.output_dir, smr_report_rows)
+        outputs.extend([csv_report, html_report])
+        log(f"[SMR环网柜报告] CSV：{csv_report}；HTML：{html_report}（覆盖上一份同类报告）。")
+
     summary = (
         f"[基础处理汇总] 输入 {len(files)} 个文件，成功 {len(outputs)} 个，失败 {len(failed)} 个；"
         f"环网柜 rect {total_rects} 个，重建组合 "
         f"{total_rmu_groups} 个，取消组合 {total_rmu_ungrouped} 个，外框下移 "
         f"{total_rmu_lowered_rects} 个；识别含 SMART 环网柜 {total_smart_rmu_rects} 个，"
-        f"SMART 环网柜外框改色 {total_smart_rmu_frames_changed} 个，channel_status 状态点"
+        f"SMART 环网柜外框改色 {total_smart_rmu_frames_changed} 个；SMR Text {total_smr_texts} 个，匹配环网柜 {total_smr_matched_rects} 个，SMR 外框改色 {total_smr_frames_changed} 个；channel_status 状态点"
         f"找到 {total_channel_status_found} 个、移动 {total_channel_status_moved} 个、"
         f"未找到 {total_channel_status_missing} 个，带 Bus 外框删除 "
         f"{total_bus_rect_removed} 个，标题上移 {total_bus_title_moved} 个；"
@@ -795,6 +830,9 @@ def process_basic(
             "dynamic_color_warning_count": total_dynamic_colors,
             "smart_rmu_rect_count": total_smart_rmu_rects,
             "smart_rmu_frame_color_changed_count": total_smart_rmu_frames_changed,
+            "smr_text_count": total_smr_texts,
+            "smr_matched_rmu_rect_count": total_smr_matched_rects,
+            "smr_rmu_frame_color_changed_count": total_smr_frames_changed,
             "channel_status_rmu_rect_count": total_channel_status_rects,
             "channel_status_found_count": total_channel_status_found,
             "channel_status_moved_count": total_channel_status_moved,
