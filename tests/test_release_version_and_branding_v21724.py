@@ -5,14 +5,14 @@ def test_build_script_uses_runtime_version():
     text = Path("build_exe.ps1").read_text(encoding="utf-8")
     assert "g_file_studio.__version__" in text
     assert "GFileStudio_v2.17.1_Windows_x64.zip" not in text
-    assert '"GFileStudio_v{0}_Windows_x64.zip" -f $Version' in text
+    assert '$ZipName = "GFileStudio_v" + $Version + "_Windows_x64.zip"' in text
 
 
 def test_project_versions_are_synced():
     init_text = Path("g_file_studio/__init__.py").read_text(encoding="utf-8")
     pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
-    assert '__version__ = "2.17.24"' in init_text
-    assert 'version = "2.17.24"' in pyproject
+    assert '__version__ = "2.17.27"' in init_text
+    assert 'version = "2.17.27"' in pyproject
 
 
 def test_compact_branding():

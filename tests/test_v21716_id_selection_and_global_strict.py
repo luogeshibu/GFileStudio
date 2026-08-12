@@ -26,11 +26,15 @@ def test_rule_service_forces_loaded_rules_enabled(tmp_path):
     assert rule.enabled is True
 
 
-def test_id_page_first_column_is_selection_not_enable():
+def test_id_page_uses_single_row_selection_without_checkbox_column():
     source = Path('g_file_studio/ui/pages/id_page.py').read_text(encoding='utf-8')
-    assert '["选择", "状态", "元素类型"' in source
-    assert 'def _checked_tags' in source
-    assert '一个或多个要删除的规则' in source
+    assert 'self.table = QTableWidget(0, 7)' in source
+    assert '["状态", "元素类型", "ID 起始前缀"' in source
+    assert 'def _checked_tags' not in source
+    assert '请先在表格中选中一条要删除的规则。' in source
+    assert 'self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)' in source
+    assert 'self.check_only.setMinimumWidth(138)' in source
+    assert 'self.repair.setMinimumWidth(300)' in source
     assert 'self.global_strict.setEnabled(False)' not in source
 
 

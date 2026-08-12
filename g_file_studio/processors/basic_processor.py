@@ -232,24 +232,141 @@ def _output_path_for(
     return settings.output_dir / input_path.name
 
 
+def _rmu_duplicate_names(identification) -> tuple[dict[str, int], set[str]]:
+    counts: dict[str, int] = {}
+    for item in identification.items:
+        name = (item.name or "").strip()
+        if not name:
+            continue
+        key = name.casefold()
+        counts[key] = counts.get(key, 0) + 1
+    duplicates = {key for key, count in counts.items() if count > 1}
+    return counts, duplicates
+
+
 def _write_rmu_csv(output_path: Path, identification) -> Path:
     stem, _suffix = strip_g_suffix(output_path.name)
     csv_path = output_path.with_name(f"{stem}.rmu.csv")
+    _counts, duplicates = _rmu_duplicate_names(identification)
     with csv_path.open("w", encoding="utf-8-sig", newline="") as stream:
         writer = csv.writer(stream)
         writer.writerow([
             "CabinetName", "CabinetType", "LCount", "TCount", "SMART",
-            "NamePosition", "Confidence", "RectID", "RectX", "RectY", "RectW", "RectH", "Warnings",
+            "NamePosition", "Confidence", "Duplicate", "RectID",
+            "RectX", "RectY", "RectW", "RectH", "Warnings",
         ])
         for item in identification.items:
+            name_key = (item.name or "").strip().casefold()
+            duplicate = "YES" if name_key and name_key in duplicates else "NO"
             writer.writerow([
                 item.name, item.rmu_type, item.l_count, item.t_count, item.smart_count,
-                item.name_position, item.confidence, item.rect_id,
+                item.name_position, item.confidence, duplicate, item.rect_id,
                 f"{item.rect_x:g}", f"{item.rect_y:g}", f"{item.rect_w:g}", f"{item.rect_h:g}",
                 " | ".join(item.warnings),
             ])
     return csv_path
 
+
+def _write_rmu_html(output_path: Path, identification) -> Path:
+    from html import escape
+
+    stem, _suffix = strip_g_suffix(output_path.name)
+    html_path = output_path.with_name(f"{stem}.rmu.html")
+    counts, duplicates = _rmu_duplicate_names(identification)
+
+    high_count = sum(
+        1 for item in identification.items
+        if item.confidence == "高" and (item.name or "").strip().casefold() not in duplicates
+    )
+    medium_count = sum(
+        1 for item in identification.items
+        if item.confidence in {"中", "待确认"} and (item.name or "").strip().casefold() not in duplicates
+    )
+    unidentified_count = sum(
+        1 for item in identification.items if not item.name or item.confidence == "未识别"
+    )
+    duplicate_row_count = sum(
+        1 for item in identification.items
+        if (item.name or "").strip() and (item.name or "").strip().casefold() in duplicates
+    )
+
+    def row_class(item) -> str:
+        key = (item.name or "").strip().casefold()
+        if (key and key in duplicates) or not item.name or item.confidence == "未识别":
+            return "bad"
+        if item.confidence == "高":
+            return "high"
+        return "medium"
+
+    headers = [
+        "CabinetName", "CabinetType", "LCount", "TCount", "SMART",
+        "NamePosition", "Confidence", "Duplicate", "RectID",
+        "RectX", "RectY", "RectW", "RectH", "Warnings",
+    ]
+    rows: list[str] = []
+    for item in identification.items:
+        key = (item.name or "").strip().casefold()
+        duplicate = "YES" if key and key in duplicates else "NO"
+        values = [
+            item.name, item.rmu_type, str(item.l_count), str(item.t_count), str(item.smart_count),
+            item.name_position, item.confidence, duplicate, item.rect_id,
+            f"{item.rect_x:g}", f"{item.rect_y:g}", f"{item.rect_w:g}", f"{item.rect_h:g}",
+            " | ".join(item.warnings),
+        ]
+        cells = "".join(f"<td>{escape(value)}</td>" for value in values)
+        rows.append(f'<tr class="{row_class(item)}">{cells}</tr>')
+
+    duplicate_list: list[str] = []
+    for key in sorted(duplicates):
+        display_name = next(
+            (item.name for item in identification.items if (item.name or "").strip().casefold() == key),
+            key,
+        )
+        duplicate_list.append(f"{escape(display_name)} × {counts[key]}")
+    duplicate_text = "、".join(duplicate_list) if duplicate_list else "无"
+
+    header_cells = "".join(f"<th>{escape(header)}</th>" for header in headers)
+    body_rows = "".join(rows)
+    html = f"""<!DOCTYPE html>
+<html lang=\"zh-CN\">
+<head>
+<meta charset=\"utf-8\">
+<title>{escape(stem)} 环网柜识别报告</title>
+<style>
+body {{ font-family: \"Microsoft YaHei\", Arial, sans-serif; margin: 24px; color: #1f2937; }}
+h1 {{ margin: 0 0 16px; font-size: 24px; }}
+.summary {{ display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }}
+.badge {{ border: 1px solid #d1d5db; border-radius: 6px; padding: 7px 10px; background: #f8fafc; }}
+.note {{ margin: 10px 0 18px; color: #475569; }}
+table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+th, td {{ border: 1px solid #cbd5e1; padding: 6px 8px; text-align: left; vertical-align: top; }}
+th {{ background: #e2e8f0; position: sticky; top: 0; }}
+tr.high td {{ background: #dcfce7; }}
+tr.medium td {{ background: #fef9c3; }}
+tr.bad td {{ background: #fee2e2; }}
+</style>
+</head>
+<body>
+<h1>环网柜名称与柜型识别报告</h1>
+<div class=\"summary\">
+  <div class=\"badge\">总环网柜：<b>{len(identification.items)}</b></div>
+  <div class=\"badge\">柜名成功：<b>{identification.named_count}</b></div>
+  <div class=\"badge\">柜型成功：<b>{identification.typed_count}</b></div>
+  <div class=\"badge\">高置信度：<b>{high_count}</b></div>
+  <div class=\"badge\">中/待确认：<b>{medium_count}</b></div>
+  <div class=\"badge\">未识别：<b>{unidentified_count}</b></div>
+  <div class=\"badge\">重复柜名/ID：<b>{len(duplicates)}</b> 个（涉及 {duplicate_row_count} 行）</div>
+</div>
+<div class=\"note\">颜色：绿色=高置信度；黄色=中等/待确认；红色=未识别或柜名/环网柜 ID 重复。重复项：{duplicate_text}</div>
+<table>
+<thead><tr>{header_cells}</tr></thead>
+<tbody>{body_rows}</tbody>
+</table>
+</body>
+</html>
+"""
+    html_path.write_text(html, encoding="utf-8")
+    return html_path
 
 def process_basic(
     settings: BasicSettings,
@@ -593,8 +710,9 @@ def process_basic(
             outputs.append(output_path)
             if rmu_identification is not None and settings.export_rmu_identification_csv:
                 rmu_csv = _write_rmu_csv(output_path, rmu_identification)
+                rmu_html = _write_rmu_html(output_path, rmu_identification)
                 total_rmu_csv += 1
-                log(f"[环网柜识别] 已导出：{rmu_csv.name}")
+                log(f"[环网柜识别] 已导出：{rmu_csv.name}；HTML：{rmu_html.name}")
             total_replaced += replaced
             total_deleted_attributes += deleted_attributes
             total_removed_matching += removed_matching
@@ -628,7 +746,7 @@ def process_basic(
     if settings.identify_rmu_name_and_type:
         summary += (
             f"；环网柜识别 {total_rmu_identified} 个、柜名成功 {total_rmu_named} 个、"
-            f"柜型成功 {total_rmu_typed} 个、待确认 {total_rmu_ambiguous} 个、导出 CSV {total_rmu_csv} 份"
+            f"柜型成功 {total_rmu_typed} 个、待确认 {total_rmu_ambiguous} 个、导出 CSV/HTML 报告 {total_rmu_csv} 份"
         )
     if settings.upgrade_icon_geometry:
         summary += (

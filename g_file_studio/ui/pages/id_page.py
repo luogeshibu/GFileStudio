@@ -188,8 +188,8 @@ class IdPage(BasePage):
         buttons.addStretch(1)
         template_layout.addLayout(buttons)
 
-        self.table = QTableWidget(0, 8)
-        self.table.setHorizontalHeaderLabels(["选择", "状态", "元素类型", "ID 起始前缀", "总位数", "合法示例", "当前规则", "备注"])
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["状态", "元素类型", "ID 起始前缀", "总位数", "合法示例", "当前规则", "备注"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -203,10 +203,14 @@ class IdPage(BasePage):
 
         action_box = QGroupBox("ID 操作")
         action_layout = QHBoxLayout(action_box)
+        action_layout.setSpacing(18)
         self.check_only = QRadioButton("只检查 ID")
         self.repair = QRadioButton("检查并强制按模板修复 ID")
         self.check_only.setChecked(True)
+        self.check_only.setMinimumWidth(138)
+        self.repair.setMinimumWidth(300)
         action_layout.addWidget(self.check_only)
+        action_layout.addSpacing(18)
         action_layout.addWidget(self.repair)
         action_layout.addStretch(1)
         self.layout.addWidget(action_box)
@@ -230,11 +234,6 @@ class IdPage(BasePage):
             row = self.table.rowCount()
             self.table.insertRow(row)
             example = rule.build(1)
-            select_item = QTableWidgetItem("")
-            select_item.setFlags(select_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            select_item.setCheckState(Qt.CheckState.Unchecked)
-            select_item.setData(Qt.ItemDataRole.UserRole, rule.tag)
-            self.table.setItem(row, 0, select_item)
             values = [
                 "✓ 已确认",
                 rule.tag,
@@ -244,11 +243,11 @@ class IdPage(BasePage):
                 "前缀 + 总位数；同类型最大 ID + 1",
                 rule.note,
             ]
-            for offset, text in enumerate(values, start=1):
+            for column, text in enumerate(values):
                 item = QTableWidgetItem(text)
-                if offset == 2:
+                if column == 1:
                     item.setData(Qt.ItemDataRole.UserRole, rule.tag)
-                self.table.setItem(row, offset, item)
+                self.table.setItem(row, column, item)
         self.table.resizeColumnsToContents()
 
     def _global_strict_toggled(self, checked: bool) -> None:
@@ -278,7 +277,7 @@ class IdPage(BasePage):
         row = self.table.currentRow()
         if row < 0:
             return None
-        item = self.table.item(row, 2)
+        item = self.table.item(row, 1)
         return item.data(Qt.ItemDataRole.UserRole) if item else None
 
     def add_rule(self) -> None:
@@ -316,33 +315,21 @@ class IdPage(BasePage):
         self.rule_service.upsert(new)
         self._refresh_table()
 
-    def _checked_tags(self) -> list[str]:
-        tags: list[str] = []
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
-            if item is not None and item.checkState() == Qt.CheckState.Checked:
-                tag = item.data(Qt.ItemDataRole.UserRole)
-                if tag:
-                    tags.append(str(tag))
-        return tags
-
     def delete_rule(self) -> None:
-        tags = self._checked_tags()
-        if not tags:
-            QMessageBox.information(self, "请选择规则", "请先在表格第一列勾选一个或多个要删除的规则。")
+        tag = self._selected_tag()
+        if not tag:
+            QMessageBox.information(self, "请选择规则", "请先在表格中选中一条要删除的规则。")
             return
-        display = "、".join(f"<{tag}>" for tag in tags)
         if QMessageBox.question(
             self,
             "删除规则",
-            f"确认删除以下 {len(tags)} 条 ID 规则？\n\n{display}\n\n删除后立即生效；再次扫描到对应元素类型时会重新提醒是否添加。",
+            f"确认删除 ID 规则 <{tag}>？\n\n删除后立即生效；再次扫描到对应元素类型时会重新提醒是否添加。",
         ) != QMessageBox.StandardButton.Yes:
             return
-        for tag in tags:
-            self.rule_service.remove(tag)
-            self._last_scan_candidates.pop(tag, None)
+        self.rule_service.remove(tag)
+        self._last_scan_candidates.pop(tag, None)
         self._refresh_table()
-        self.scan_summary.setText(f"已立即删除 {len(tags)} 条 ID 规则：{display}。")
+        self.scan_summary.setText(f"已立即删除 ID 规则 <{tag}>。")
 
     def scan_current(self) -> None:
         if not validate_input_source(self, self.source, display_name="ID 扫描输入"):
