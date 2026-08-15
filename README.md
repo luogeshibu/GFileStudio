@@ -157,3 +157,11 @@ Get-ChildItem -Path . -Recurse -File | Unblock-File
 dist\GFileStudio\GFileStudio.exe
 release\GFileStudio_v2.17.2_Windows_x64.zip
 ```
+
+### RMU 现有台账对比
+“环网柜处理 → RMU 信息汇总”可选启用现有台账对比，支持：
+1. Excel / CSV 导入（`.xlsx/.xlsm/.csv`）；
+2. 从 Excel 等直接复制并粘贴表格；
+3. 仅粘贴 RMU 名称（每行一个）。
+
+标准字段为 `RMU名称`（必填）、`RMU类型`（可选）、`是否智能`（可选）。SMART 和 SMR 均按智能环网柜比较。对比报告固定输出为 `rmu-ledger-comparison.csv` 与 `rmu-ledger-comparison.html`，重复执行覆盖上一份同类报告。

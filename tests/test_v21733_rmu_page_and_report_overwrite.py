@@ -11,7 +11,7 @@ def test_rmu_is_a_dedicated_page_after_id():
     assert main.index("IdPage(self.user_settings)") < main.index("RmuPage(self.user_settings)") < main.index("BasicPage(self.user_settings)")
     assert "self._build_rmu_options()" not in basic.split("def __init__", 1)[1].split("def _build_rmu_options", 1)[0]
     assert 'QGroupBox("环网柜图元处理")' in rmu
-    assert 'QGroupBox("环网柜名称与柜型识别")' in rmu
+    assert 'QGroupBox("RMU 信息汇总")' in rmu
 
 
 def test_reports_use_stable_overwrite_names_and_buttons_are_open_report():

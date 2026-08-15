@@ -19,7 +19,6 @@ def test_small_element_result_table_is_copyable_and_result_actions_are_grouped()
     assert 'QApplication.clipboard().setText' in source
     assert '可单独选择 XML ID 或任意单元格/区域，按 Ctrl+C 复制' in source
     assert 'self.select_all_box = QCheckBox("全选处理")' in source
-    assert 'self.process_button = QPushButton("执行选中处理")' in source
+    assert 'self.process_button = QPushButton("删除选中异常图元")' in source
     assert 'self.task.buttons_layout.insertWidget(1, self.process_button)' in source
-    assert '删除选中异常图元' not in source
     assert '删除全部异常图元' not in source

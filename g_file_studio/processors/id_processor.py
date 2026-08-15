@@ -11,6 +11,7 @@ from g_file_studio.engines.id_rule_engine import normalize_tree_ids_strict, scan
 from g_file_studio.models import BasicOutputConflictAction, IdAction, IdSettings, ProcessingResult
 from g_file_studio.processors.common import LogCallback, ProgressCallback, discover_g_inputs
 from g_file_studio.services.id_rule_service import IdRuleService
+from g_file_studio.services.html_report_selection import selection_bar, selection_cell, selection_header, selection_script, selection_style
 from g_file_studio.services.output_naming import make_task_timestamp, marked_output_name
 from g_file_studio.services.user_settings_service import UserSettingsService
 
@@ -37,17 +38,17 @@ def _write_id_reports(
         category = row.get("Category", "")
         css = "ok" if category == "正常" else ("fixed" if category == "已修复" else "issue")
         body_rows.append(
-            f"<tr class='{css}'>" + "".join(f"<td>{html.escape(str(row.get(h, '')))}</td>" for h in headers) + "</tr>"
+            f"<tr class='{css}'>" + selection_cell() + "".join(f"<td>{html.escape(str(row.get(h, '')))}</td>" for h in headers) + "</tr>"
         )
     html_path.write_text(
         "<!doctype html><html><head><meta charset='utf-8'><title>ID 检查与修复报告</title>"
         "<style>body{font-family:Segoe UI,Microsoft YaHei,sans-serif;margin:24px;color:#1f2937}"
         "table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #d1d5db;padding:6px 8px;text-align:left;vertical-align:top}"
         "th{background:#e8f3ef;position:sticky;top:0}.ok{background:#edf9f2}.fixed{background:#fff7d6}.issue{background:#ffe1e1}"
-        ".summary{margin:12px 0;padding:10px;background:#f3f7f5;border-left:4px solid #12815f}</style></head><body>"
+        ".summary{margin:12px 0;padding:10px;background:#f3f7f5;border-left:4px solid #12815f}" + selection_style() + "</style></head><body>"
         f"<h2>ID 检查与修复报告</h2><div class='summary'>生成时间：{html.escape(timestamp)}；记录数：{len(rows)}</div>"
-        "<table><thead><tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr></thead><tbody>"
-        + "".join(body_rows) + "</tbody></table></body></html>",
+        + selection_bar() + "<table><thead><tr>" + selection_header() + "".join(f"<th>{h}</th>" for h in headers) + "</tr></thead><tbody>"
+        + "".join(body_rows) + "</tbody></table>" + selection_script() + "</body></html>",
         encoding="utf-8",
     )
     return csv_path, html_path

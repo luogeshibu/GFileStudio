@@ -40,6 +40,16 @@ class RmuAction(str, Enum):
     UNGROUP = "ungroup"
 
 
+
+
+class RmuLedgerInputMode(str, Enum):
+    """RMU 现有台账输入方式。"""
+
+    FILE = "file"
+    PASTE_TABLE = "paste_table"
+    NAME_LIST = "name_list"
+
+
 class RmuStatusPosition(str, Enum):
     """环网柜 channel_status 红色状态点在矩形框内的锚点位置。"""
 
@@ -145,7 +155,7 @@ class BasicSettings(BaseModel):
     channel_status_inner_margin: int = Field(default=5, ge=0, le=1000)
     remove_bus_rmu_frame_and_reposition_title: bool = False
 
-    # 环网柜名称与柜型识别。只读取/统计，不修改 G 图元。
+    # RMU 信息汇总。只读取/统计，不修改 G 图元；SMART 与 SMR 统一归类为智能环网柜。
     identify_rmu_name_and_type: bool = False
     rmu_name_top: bool = True
     rmu_name_bottom: bool = False
@@ -153,6 +163,12 @@ class BasicSettings(BaseModel):
     rmu_name_right: bool = False
     rmu_smart_in_type: bool = False
     export_rmu_identification_csv: bool = True
+
+    # 可选：将用户现有 RMU 台账与 G 图形识别结果进行对比。
+    compare_rmu_ledger: bool = False
+    rmu_ledger_input_mode: RmuLedgerInputMode = RmuLedgerInputMode.FILE
+    rmu_ledger_file: Path | None = None
+    rmu_ledger_text: str = ""
 
     output_conflict_action: BasicOutputConflictAction = BasicOutputConflictAction.OVERWRITE
     task_timestamp: str = ""

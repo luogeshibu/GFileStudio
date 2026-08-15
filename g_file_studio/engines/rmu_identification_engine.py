@@ -46,6 +46,13 @@ class RmuIdentification:
     rect_y: float
     rect_w: float
     rect_h: float
+    smart_source: str = ""
+    type_source: str = ""
+    text_yq_type: str = ""
+    devref_type: str = ""
+    type_cross_check: str = "N/A"
+    type_validation_status: str = "WARN"
+    type_cross_note: str = ""
     warnings: list[str] = field(default_factory=list)
 
 
@@ -81,6 +88,12 @@ def _box(element: ET.Element) -> _Box | None:
     return _Box(left, top, left + width, top + height)
 
 
+def _point_to_box_distance(x: float, y: float, box: _Box) -> float:
+    dx = max(box.left - x, 0.0, x - box.right)
+    dy = max(box.top - y, 0.0, y - box.bottom)
+    return (dx * dx + dy * dy) ** 0.5
+
+
 def _center_inside(element: ET.Element, outer: _Box, tolerance: float = 0.5) -> bool:
     box = _box(element)
     if box is None:
@@ -91,23 +104,27 @@ def _center_inside(element: ET.Element, outer: _Box, tolerance: float = 0.5) -> 
     )
 
 
-def _classify_switch(element: ET.Element) -> str | None:
-    """设备图元回退分类；柜型主判据仍然是 Y/Q 名称。"""
+def _classify_switch_by_devref(element: ET.Element) -> str | None:
+    """仅按图元文件名/devref 识别 L/T，用于与柜内 Y/Q 文字交叉校验。"""
     if local_name(element.tag) != "CBreakerDis":
         return None
-    devref = (element.get("devref") or "").upper()
-    name = (element.get("p_NameString") or "").strip().upper()
-    if (
-        "LOAD_BREAKER_SWITCH" in devref
-        or "RMU_LBS" in devref
-        or re.fullmatch(r"Y\d+", name)
-    ):
+    devref = re.sub(r"[^A-Z0-9]+", "_", (element.get("devref") or "").upper())
+    if any(token in devref for token in ("LOAD_BREAKER", "LOADBREAKERSWITCH", "RMU_LBS")):
         return "L"
-    if (
-        "CIRCUIT_BREAKER" in devref
-        or "RMU_BRK" in devref
-        or re.fullmatch(r"Q\d+", name)
-    ):
+    if any(token in devref for token in ("CIRCUIT_BREAKER", "CIRCUITBREAKER", "RMU_BRK")):
+        return "T"
+    return None
+
+
+def _classify_switch(element: ET.Element) -> str | None:
+    """兼容旧调用：devref 优先；仅在 devref 无法判断时用 Y/Q 名称回退。"""
+    kind = _classify_switch_by_devref(element)
+    if kind is not None:
+        return kind
+    name = (element.get("p_NameString") or "").strip().upper()
+    if re.fullmatch(r"Y\d+", name):
+        return "L"
+    if re.fullmatch(r"Q\d+", name):
         return "T"
     return None
 
@@ -355,6 +372,17 @@ def _label_counts(inside_texts: list[ET.Element]) -> tuple[int, int, set[str], s
     return len(y_labels), len(q_labels), y_labels, q_labels
 
 
+def _label_sequence_ok(labels: set[str], prefix: str) -> bool:
+    if not labels:
+        return True
+    numbers = sorted(int(re.sub(r"\D", "", label)) for label in labels)
+    return numbers == list(range(1, len(numbers) + 1))
+
+
+def _type_string(l_count: int, t_count: int) -> str:
+    return f"{l_count}L{t_count}T" if (l_count or t_count) else ""
+
+
 def identify_rmus(
     tree: ET.ElementTree,
     file_path: Path,
@@ -368,11 +396,12 @@ def identify_rmus(
     1. 必须存在环网柜 rect，且框内同时具有 BusDis、CBreakerDis、ZhaiWaiJieDiDaoZha。
     2. 柜名只在用户指定方向寻找并做全局一对一匹配；单候选直接使用，多候选时绿色优先。
        指定方向无可用 Text 时，仅允许使用柜内 BusDis.key_name 元数据回退，不跨方向找字。
-    3. 柜型优先按框内 Y1/Y2/... 与 Q1/Q2/... 名称计数；某一类名称完全缺失时，
-       才用 CBreakerDis 的 devref/p_NameString 回退识别该类。
-    4. 柜型始终只输出 nLmT；SMART 单独输出，不再追加到柜型字符串。
+    3. 柜型第一来源为框内 Y1/Y2/... 与 Q1/Q2/...：Y 数量=L，Q 数量=T，并检查序号连续性。
+       第二来源仅按 CBreakerDis.devref 图元文件名：Load_Breaker*=L，Circuit_Breaker*=T。
+       两种来源同时存在时强制交叉校验；某一类 Y/Q 完全缺失时才用 devref 对应类别回退。
+    4. 柜型始终只输出 nLmT；SMART 与 SMR 在统计层统一归类为“智能环网柜”，不追加到柜型字符串。
 
-    smart_in_type 参数为了兼容现有设置保留；现在表示是否识别 SMART 单独列。
+    smart_in_type 参数为了兼容现有设置保留；现在表示是否统计智能环网柜（SMART / SMR）。
     """
     if not name_positions:
         raise ValueError("环网柜名称位置至少选择一个方向。")
@@ -405,27 +434,96 @@ def identify_rmus(
                      for index, (rect, rect_box) in enumerate(valid_cabinets)]
     name_assignments = _assign_names_globally(texts, cabinet_boxes, name_positions)
 
+    # SMR is also an intelligent RMU marker. It is usually outside the cabinet frame,
+    # so map each direct Text[ts=SMR] to the nearest valid RMU rect. This is read-only
+    # identification and does not change the existing SMART/grouping algorithms.
+    smr_rect_keys: set[str] = set()
+    if smart_in_type and valid_cabinets:
+        smr_texts = [
+            item for item in elements
+            if local_name(item.tag) == "Text" and (item.get("ts") or "").strip().upper() == "SMR"
+        ]
+        for text in smr_texts:
+            text_box = _box(text)
+            if text_box is None:
+                continue
+            candidates: list[tuple[float, str]] = []
+            for cabinet_index, (rect, rect_box) in enumerate(valid_cabinets):
+                key = rect.get("id") or f"__rect_{cabinet_index}"
+                candidates.append((_point_to_box_distance(text_box.center_x, text_box.center_y, rect_box), key))
+            if candidates:
+                candidates.sort(key=lambda item: (item[0], item[1]))
+                smr_rect_keys.add(candidates[0][1])
+
     for index, (rect, rect_box) in enumerate(valid_cabinets):
         rect_key = rect.get("id") or f"__rect_{index}"
         inside_switches = [item for item in switches if _center_inside(item, rect_box)]
         inside_buses = [item for item in buses if _center_inside(item, rect_box)]
         inside_texts = [item for item in texts if _center_inside(item, rect_box)]
         y_count, q_count, y_labels, q_labels = _label_counts(inside_texts)
-        device_l = sum(1 for item in inside_switches if _classify_switch(item) == "L")
-        device_t = sum(1 for item in inside_switches if _classify_switch(item) == "T")
+        devref_l = sum(1 for item in inside_switches if _classify_switch_by_devref(item) == "L")
+        devref_t = sum(1 for item in inside_switches if _classify_switch_by_devref(item) == "T")
 
         warnings: list[str] = []
-        # 名称是主判断。仅当该类名称一个都没有时，才退回设备图元判断。
-        l_count = y_count if y_count > 0 else device_l
-        t_count = q_count if q_count > 0 else device_t
-        if y_count == 0 and device_l:
-            warnings.append(f"未识别到 Y 名称，L 使用设备图元回退计数 {device_l}")
-        if q_count == 0 and device_t:
-            warnings.append(f"未识别到 Q 名称，T 使用设备图元回退计数 {device_t}")
-        if y_count and device_l and y_count != device_l:
-            warnings.append(f"Y 名称 {y_count} 个，与 L 图元 {device_l} 个不一致；柜型按 Y 名称计数")
-        if q_count and device_t and q_count != device_t:
-            warnings.append(f"Q 名称 {q_count} 个，与 T 图元 {device_t} 个不一致；柜型按 Q 名称计数")
+        y_sequence_ok = _label_sequence_ok(y_labels, "Y")
+        q_sequence_ok = _label_sequence_ok(q_labels, "Q")
+        if not y_sequence_ok:
+            warnings.append("柜内 Y 标签不是从 Y1 开始连续递增")
+        if not q_sequence_ok:
+            warnings.append("柜内 Q 标签不是从 Q1 开始连续递增")
+
+        text_yq_type = _type_string(y_count, q_count)
+        devref_type = _type_string(devref_l, devref_t)
+
+        # 最终柜型仍以 Y/Q 文字为主；某一类文字完全缺失时，才使用 devref 对应类别补齐。
+        l_count = y_count if y_count > 0 else devref_l
+        t_count = q_count if q_count > 0 else devref_t
+        if y_count == 0 and devref_l:
+            warnings.append(f"未识别到 Y 名称，L 使用 devref 图元文件名回退计数 {devref_l}")
+        if q_count == 0 and devref_t:
+            warnings.append(f"未识别到 Q 名称，T 使用 devref 图元文件名回退计数 {devref_t}")
+
+        if y_count and q_count:
+            type_source = "TEXT_YQ"
+        elif (y_count or q_count) and (devref_l or devref_t):
+            type_source = "TEXT_YQ+DEVREF_FALLBACK"
+        elif devref_l or devref_t:
+            type_source = "DEVREF"
+        else:
+            type_source = "UNKNOWN"
+
+        if text_yq_type and devref_type:
+            if text_yq_type == devref_type and y_sequence_ok and q_sequence_ok:
+                type_cross_check = "YES"
+                type_validation_status = "PASS"
+                type_cross_note = f"Y/Q={text_yq_type}，devref={devref_type}，两种识别结果一致"
+            else:
+                type_cross_check = "NO"
+                type_validation_status = "FAIL"
+                details: list[str] = []
+                if text_yq_type != devref_type:
+                    details.append(f"Y/Q={text_yq_type} 与 devref={devref_type} 不一致")
+                if not y_sequence_ok:
+                    details.append("Y 标签序号不连续")
+                if not q_sequence_ok:
+                    details.append("Q 标签序号不连续")
+                type_cross_note = "；".join(details) or "柜型交叉校验失败"
+                warnings.append(type_cross_note)
+        elif text_yq_type:
+            type_cross_check = "N/A"
+            type_validation_status = "WARN"
+            type_cross_note = f"仅识别到 Y/Q 文字类型 {text_yq_type}，devref 信息不足，无法双源交叉校验"
+            warnings.append(type_cross_note)
+        elif devref_type:
+            type_cross_check = "N/A"
+            type_validation_status = "WARN"
+            type_cross_note = f"仅识别到 devref 类型 {devref_type}，Y/Q 文字不足，使用 devref 回退"
+            warnings.append(type_cross_note)
+        else:
+            type_cross_check = "NO"
+            type_validation_status = "FAIL"
+            type_cross_note = "Y/Q 文字和 devref 均无法识别柜型"
+            warnings.append(type_cross_note)
 
         name, position, confidence, name_warnings = name_assignments.get(
             rect_key, ("", "", "未识别", [])
@@ -433,12 +531,20 @@ def identify_rmus(
         warnings.extend(name_warnings)
 
         smart_count = 0
+        smart_source = ""
         if smart_in_type:
             smart_text = any((item.get("ts") or "").strip().upper() == "SMART" for item in inside_texts)
             smart_device = any(_is_smart_device(item) for item in inside_switches)
-            smart_count = 1 if smart_text or smart_device else 0
+            smr_text = rect_key in smr_rect_keys
+            sources: list[str] = []
+            if smart_text or smart_device:
+                sources.append("SMART")
+            if smr_text:
+                sources.append("SMR")
+            smart_source = " + ".join(sources)
+            smart_count = 1 if sources else 0
 
-        rmu_type = f"{l_count}L{t_count}T"
+        rmu_type = _type_string(l_count, t_count)
         if warnings and confidence == "高":
             confidence = "中"
 
@@ -450,6 +556,13 @@ def identify_rmus(
             l_count=l_count,
             t_count=t_count,
             smart_count=smart_count,
+            smart_source=smart_source,
+            type_source=type_source,
+            text_yq_type=text_yq_type,
+            devref_type=devref_type,
+            type_cross_check=type_cross_check,
+            type_validation_status=type_validation_status,
+            type_cross_note=type_cross_note,
             confidence=confidence,
             rect_x=rect_box.left,
             rect_y=rect_box.top,

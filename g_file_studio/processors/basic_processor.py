@@ -17,6 +17,7 @@ from g_file_studio.models import (
     BasicSettings,
     ProcessingResult,
     RmuAction,
+    RmuLedgerInputMode,
 )
 from g_file_studio.processors.common import LogCallback, ProgressCallback, discover_g_inputs, enforce_confirmed_id_rules
 from g_file_studio.services.output_naming import (
@@ -24,9 +25,125 @@ from g_file_studio.services.output_naming import (
     marked_output_name,
     strip_g_suffix,
 )
+from g_file_studio.services.html_report_selection import selection_bar, selection_cell, selection_header, selection_script, selection_style
+from g_file_studio.services.rmu_ledger_service import (
+    GraphicRmuRow,
+    compare_ledger,
+    load_ledger_file,
+    parse_name_list,
+    parse_pasted_table,
+    write_comparison_reports,
+)
 
 REFERENCE_LIST_ATTRIBUTES = ("link", "node_area")
 REFERENCE_SINGLE_ATTRIBUTES = ("p_FatherObjId",)
+
+
+def _write_rmu_processing_report(output_dir: Path, rows: list[dict[str, object]]) -> tuple[Path, Path]:
+    """Write one fixed RMU graphic-processing report for the latest run."""
+    from html import escape
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "rmu-graphic-processing-report.csv"
+    html_path = output_dir / "rmu-graphic-processing-report.html"
+    headers = [
+        "File", "Action", "RMURectCount", "GroupedCount", "UngroupedCount",
+        "SmartMatched", "SmartChanged", "SmrTextCount", "SmrMatched", "SmrChanged",
+        "ChannelStatusFound", "ChannelStatusMoved", "BusFrameRemoved", "TitleMoved", "Warnings",
+    ]
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(headers)
+        for row in rows:
+            writer.writerow([row.get(h, "") for h in headers])
+
+    body = []
+    for row in rows:
+        cells = "".join(f"<td>{escape(str(row.get(h, '')))}</td>" for h in headers)
+        body.append("<tr>" + selection_cell() + cells + "</tr>")
+    html_path.write_text(
+        "<!doctype html><html><head><meta charset='utf-8'><title>环网柜图元处理报告</title>"
+        "<style>body{font-family:Segoe UI,Microsoft YaHei,sans-serif;margin:24px;color:#1f2937}"
+        "table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #d1d5db;padding:6px 8px;text-align:left}"
+        "th{background:#e8f3ef;position:sticky;top:0}" + selection_style() + "</style></head><body>"
+        "<h2>环网柜图元处理报告</h2><p>本报告记录本次启用的环网柜图元操作；再次执行会覆盖上一份同类报告。</p>"
+        + selection_bar() + "<table><thead><tr>" + selection_header()
+        + "".join(f"<th>{escape(h)}</th>" for h in headers)
+        + "</tr></thead><tbody>" + "".join(body) + "</tbody></table>"
+        + selection_script() + "</body></html>",
+        encoding="utf-8",
+    )
+    return csv_path, html_path
+
+
+def _write_rmu_summary_reports(
+    output_dir: Path, rows: list[GraphicRmuRow], *, intelligent_classification_enabled: bool = True
+) -> tuple[Path, Path]:
+    """Write one aggregate fixed RMU information summary report for the latest run."""
+    from html import escape
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "rmu-summary-report.csv"
+    html_path = output_dir / "rmu-summary-report.html"
+    headers = [
+        "File", "RMUName", "RMUType", "IntelligentRMU", "IntelligentSource",
+        "Confidence", "Duplicate", "RectID", "RectX", "RectY", "RectW", "RectH", "Warnings",
+    ]
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(headers)
+        for row in rows:
+            writer.writerow([
+                row.file_name, row.name, row.rmu_type, row.intelligent, row.intelligent_source,
+                row.confidence, row.duplicate, row.rect_id, row.rect_x, row.rect_y, row.rect_w, row.rect_h, row.warnings,
+            ])
+
+    def row_class(row: GraphicRmuRow) -> str:
+        if row.duplicate == "YES" or not row.name or not row.rmu_type:
+            return "bad"
+        if row.confidence not in {"高", "HIGH", "High"}:
+            return "warn"
+        return "good"
+
+    body = []
+    for row in rows:
+        vals = [
+            row.file_name, row.name, row.rmu_type, row.intelligent, row.intelligent_source,
+            row.confidence, row.duplicate, row.rect_id, row.rect_x, row.rect_y, row.rect_w, row.rect_h, row.warnings,
+        ]
+        body.append(
+            f"<tr class='{row_class(row)}'>" + selection_cell()
+            + "".join(f"<td>{escape(str(v))}</td>" for v in vals) + "</tr>"
+        )
+    total = len(rows)
+    duplicates = sum(1 for row in rows if row.duplicate == "YES")
+    intelligent = sum(1 for row in rows if row.intelligent == "YES")
+    ordinary = sum(1 for row in rows if row.intelligent == "NO") if intelligent_classification_enabled else 0
+    unnamed = sum(1 for row in rows if not row.name)
+    untyped = sum(1 for row in rows if not row.rmu_type or row.rmu_type == "0L0T")
+    warning_rows = sum(1 for row in rows if row.confidence not in {"高", "HIGH", "High"} and row.name and row.rmu_type and row.duplicate != "YES")
+    html_path.write_text(
+        "<!doctype html><html><head><meta charset='utf-8'><title>RMU 信息汇总报告</title>"
+        "<style>body{font-family:Segoe UI,Microsoft YaHei,sans-serif;margin:24px;color:#1f2937}"
+        ".summary{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}.badge{padding:7px 10px;border:1px solid #cbd5e1;border-radius:6px}"
+        "table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #d1d5db;padding:6px 8px;text-align:left}"
+        "th{background:#e8f3ef;position:sticky;top:0}tr.good td{background:#dcfce7}tr.warn td{background:#fef9c3}tr.bad td{background:#fee2e2}"
+        + selection_style() + "</style></head><body><h2>RMU 信息汇总报告</h2>"
+        f"<div class='summary'><div class='badge'>RMU 总数：<b>{total}</b></div>"
+        + (f"<div class='badge'>智能环网柜：<b>{intelligent}</b></div><div class='badge'>普通环网柜：<b>{ordinary}</b></div>" if intelligent_classification_enabled else "<div class='badge'>智能分类：<b>未启用</b></div>")
+        + f"<div class='badge'>重复名称/ID 行：<b>{duplicates}</b></div>"
+        + f"<div class='badge'>名称未识别：<b>{unnamed}</b></div>"
+        + f"<div class='badge'>柜型未识别：<b>{untyped}</b></div>"
+        + f"<div class='badge'>中/低置信度待确认：<b>{warning_rows}</b></div></div>"
+        "<p>绿色=高置信度且完整；黄色=需要确认；红色=重复、名称/柜型未识别。</p>"
+        + selection_bar() + "<table><thead><tr>" + selection_header()
+        + "".join(f"<th>{escape(h)}</th>" for h in headers)
+        + "</tr></thead><tbody>" + "".join(body) + "</tbody></table>"
+        + selection_script() + "</body></html>",
+        encoding="utf-8",
+    )
+    return csv_path, html_path
+
 
 
 def _local_name(tag: object) -> str:
@@ -123,6 +240,15 @@ def _validate_rules(settings: BasicSettings) -> None:
     )):
         raise ValueError("启用环网柜名称与柜型识别后，柜名位置至少选择一个方向。")
 
+    if settings.compare_rmu_ledger and not settings.identify_rmu_name_and_type:
+        raise ValueError("启用 RMU 台账对比前，必须先启用 RMU 信息汇总。")
+    if settings.compare_rmu_ledger:
+        if settings.rmu_ledger_input_mode == RmuLedgerInputMode.FILE:
+            if settings.rmu_ledger_file is None:
+                raise ValueError("请选择 RMU 台账 Excel/CSV 文件。")
+        elif not settings.rmu_ledger_text.strip():
+            raise ValueError("RMU 台账输入内容不能为空。")
+
     if settings.upgrade_icon_geometry:
         analysis = analyze_icon_pairs(settings.old_icon_files, settings.new_icon_files)
         problems: list[str] = []
@@ -148,8 +274,8 @@ def _write_smr_frame_reports(output_dir: Path, rows: list[dict[str, object]]) ->
     trs=[]
     for row in rows:
         cells="".join("<td>%s</td>" % escape(str(row.get(h,""))) for h in headers)
-        trs.append("<tr>%s</tr>" % cells)
-    html = "<!doctype html><html><head><meta charset='utf-8'><title>RMU SMR 外框处理报告</title></head><body><h2>RMU SMR 外框处理报告</h2><p>本报告每次执行覆盖上一份同类报告。</p><table border='1'><tr>" + "".join("<th>%s</th>" % escape(h) for h in headers) + "</tr>" + "".join(trs) + "</table></body></html>"
+        trs.append("<tr>%s%s</tr>" % (selection_cell(), cells))
+    html = ("<!doctype html><html><head><meta charset='utf-8'><title>RMU SMR 外框处理报告</title><style>" + selection_style() + "table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:left}</style></head><body><h2>RMU SMR 外框处理报告</h2><p>本报告每次执行覆盖上一份同类报告。</p>" + selection_bar() + "<table><thead><tr>" + selection_header() + "".join("<th>%s</th>" % escape(h) for h in headers) + "</tr></thead><tbody>" + "".join(trs) + "</tbody></table>" + selection_script() + "</body></html>")
     html_path.write_text(html, encoding="utf-8")
     return csv_path, html_path
 
@@ -267,7 +393,9 @@ def _write_rmu_csv(output_path: Path, identification) -> Path:
     with csv_path.open("w", encoding="utf-8-sig", newline="") as stream:
         writer = csv.writer(stream)
         writer.writerow([
-            "CabinetName", "CabinetType", "LCount", "TCount", "SMART",
+            "CabinetName", "CabinetType", "TypeSource", "TextYQType", "DevrefType",
+            "TypeCrossCheck", "TypeValidationStatus", "TypeCrossNote",
+            "LCount", "TCount", "IntelligentRMU", "IntelligentSource",
             "NamePosition", "Confidence", "Duplicate", "RectID",
             "RectX", "RectY", "RectW", "RectH", "Warnings",
         ])
@@ -275,7 +403,10 @@ def _write_rmu_csv(output_path: Path, identification) -> Path:
             name_key = (item.name or "").strip().casefold()
             duplicate = "YES" if name_key and name_key in duplicates else "NO"
             writer.writerow([
-                item.name, item.rmu_type, item.l_count, item.t_count, item.smart_count,
+                item.name, item.rmu_type, getattr(item, "type_source", ""), getattr(item, "text_yq_type", ""),
+                getattr(item, "devref_type", ""), getattr(item, "type_cross_check", "N/A"),
+                getattr(item, "type_validation_status", "WARN"), getattr(item, "type_cross_note", ""),
+                item.l_count, item.t_count, item.smart_count, getattr(item, "smart_source", ""),
                 item.name_position, item.confidence, duplicate, item.rect_id,
                 f"{item.rect_x:g}", f"{item.rect_y:g}", f"{item.rect_w:g}", f"{item.rect_h:g}",
                 " | ".join(item.warnings),
@@ -305,18 +436,26 @@ def _write_rmu_html(output_path: Path, identification) -> Path:
         1 for item in identification.items
         if (item.name or "").strip() and (item.name or "").strip().casefold() in duplicates
     )
+    type_pass_count = sum(1 for item in identification.items if getattr(item, "type_validation_status", "") == "PASS")
+    type_warn_count = sum(1 for item in identification.items if getattr(item, "type_validation_status", "") == "WARN")
+    type_fail_count = sum(1 for item in identification.items if getattr(item, "type_validation_status", "") == "FAIL")
 
     def row_class(item) -> str:
         key = (item.name or "").strip().casefold()
-        if (key and key in duplicates) or not item.name or item.confidence == "未识别":
+        type_status = getattr(item, "type_validation_status", "WARN")
+        if (key and key in duplicates) or not item.name or item.confidence == "未识别" or type_status == "FAIL":
             return "bad"
+        if type_status == "WARN" or item.confidence in {"中", "待确认"}:
+            return "medium"
         if item.confidence == "高":
             return "high"
         return "medium"
 
     headers = [
-        "CabinetName", "CabinetType", "LCount", "TCount", "SMART",
-        "NamePosition", "Confidence", "Duplicate", "RectID",
+        "环网柜名称", "环网柜类型", "类型识别来源", "柜内Y/Q文字类型", "devref类型",
+        "类型交叉校验", "柜型校验状态", "柜型交叉校验说明",
+        "L数量", "T数量", "智能环网柜", "智能标识来源",
+        "柜名位置", "识别置信度", "是否重复", "RectID",
         "RectX", "RectY", "RectW", "RectH", "Warnings",
     ]
     rows: list[str] = []
@@ -324,13 +463,16 @@ def _write_rmu_html(output_path: Path, identification) -> Path:
         key = (item.name or "").strip().casefold()
         duplicate = "YES" if key and key in duplicates else "NO"
         values = [
-            item.name, item.rmu_type, str(item.l_count), str(item.t_count), str(item.smart_count),
+            item.name, item.rmu_type, getattr(item, "type_source", ""), getattr(item, "text_yq_type", ""),
+            getattr(item, "devref_type", ""), getattr(item, "type_cross_check", "N/A"),
+            getattr(item, "type_validation_status", "WARN"), getattr(item, "type_cross_note", ""),
+            str(item.l_count), str(item.t_count), str(item.smart_count), getattr(item, "smart_source", ""),
             item.name_position, item.confidence, duplicate, item.rect_id,
             f"{item.rect_x:g}", f"{item.rect_y:g}", f"{item.rect_w:g}", f"{item.rect_h:g}",
             " | ".join(item.warnings),
         ]
         cells = "".join(f"<td>{escape(value)}</td>" for value in values)
-        rows.append(f'<tr class="{row_class(item)}">{cells}</tr>')
+        rows.append(f'<tr class="{row_class(item)}">{selection_cell()}{cells}</tr>')
 
     duplicate_list: list[str] = []
     for key in sorted(duplicates):
@@ -347,7 +489,7 @@ def _write_rmu_html(output_path: Path, identification) -> Path:
 <html lang=\"zh-CN\">
 <head>
 <meta charset=\"utf-8\">
-<title>{escape(stem)} 环网柜识别报告</title>
+<title>{escape(stem)} RMU 信息汇总报告</title>
 <style>
 body {{ font-family: \"Microsoft YaHei\", Arial, sans-serif; margin: 24px; color: #1f2937; }}
 h1 {{ margin: 0 0 16px; font-size: 24px; }}
@@ -360,10 +502,11 @@ th {{ background: #e2e8f0; position: sticky; top: 0; }}
 tr.high td {{ background: #dcfce7; }}
 tr.medium td {{ background: #fef9c3; }}
 tr.bad td {{ background: #fee2e2; }}
+{selection_style()}
 </style>
 </head>
 <body>
-<h1>环网柜名称与柜型识别报告</h1>
+<h1>RMU 信息汇总报告</h1>
 <div class=\"summary\">
   <div class=\"badge\">总环网柜：<b>{len(identification.items)}</b></div>
   <div class=\"badge\">柜名成功：<b>{identification.named_count}</b></div>
@@ -374,10 +517,12 @@ tr.bad td {{ background: #fee2e2; }}
   <div class=\"badge\">重复柜名/ID：<b>{len(duplicates)}</b> 个（涉及 {duplicate_row_count} 行）</div>
 </div>
 <div class=\"note\">颜色：绿色=高置信度；黄色=中等/待确认；红色=未识别或柜名/环网柜 ID 重复。重复项：{duplicate_text}</div>
+{selection_bar()}
 <table>
-<thead><tr>{header_cells}</tr></thead>
+<thead><tr>{selection_header()}{header_cells}</tr></thead>
 <tbody>{body_rows}</tbody>
 </table>
+{selection_script()}
 </body>
 </html>
 """
@@ -463,6 +608,19 @@ def process_basic(
     total_rmu_typed = 0
     total_rmu_ambiguous = 0
     total_rmu_csv = 0
+    rmu_graphic_rows: list[GraphicRmuRow] = []
+    rmu_processing_rows: list[dict[str, object]] = []
+    ledger_rows = []
+    if settings.compare_rmu_ledger:
+        if settings.rmu_ledger_input_mode == RmuLedgerInputMode.FILE:
+            ledger_rows = load_ledger_file(settings.rmu_ledger_file)
+        elif settings.rmu_ledger_input_mode == RmuLedgerInputMode.PASTE_TABLE:
+            ledger_rows = parse_pasted_table(settings.rmu_ledger_text)
+        else:
+            ledger_rows = parse_name_list(settings.rmu_ledger_text)
+        if not ledger_rows:
+            raise ValueError("RMU 台账没有解析到任何有效名称。")
+        log(f"[RMU台账] 已读取 {len(ledger_rows)} 条台账记录，输入方式：{settings.rmu_ledger_input_mode.value}。")
 
     if settings.output_conflict_action == BasicOutputConflictAction.TIMESTAMP:
         log(f"[输出策略] 检测到输出冲突，本批文件统一自动添加时间戳 {timestamp}。")
@@ -512,9 +670,26 @@ def process_basic(
                     position_label = {"top": "上方", "bottom": "下方", "left": "左侧", "right": "右侧"}.get(item.name_position, item.name_position or "-")
                     log(
                         f"  - rect {item.rect_id or '<无ID>'}：柜名 {name}（{position_label}），"
-                        f"类型 {item.rmu_type}，L={item.l_count}，T={item.t_count}，SMART={item.smart_count}，"
+                        f"类型 {item.rmu_type}，L={item.l_count}，T={item.t_count}，智能={item.smart_count}（{item.smart_source or "-"}），"
                         f"置信度 {item.confidence}。"
                     )
+                if settings.identify_rmu_name_and_type:
+                    _, duplicate_names = _rmu_duplicate_names(rmu_identification)
+                    for item in rmu_identification.items:
+                        name_key = (item.name or "").strip().casefold()
+                        rmu_graphic_rows.append(GraphicRmuRow(
+                            file_name=input_path.name,
+                            name=(item.name or "").strip(),
+                            rmu_type=(item.rmu_type or "").strip(),
+                            intelligent=("YES" if bool(item.smart_count) else "NO") if settings.rmu_smart_in_type else "",
+                            intelligent_source=(getattr(item, "smart_source", "") or "") if settings.rmu_smart_in_type else "",
+                            confidence=item.confidence or "",
+                            duplicate="YES" if name_key and name_key in duplicate_names else "NO",
+                            rect_id=item.rect_id or "",
+                            rect_x=f"{item.rect_x:g}", rect_y=f"{item.rect_y:g}",
+                            rect_w=f"{item.rect_w:g}", rect_h=f"{item.rect_h:g}",
+                            warnings=" | ".join(item.warnings),
+                        ))
                 for warning in rmu_identification.warnings:
                     log(f"[环网柜识别告警] {input_path.name}：{warning}")
 
@@ -546,11 +721,33 @@ def process_basic(
                 for warning in icon_result.warnings:
                     log(f"[图元版本升级告警] {input_path.name}：{warning}")
 
+            rmu_processing_row = {
+                "File": input_path.name,
+                "Action": rmu_action.value,
+                "RMURectCount": 0,
+                "GroupedCount": 0,
+                "UngroupedCount": 0,
+                "SmartMatched": 0,
+                "SmartChanged": 0,
+                "SmrTextCount": 0,
+                "SmrMatched": 0,
+                "SmrChanged": 0,
+                "ChannelStatusFound": 0,
+                "ChannelStatusMoved": 0,
+                "BusFrameRemoved": 0,
+                "TitleMoved": 0,
+                "Warnings": "",
+            }
+            rmu_processing_warnings: list[str] = []
+
             if rmu_action == RmuAction.GROUP:
                 grouping = group_rmu_tree(tree, input_path)
                 total_rects += grouping.rect_count
                 total_rmu_groups += grouping.rebuilt_group_count
                 total_rmu_members += grouping.grouped_member_count
+                rmu_processing_row["RMURectCount"] = grouping.rect_count
+                rmu_processing_row["GroupedCount"] = grouping.rebuilt_group_count
+                rmu_processing_warnings.extend(grouping.warnings)
                 log(
                     f"[环网柜组合] {input_path.name}：发现 <rect> {grouping.rect_count} 个，"
                     f"原环网柜 Merge {grouping.previous_rmu_merge_count} 个，保留其他业务 Merge "
@@ -573,6 +770,8 @@ def process_basic(
                 total_rmu_ungrouped += ungrouping.removed_rmu_merge_count
                 total_rmu_released_members += ungrouping.released_member_count
                 total_rmu_lowered_rects += ungrouping.lowered_rect_count
+                rmu_processing_row["UngroupedCount"] = ungrouping.removed_rmu_merge_count
+                rmu_processing_warnings.extend(ungrouping.warnings)
                 log(
                     f"[取消环网柜组合] {input_path.name}：删除环网柜 Merge "
                     f"{ungrouping.removed_rmu_merge_count} 个，释放成员 "
@@ -623,6 +822,16 @@ def process_basic(
                 total_channel_status_missing += enhancement.channel_status_missing_count
                 total_bus_rect_removed += enhancement.bus_rect_removed
                 total_bus_title_moved += enhancement.bus_title_moved
+                rmu_processing_row["SmartMatched"] = enhancement.smart_rmu_rect_count
+                rmu_processing_row["SmartChanged"] = enhancement.smart_frame_color_changed
+                rmu_processing_row["SmrTextCount"] = enhancement.smr_text_count
+                rmu_processing_row["SmrMatched"] = enhancement.smr_matched_rect_count
+                rmu_processing_row["SmrChanged"] = enhancement.smr_frame_color_changed
+                rmu_processing_row["ChannelStatusFound"] = enhancement.channel_status_found_count
+                rmu_processing_row["ChannelStatusMoved"] = enhancement.channel_status_moved_count
+                rmu_processing_row["BusFrameRemoved"] = enhancement.bus_rect_removed
+                rmu_processing_row["TitleMoved"] = enhancement.bus_title_moved
+                rmu_processing_warnings.extend(enhancement.warnings)
                 if settings.change_smart_rmu_frame_color:
                     log(
                         f"[SMART环网柜外框颜色] {input_path.name}：识别框内含 SMART 的环网柜 "
@@ -650,6 +859,16 @@ def process_basic(
                     )
                 for warning in enhancement.warnings:
                     log(f"[环网柜增强告警] {warning}")
+
+            if (
+                rmu_action != RmuAction.NONE
+                or settings.change_smart_rmu_frame_color
+                or settings.change_smr_rmu_frame_color
+                or settings.reposition_channel_status
+                or settings.remove_bus_rmu_frame_and_reposition_title
+            ):
+                rmu_processing_row["Warnings"] = " | ".join(rmu_processing_warnings)
+                rmu_processing_rows.append(rmu_processing_row)
 
             if settings.move_feeder_titles_above_bus:
                 feeder_titles = move_feeder_titles_above_buses(tree, input_path)
@@ -762,10 +981,40 @@ def process_basic(
         if progress:
             progress(round(index * 100 / len(files)))
 
+    rmu_graphic_report_csv = None
+    rmu_graphic_report_html = None
+    if rmu_processing_rows:
+        rmu_graphic_report_csv, rmu_graphic_report_html = _write_rmu_processing_report(settings.output_dir, rmu_processing_rows)
+        log(f"[环网柜图元处理报告] CSV：{rmu_graphic_report_csv}；HTML：{rmu_graphic_report_html}（覆盖上一份同类报告）。")
+
+    rmu_summary_report_csv = None
+    rmu_summary_report_html = None
+    if settings.identify_rmu_name_and_type:
+        rmu_summary_report_csv, rmu_summary_report_html = _write_rmu_summary_reports(
+            settings.output_dir, rmu_graphic_rows,
+            intelligent_classification_enabled=settings.rmu_smart_in_type,
+        )
+        log(f"[RMU信息汇总报告] CSV：{rmu_summary_report_csv}；HTML：{rmu_summary_report_html}（覆盖上一份同类报告）。")
+
     if settings.change_smr_rmu_frame_color:
         csv_report, html_report = _write_smr_frame_reports(settings.output_dir, smr_report_rows)
         outputs.extend([csv_report, html_report])
         log(f"[SMR环网柜报告] CSV：{csv_report}；HTML：{html_report}（覆盖上一份同类报告）。")
+
+    ledger_stats = {}
+    ledger_csv = None
+    ledger_html = None
+    if settings.compare_rmu_ledger:
+        comparison_rows, ledger_stats = compare_ledger(ledger_rows, rmu_graphic_rows)
+        ledger_csv, ledger_html = write_comparison_reports(settings.output_dir, comparison_rows, ledger_stats)
+        outputs.extend([ledger_csv, ledger_html])
+        log(
+            f"[RMU台账对比] 台账 {ledger_stats['ledger_count']} 条，图形 {ledger_stats['graphic_count']} 个；"
+            f"完全一致 {ledger_stats['matched_count']}，柜型不一致 {ledger_stats['type_mismatch_count']}，"
+            f"智能属性不一致 {ledger_stats['intelligent_mismatch_count']}，图形缺失 {ledger_stats['graphic_missing_count']}，"
+            f"台账缺失 {ledger_stats['ledger_missing_count']}。"
+        )
+        log(f"[RMU台账对比] 报告：{ledger_csv.name}；{ledger_html.name}（覆盖上一份同类报告）。")
 
     summary = (
         f"[基础处理汇总] 输入 {len(files)} 个文件，成功 {len(outputs)} 个，失败 {len(failed)} 个；"
@@ -782,6 +1031,12 @@ def process_basic(
         summary += (
             f"；环网柜识别 {total_rmu_identified} 个、柜名成功 {total_rmu_named} 个、"
             f"柜型成功 {total_rmu_typed} 个、待确认 {total_rmu_ambiguous} 个、导出 CSV/HTML 报告 {total_rmu_csv} 份"
+        )
+    if settings.compare_rmu_ledger and ledger_stats:
+        summary += (
+            f"；RMU台账 {ledger_stats['ledger_count']} 条，对比完全一致 {ledger_stats['matched_count']} 条，"
+            f"柜型不一致 {ledger_stats['type_mismatch_count']} 条，智能属性不一致 {ledger_stats['intelligent_mismatch_count']} 条，"
+            f"图形缺失 {ledger_stats['graphic_missing_count']} 条，台账缺失 {ledger_stats['ledger_missing_count']} 条"
         )
     if settings.upgrade_icon_geometry:
         summary += (
@@ -852,6 +1107,16 @@ def process_basic(
             "rmu_typed_count": total_rmu_typed,
             "rmu_ambiguous_name_count": total_rmu_ambiguous,
             "rmu_csv_count": total_rmu_csv,
+            "rmu_ledger_compare_enabled": settings.compare_rmu_ledger,
+            "rmu_ledger_count": ledger_stats.get("ledger_count", 0),
+            "rmu_ledger_matched_count": ledger_stats.get("matched_count", 0),
+            "rmu_ledger_type_mismatch_count": ledger_stats.get("type_mismatch_count", 0),
+            "rmu_ledger_intelligent_mismatch_count": ledger_stats.get("intelligent_mismatch_count", 0),
+            "rmu_ledger_graphic_missing_count": ledger_stats.get("graphic_missing_count", 0),
+            "rmu_ledger_missing_count": ledger_stats.get("ledger_missing_count", 0),
+            "rmu_graphic_processing_report_html": str(rmu_graphic_report_html or ""),
+            "rmu_summary_report_html": str(rmu_summary_report_html or ""),
+            "rmu_ledger_report_html": str(ledger_html or ""),
             "icon_upgrade_enabled": settings.upgrade_icon_geometry,
             "icon_upgrade_rule_count": len(icon_rules),
             "icon_upgraded_instance_count": total_icon_upgraded_instances,

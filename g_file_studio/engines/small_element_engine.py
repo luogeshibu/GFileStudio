@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Iterable
 
 from g_file_studio.services.output_naming import make_task_timestamp
+from g_file_studio.services.html_report_selection import selection_bar, selection_cell, selection_header, selection_script, selection_style
 
 TARGET_TAGS = {"ConnectLine", "FeedLine", "Bus", "BusDis"}
 REFERENCE_LIST_ATTRIBUTES = ("link", "node_area")
@@ -95,6 +96,7 @@ def write_reports(
     threshold: int,
     timestamp: str | None = None,
     report_kind: str = "scan",
+    processed_keys: set[tuple[str, str, int, str]] | None = None,
 ) -> tuple[Path, Path]:
     """Write the current report, overwriting the previous report of the same kind.
 
@@ -106,41 +108,67 @@ def write_reports(
     base = "small-element-scan-report" if report_kind == "scan" else "small-element-process-report"
     csv_path = output_dir / f"{base}.csv"
     html_path = output_dir / f"{base}.html"
+    is_process = report_kind == "process"
     headers = ["File", "ElementType", "XMLID", "X", "Y", "W", "H", "KeyID", "Reason"]
+    if is_process:
+        headers.extend(["Selected", "ProcessResult"])
+    if is_process and processed_keys is None:
+        processed_keys = {
+            (str(item.file_path), item.element_type, item.ordinal, item.xml_id)
+            for item in issues
+        }
     with csv_path.open("w", encoding="utf-8-sig", newline="") as stream:
         writer = csv.writer(stream)
         writer.writerow(headers)
         for item in issues:
-            writer.writerow([
+            values = [
                 item.file_name, item.element_type, item.xml_id, item.x, item.y,
                 item.w, item.h, item.keyid,
                 f"w<{threshold} 且 h<{threshold}",
-            ])
+            ]
+            if is_process:
+                key = (str(item.file_path), item.element_type, item.ordinal, item.xml_id)
+                selected = key in (processed_keys or set())
+                values.extend(["YES" if selected else "NO", "已删除" if selected else "未处理"])
+            writer.writerow(values)
 
     rows = []
     for item in issues:
         key_class = " keyid" if item.keyid else ""
+        key = (str(item.file_path), item.element_type, item.ordinal, item.xml_id)
+        was_processed = is_process and key in (processed_keys or set())
+        row_class = "processed" if was_processed else ("unprocessed" if is_process else ("issue keyid" if item.keyid else "issue"))
+        values = [
+            item.file_name, item.element_type, item.xml_id, item.x, item.y,
+            item.w, item.h, item.keyid, f"w<{threshold} 且 h<{threshold}",
+        ]
+        if is_process:
+            values.extend(["YES" if was_processed else "NO", "已删除" if was_processed else "未处理"])
         rows.append(
-            "<tr class='issue%s'>" % key_class
-            + "".join(
-                f"<td>{html.escape(str(v))}</td>"
-                for v in [
-                    item.file_name, item.element_type, item.xml_id, item.x, item.y,
-                    item.w, item.h, item.keyid, f"w<{threshold} 且 h<{threshold}",
-                ]
-            )
+            f"<tr class='{row_class}'>"
+            + selection_cell()
+            + "".join(f"<td>{html.escape(str(v))}</td>" for v in values)
             + "</tr>"
         )
     html_path.write_text(
-        "<!doctype html><html><head><meta charset='utf-8'><title>异常小尺寸图元检测报告</title>"
+        "<!doctype html><html><head><meta charset='utf-8'><title>" + ("异常小尺寸图元处理报告" if is_process else "异常小尺寸图元检测报告") + "</title>"
         "<style>body{font-family:Segoe UI,Microsoft YaHei,sans-serif;margin:24px;color:#1f2937}"
         "table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #d1d5db;padding:6px 8px;text-align:left}"
         "th{background:#e8f3ef}.issue{background:#fff2f2}.issue.keyid{background:#ffd7d7;font-weight:600}"
-        ".summary{margin:12px 0;padding:10px;background:#f3f7f5;border-left:4px solid #12815f}</style></head><body>"
-        f"<h2>异常小尺寸图元检测报告</h2><div class='summary'>生成时间：{html.escape(stamp)}；阈值：w &lt; {threshold} 且 h &lt; {threshold}；异常数量：{len(issues)}；带 keyid：{sum(1 for x in issues if x.keyid)}</div>"
-        "<table><thead><tr>" + "".join(f"<th>{html.escape(h)}</th>" for h in headers) + "</tr></thead><tbody>"
+        ".processed{background:#e8f7ee}.processed td:last-child{color:#087443;font-weight:700;background:#ccefd9}.unprocessed{background:#ffffff}.unprocessed td:last-child{color:#475569;font-weight:600}"
+        ".summary{margin:12px 0;padding:10px;background:#f3f7f5;border-left:4px solid #12815f}" + selection_style() + "</style></head><body>"
+        f"<h2>{'异常小尺寸图元处理报告' if is_process else '异常小尺寸图元检测报告'}</h2>"
+        + (
+            f"<div class='summary'>原始异常图元：{len(issues)}；本次选择：{sum(1 for x in issues if (str(x.file_path), x.element_type, x.ordinal, x.xml_id) in (processed_keys or set()))}；"
+            f"已删除：{sum(1 for x in issues if (str(x.file_path), x.element_type, x.ordinal, x.xml_id) in (processed_keys or set()))}；"
+            f"未处理：{sum(1 for x in issues if (str(x.file_path), x.element_type, x.ordinal, x.xml_id) not in (processed_keys or set()))}；"
+            f"带 keyid：{sum(1 for x in issues if x.keyid)}。绿色=本次已删除；白色=本次未处理。</div>"
+            if is_process else
+            f"<div class='summary'>生成时间：{html.escape(stamp)}；阈值：w &lt; {threshold} 且 h &lt; {threshold}；异常数量：{len(issues)}；带 keyid：{sum(1 for x in issues if x.keyid)}</div>"
+        )
+        + selection_bar() + "<table><thead><tr>" + selection_header() + "".join(f"<th>{html.escape(h)}</th>" for h in headers) + "</tr></thead><tbody>"
         + "".join(rows)
-        + "</tbody></table></body></html>",
+        + "</tbody></table>" + selection_script() + "</body></html>",
         encoding="utf-8",
     )
     return csv_path, html_path

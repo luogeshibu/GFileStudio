@@ -65,7 +65,6 @@ class SmallElementPage(BasePage):
         self.user_settings = user_settings
         self.issues: list[SmallElementIssue] = []
         self.all_issues: list[SmallElementIssue] = []
-        self.processed_issues: list[SmallElementIssue] = []
         self.last_html_report: Path | None = None
         self.last_csv_report: Path | None = None
         help_title, help_html = APP_HELP["small_elements"]
@@ -144,8 +143,8 @@ class SmallElementPage(BasePage):
 
         self.task = TaskPanel()
         self.task.run_button.hide()
-        self.process_button = QPushButton("执行选中处理")
-        self.process_button.setToolTip("执行完成后会生成修改后的 G 文件，并生成/覆盖本模块的处理 CSV/HTML 报告，可点击“打开报告”查看。")
+        self.process_button = QPushButton("删除选中异常图元")
+        self.process_button.setToolTip("删除结果表中已勾选的异常小尺寸图元，生成修改后的 G 文件，并生成/覆盖处理 CSV/HTML 报告；报告会列出实际删除项。")
         self.process_button.setEnabled(False)
         self.report_button = QPushButton("打开报告")
         self.report_button.setEnabled(False)
@@ -204,7 +203,6 @@ class SmallElementPage(BasePage):
         progress.close()
         self.issues = list(issues)
         self.all_issues = list(issues)
-        self.processed_issues = []
         self.select_all_box.blockSignals(True)
         self.select_all_box.setChecked(False)
         self.select_all_box.blockSignals(False)
@@ -289,7 +287,7 @@ class SmallElementPage(BasePage):
     def _update_process_state(self) -> None:
         count = len(self._checked_issues())
         self.process_button.setEnabled(count > 0)
-        self.process_button.setText(f"执行选中处理（{count}）" if count else "执行选中处理")
+        self.process_button.setText(f"删除选中异常图元（{count}）" if count else "删除选中异常图元")
 
     def _confirm_process(self, selected: list[SmallElementIssue]) -> bool:
         keyed = [x for x in selected if x.keyid]
@@ -311,8 +309,8 @@ class SmallElementPage(BasePage):
         else:
             answer = QMessageBox.question(
                 self,
-                "确认执行",
-                f"确认处理当前勾选的 {len(selected)} 个异常图元吗？\n"
+                "确认删除",
+                f"确认删除当前勾选的 {len(selected)} 个异常小尺寸图元吗？\n"
                 "程序会生成修改后的 G 文件以及本次 CSV/HTML 报告，原文件不会覆盖。",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
@@ -331,34 +329,45 @@ class SmallElementPage(BasePage):
         if not self._confirm_process(selected):
             return
         output_dir = self.output_path.path()
-        cumulative_map = {self._issue_key(x): x for x in self.processed_issues}
-        for item in selected:
-            cumulative_map[self._issue_key(item)] = item
-        cumulative = list(cumulative_map.values())
+        # 每次处理都必须基于本次扫描所对应的原始 G 文件重新生成输出。
+        # 不读取上一次处理后的输出，也不累计上一次勾选状态。
         try:
-            outputs = delete_issues_to_output(cumulative, output_dir)
+            outputs = delete_issues_to_output(selected, output_dir)
             timestamp = make_task_timestamp()
-            csv_path, html_path = write_reports(output_dir, selected, self.threshold.value(), timestamp, report_kind="process")
+            processed_keys = {self._issue_key(item) for item in selected}
+            csv_path, html_path = write_reports(
+                output_dir, self.all_issues, self.threshold.value(), timestamp,
+                report_kind="process", processed_keys=processed_keys,
+            )
         except Exception as exc:
             self.task.append_log(f"执行处理失败：{exc}")
             QMessageBox.critical(self, "处理失败", str(exc))
             return
 
-        self.processed_issues = cumulative
-        selected_keys = {self._issue_key(x) for x in selected}
-        self.issues = [x for x in self.issues if self._issue_key(x) not in selected_keys]
         self.last_csv_report = csv_path
         self.last_html_report = html_path
         self.report_button.setEnabled(True)
-        self._fill_table()
+        # 扫描结果代表原始 G 的固定检测快照。处理完成后不移除任何行，
+        # 也不记忆上一次已经处理过的项目；仅清空本次勾选，方便重新选择。
+        self.table.blockSignals(True)
+        for row in range(self.table.rowCount()):
+            check_item = self.table.item(row, 0)
+            if check_item is not None:
+                check_item.setCheckState(Qt.CheckState.Unchecked)
+        self.table.blockSignals(False)
         self.select_all_box.blockSignals(True)
         self.select_all_box.setChecked(False)
         self.select_all_box.blockSignals(False)
+        self._update_process_state()
         self.summary.setText(
-            f"本次已处理 {len(selected)} 个异常图元，当前结果表剩余 {len(self.issues)} 个；"
-            f"输出 G 文件 {len(outputs)} 个。报告：{csv_path.name} / {html_path.name}"
+            f"扫描结果保持 {len(self.all_issues)} 个异常图元不变；本次从原始 G 重新生成并删除 {len(selected)} 个，"
+            f"未处理 {len(self.all_issues) - len(selected)} 个；输出 G 文件 {len(outputs)} 个。"
+            f"处理报告包含全部 {len(self.all_issues)} 个原始异常图元：{csv_path.name} / {html_path.name}"
         )
-        self.task.append_log(f"本次处理异常图元 {len(selected)} 个；累计处理 {len(self.processed_issues)} 个；当前剩余 {len(self.issues)} 个。")
+        self.task.append_log(
+            f"本次独立处理：从原始 G 重新生成输出，删除 {len(selected)} 个异常图元；"
+            f"扫描结果仍保留 {len(self.all_issues)} 个，不累计上一次处理状态。"
+        )
         for item in selected:
             self.task.append_log(
                 f"[已处理] {item.file_name} | <{item.element_type}> | id={item.xml_id or '(空)'} | "
@@ -373,8 +382,10 @@ class SmallElementPage(BasePage):
         QMessageBox.information(
             self,
             "处理完成",
-            f"已处理 {len(selected)} 个异常图元，输出 {len(outputs)} 个 G 文件。\n"
-            f"当前列表剩余 {len(self.issues)} 个异常图元。\n原文件未修改。\n\n处理报告已生成并覆盖上一份处理报告，可点击“打开报告”查看。",
+            f"已从原始 G 重新生成输出，并删除本次勾选的 {len(selected)} 个异常图元；输出 {len(outputs)} 个 G 文件。\n"
+            f"当前扫描结果仍保留原始文件中的 {len(self.all_issues)} 个异常图元，不累计上一次处理状态。\n"
+            "再次执行时会重新读取原始 G，并按当次勾选覆盖输出文件和处理报告。\n\n"
+            "原文件未修改；可点击“打开报告”查看本次处理报告。",
         )
 
     def open_last_report(self) -> None:
