@@ -4,11 +4,13 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QLineEdit,
+    QMessageBox,
     QVBoxLayout,
 )
 
 from g_file_studio.models import FrameSettings, PersonSettings, TemplateMode
 from g_file_studio.processors.frame_processor import add_drawing_frames
+from g_file_studio.processors.common import discover_g_inputs
 from g_file_studio.services.paths import default_workspace
 from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.help_content import APP_HELP, FIELD_HELP
@@ -38,7 +40,7 @@ class FramePage(BasePage):
             parent,
         )
         self.banner = InfoBanner(
-            "输入可以是单个 G 文件，也可以是 G 文件目录。默认使用程序内置模板；客户模板只调整外框尺寸与组件位置，不修改任何内容。"
+            "输入可以是单个 G 文件，也可以是 G 文件目录。输出文件保持源文件名不变并写入输出目录；默认使用程序内置模板。"
         )
         self.layout.addWidget(self.banner)
 
@@ -107,14 +109,10 @@ class FramePage(BasePage):
         self.left, self.top, self.right, self.bottom = [self.spin(50) for _ in range(4)]
         for widget in (self.left, self.top, self.right, self.bottom):
             widget.setToolTip(FIELD_HELP["frame_margin"])
-        self.suffix = QLineEdit("-WITH-FRAME")
-        self.suffix.setPlaceholderText("默认 -WITH-FRAME；程序会自动追加任务时间戳")
-        self.suffix.setToolTip(FIELD_HELP["output_suffix"])
         layout_form.addRow(HelpLabel("图框左边距", FIELD_HELP["frame_margin"]), self.left)
         layout_form.addRow(HelpLabel("图框上边距", FIELD_HELP["frame_margin"]), self.top)
         layout_form.addRow(HelpLabel("图框右边距", FIELD_HELP["frame_margin"]), self.right)
         layout_form.addRow(HelpLabel("图框下边距", FIELD_HELP["frame_margin"]), self.bottom)
-        layout_form.addRow(HelpLabel("输出标记", FIELD_HELP["output_suffix"]), self.suffix)
         self.layout.addWidget(layout_box)
 
         self.task = TaskPanel()
@@ -132,11 +130,11 @@ class FramePage(BasePage):
         self.title_box.setEnabled(builtin)
         if builtin:
             self.banner.set_text(
-                "内置模板会按四边距调整外框，并修改左上标题和 Draw/Approve/Issue 信息。输入支持单文件或目录。"
+                "内置模板会按四边距调整外框，并修改左上标题和 Draw/Approve/Issue 信息。输出保持源文件名不变。"
             )
         else:
             self.banner.set_text(
-                "客户自定义模板会按四边距调整外框长度和组件位置，但不会修改任何文字、姓名、日期、字体、颜色或表格内容。输入支持单文件或目录。"
+                "客户自定义模板会按四边距调整外框长度和组件位置，但不会修改任何文字、姓名、日期、字体、颜色或表格内容。输出保持源文件名不变。"
             )
 
     def settings(self) -> FrameSettings:
@@ -155,13 +153,64 @@ class FramePage(BasePage):
             frame_top=self.top.value(),
             frame_right=self.right.value(),
             frame_bottom=self.bottom.value(),
-            output_suffix=self.suffix.text().strip(),
+            output_suffix="",
+            append_timestamp=False,
         )
 
     def save_state(self) -> None:
         self.source.persist_all_text()
         self.output_path.persist_current_text()
         self.template_selector.persist_current()
+
+    @staticmethod
+    def _same_path(left, right) -> bool:
+        try:
+            return left.resolve(strict=False) == right.resolve(strict=False)
+        except OSError:
+            return str(left.absolute()) == str(right.absolute())
+
+    def _confirm_existing_outputs(self, settings: FrameSettings) -> FrameSettings | None:
+        files = discover_g_inputs(settings.source_path, settings.input_mode)
+        conflicts = []
+        for source in files:
+            target = settings.output_dir / source.name
+            if self._same_path(source, target):
+                QMessageBox.critical(
+                    self,
+                    "输出目录不能与源文件位置相同",
+                    f"图框添加现在保持源文件名不变。\n\n源文件：{source}\n目标文件：{target}\n\n"
+                    "为避免覆盖原始 G 文件，请选择其他输出目录。",
+                )
+                return None
+            if target.exists():
+                conflicts.append(target)
+
+        if not conflicts:
+            return settings.model_copy(update={"overwrite": True})
+
+        examples = "\n".join(f"• {path.name}" for path in conflicts[:6])
+        if len(conflicts) > 6:
+            examples += f"\n• 其余 {len(conflicts) - 6} 个同名文件……"
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("输出目录存在同名文件")
+        box.setText(f"检测到 {len(conflicts)} 个同名输出文件。")
+        box.setInformativeText(
+            f"{examples}\n\n图框添加会保持源文件名不变。请选择本次处理方式。"
+        )
+        overwrite_button = box.addButton("覆盖同名文件", QMessageBox.ButtonRole.DestructiveRole)
+        skip_button = box.addButton("跳过同名文件", QMessageBox.ButtonRole.AcceptRole)
+        cancel_button = box.addButton("取消任务", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(skip_button)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is overwrite_button:
+            return settings.model_copy(update={"overwrite": True})
+        if clicked is skip_button:
+            return settings.model_copy(update={"overwrite": False})
+        if clicked is cancel_button:
+            return None
+        return None
 
     def run(self) -> None:
         if not validate_input_source(self, self.source, display_name="图框添加输入"):
@@ -173,7 +222,9 @@ class FramePage(BasePage):
         self.source.persist_current()
         self.output_path.persist_valid_path()
         self.template_selector.persist_current()
-        settings = self.settings()
+        settings = self._confirm_existing_outputs(self.settings())
+        if settings is None:
+            return
         self.task.start(
             lambda log, progress: add_drawing_frames(settings, log, progress),
             settings.output_dir,

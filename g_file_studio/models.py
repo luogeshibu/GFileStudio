@@ -236,8 +236,8 @@ class MarginSettings(BaseModel):
     right_margin: int = Field(default=500, ge=0)
     bottom_margin: int = Field(default=500, ge=0)
     preserve_existing_frame: bool = True
-    output_suffix: str = "-ADJUSTED"
-    append_timestamp: bool = True
+    output_suffix: str = ""
+    append_timestamp: bool = False
     task_timestamp: str = ""
     overwrite: bool = True
 
@@ -268,8 +268,8 @@ class FrameSettings(BaseModel):
     frame_top: int = Field(default=50, ge=0)
     frame_right: int = Field(default=50, ge=0)
     frame_bottom: int = Field(default=50, ge=0)
-    output_suffix: str = "-WITH-FRAME"
-    append_timestamp: bool = True
+    output_suffix: str = ""
+    append_timestamp: bool = False
     task_timestamp: str = ""
     overwrite: bool = True
 

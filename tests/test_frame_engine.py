@@ -115,7 +115,7 @@ def test_frame_processor_accepts_single_file_input(tmp_path: Path):
 
     assert result.success
     assert result.statistics["input_mode"] == "single_file"
-    target = output / "single-WITH-FRAME-20260729_201509.sln.pic.g"
+    target = output / "single.sln.pic.g"
     assert target.is_file()
     ET.parse(target)
 

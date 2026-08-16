@@ -38,10 +38,12 @@ def test_timestamp_naming_is_visible_in_pages():
     margin = _read("g_file_studio/ui/pages/margin_page.py")
     frame = _read("g_file_studio/ui/pages/frame_page.py")
     assert "MERGED-时间戳.sln.pic.g" in merge
-    assert 'QLineEdit("-ADJUSTED")' in margin
-    assert "自动追加任务时间戳" in margin
-    assert 'QLineEdit("-WITH-FRAME")' in frame
-    assert "自动追加任务时间戳" in frame
+    assert 'QLineEdit("-ADJUSTED")' not in margin
+    assert 'HelpLabel("输出标记"' not in margin
+    assert "输出文件保持源文件名不变" in margin
+    assert 'QLineEdit("-WITH-FRAME")' not in frame
+    assert 'HelpLabel("输出标记"' not in frame
+    assert "输出保持源文件名不变" in frame
 
 
 def test_choice_controls_use_visible_exclusive_radio_buttons_where_requested():

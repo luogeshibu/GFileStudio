@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QFormLayout, QGroupBox, QLineEdit, QVBoxLayout
+from PySide6.QtWidgets import QFormLayout, QGroupBox, QMessageBox, QVBoxLayout
 
 from g_file_studio.models import MarginSettings
 from g_file_studio.processors.margin_processor import adjust_graph_margins
+from g_file_studio.processors.common import discover_g_inputs
 from g_file_studio.services.paths import default_workspace
 from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.help_content import APP_HELP, FIELD_HELP
@@ -33,7 +34,7 @@ class MarginPage(BasePage):
 
         self.layout.addWidget(
             InfoBanner(
-                "默认主体图形距离画布左、上、右、下各 500。仅当图框可确认是 G File Studio 内置图框时，程序才会排除图框组件并同步调整；检测到其他图框时会停止并提示先删除图框。内置图框文字与业务内容完全不修改。"
+                "默认主体图形距离画布左、上、右、下各 500。输出文件保持源文件名不变并写入输出目录；仅当图框可确认是 G File Studio 内置图框时，程序才会排除图框组件并同步调整；检测到其他图框时会停止并提示先删除图框。内置图框文字与业务内容完全不修改。"
             )
         )
 
@@ -76,13 +77,10 @@ class MarginPage(BasePage):
         self.bottom = self.spin(500)
         for widget in (self.left, self.top, self.right, self.bottom):
             widget.setToolTip(FIELD_HELP["content_margin"])
-        self.suffix = QLineEdit("-ADJUSTED")
-        self.suffix.setPlaceholderText("默认 -ADJUSTED；程序会自动追加任务时间戳")
         parameter_form.addRow(HelpLabel("图形左边距", FIELD_HELP["content_margin"]), self.left)
         parameter_form.addRow(HelpLabel("图形上边距", FIELD_HELP["content_margin"]), self.top)
         parameter_form.addRow(HelpLabel("图形右边距", FIELD_HELP["content_margin"]), self.right)
         parameter_form.addRow(HelpLabel("图形下边距", FIELD_HELP["content_margin"]), self.bottom)
-        parameter_form.addRow(HelpLabel("输出标记", FIELD_HELP["output_suffix"]), self.suffix)
         self.layout.addWidget(parameter_box)
 
         self.layout.addWidget(
@@ -110,12 +108,63 @@ class MarginPage(BasePage):
             right_margin=self.right.value(),
             bottom_margin=self.bottom.value(),
             preserve_existing_frame=True,
-            output_suffix=self.suffix.text().strip(),
+            output_suffix="",
+            append_timestamp=False,
         )
 
     def save_state(self) -> None:
         self.source.persist_all_text()
         self.output_path.persist_current_text()
+
+    @staticmethod
+    def _same_path(left, right) -> bool:
+        try:
+            return left.resolve(strict=False) == right.resolve(strict=False)
+        except OSError:
+            return str(left.absolute()) == str(right.absolute())
+
+    def _confirm_existing_outputs(self, settings: MarginSettings) -> MarginSettings | None:
+        files = discover_g_inputs(settings.source_path, settings.input_mode)
+        conflicts = []
+        for source in files:
+            target = settings.output_dir / source.name
+            if self._same_path(source, target):
+                QMessageBox.critical(
+                    self,
+                    "输出目录不能与源文件位置相同",
+                    f"图形边距调整现在保持源文件名不变。\n\n源文件：{source}\n目标文件：{target}\n\n"
+                    "为避免覆盖原始 G 文件，请选择其他输出目录。",
+                )
+                return None
+            if target.exists():
+                conflicts.append(target)
+
+        if not conflicts:
+            return settings.model_copy(update={"overwrite": True})
+
+        examples = "\n".join(f"• {path.name}" for path in conflicts[:6])
+        if len(conflicts) > 6:
+            examples += f"\n• 其余 {len(conflicts) - 6} 个同名文件……"
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("输出目录存在同名文件")
+        box.setText(f"检测到 {len(conflicts)} 个同名输出文件。")
+        box.setInformativeText(
+            f"{examples}\n\n图形边距调整会保持源文件名不变。请选择本次处理方式。"
+        )
+        overwrite_button = box.addButton("覆盖同名文件", QMessageBox.ButtonRole.DestructiveRole)
+        skip_button = box.addButton("跳过同名文件", QMessageBox.ButtonRole.AcceptRole)
+        cancel_button = box.addButton("取消任务", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(skip_button)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is overwrite_button:
+            return settings.model_copy(update={"overwrite": True})
+        if clicked is skip_button:
+            return settings.model_copy(update={"overwrite": False})
+        if clicked is cancel_button:
+            return None
+        return None
 
     def run(self) -> None:
         if not validate_input_source(self, self.source, display_name="图形边距调整输入"):
@@ -124,7 +173,9 @@ class MarginPage(BasePage):
             return
         self.source.persist_current()
         self.output_path.persist_valid_path()
-        settings = self.settings()
+        settings = self._confirm_existing_outputs(self.settings())
+        if settings is None:
+            return
         self.task.start(
             lambda log, progress: adjust_graph_margins(settings, log, progress),
             settings.output_dir,

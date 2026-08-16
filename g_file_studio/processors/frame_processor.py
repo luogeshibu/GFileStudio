@@ -14,7 +14,6 @@ from g_file_studio.processors.common import (
     redirect_safe_callback,
     enforce_confirmed_id_rules,
 )
-from g_file_studio.services.output_naming import make_task_timestamp, marked_output_name
 
 
 def add_drawing_frames(
@@ -43,16 +42,21 @@ def add_drawing_frames(
     all_config = settings.config_dict()
     outputs: list[Path] = []
     writer = CallbackWriter(redirect_safe_callback(log))
-    task_timestamp = settings.task_timestamp.strip() or make_task_timestamp()
-
     for index, input_path in enumerate(files, 1):
-        output_name = marked_output_name(
-            input_path.name,
-            settings.output_suffix,
-            task_timestamp,
-            append_timestamp=settings.append_timestamp,
-        )
-        output_path = settings.output_dir / output_name
+        output_path = settings.output_dir / input_path.name
+        try:
+            same_as_source = input_path.resolve(strict=False) == output_path.resolve(strict=False)
+        except OSError:
+            same_as_source = str(input_path.absolute()) == str(output_path.absolute())
+        if same_as_source:
+            raise ValueError(
+                f"图框添加保持源文件名不变，禁止覆盖原始 G 文件：{input_path}。请更换输出目录。"
+            )
+        if output_path.exists() and not settings.overwrite:
+            log(f"[跳过] 输出目录已存在同名文件：{output_path.name}")
+            if progress:
+                progress(round(index * 100 / len(files)))
+            continue
         with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
             frame_engine.process_one_file(
                 input_path=input_path,
@@ -77,6 +81,7 @@ def add_drawing_frames(
             "template": str(settings.template_file),
             "template_mode": settings.template_mode.value,
             "content_modified": settings.edit_builtin_content,
-            "task_timestamp": task_timestamp if settings.append_timestamp else "",
+            "output_naming": "source_filename",
+            "overwrite_existing": settings.overwrite,
         },
     )
