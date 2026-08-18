@@ -25,6 +25,7 @@ from g_file_studio.processors.basic_processor import process_basic
 from g_file_studio.processors.common import discover_g_inputs
 from g_file_studio.services.output_naming import make_task_timestamp
 from g_file_studio.services.paths import default_workspace
+from g_file_studio.services.run_history import begin_managed_run, configure_managed_output, update_run_status
 from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.help_content import APP_HELP, FIELD_HELP
 from g_file_studio.ui.pages.base_page import BasePage
@@ -86,8 +87,9 @@ class RmuPage(BasePage):
             settings_service=self.user_settings,
         )
         self.output_path.set_tooltip(FIELD_HELP["output_dir"])
+        configure_managed_output(self.output_path, "rmu")
         row = QHBoxLayout()
-        label = QLabel("输出目录")
+        label = QLabel("输出目录（workspace，只读）")
         label.setMinimumWidth(72)
         row.addWidget(label)
         row.addWidget(self.output_path, 1)
@@ -457,23 +459,11 @@ class RmuPage(BasePage):
                 return
 
         self.source.persist_current()
-        self.output_path.persist_valid_path()
+        output_dir = begin_managed_run(self.output_path, "rmu", "process")
         files = discover_g_inputs(self.source.path(), self.source.mode())
-        conflicts = [p for p in files if (output_dir / p.name).exists() or self._same_path(p, output_dir / p.name)]
+        # 每次处理都进入独立运行目录；处理后的 G 文件严格保持源文件名。
         action = BasicOutputConflictAction.OVERWRITE
         timestamp = ""
-        if conflicts:
-            answer = QMessageBox.question(
-                self,
-                "输出文件冲突",
-                f"检测到 {len(conflicts)} 个目标文件已存在或与源文件相同。是否自动添加时间戳后输出？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                return
-            action = BasicOutputConflictAction.TIMESTAMP
-            timestamp = make_task_timestamp()
 
         self._persist_options()
         settings = BasicSettings(

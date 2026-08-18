@@ -119,15 +119,16 @@ def test_color_engine_changes_only_lc_and_lcc():
     assert elements["Text"].get("lc") == "0,0,255"
 
 
-def test_basic_processor_timestamp_policy_does_not_overwrite_source(tmp_path: Path):
+def test_basic_processor_keeps_source_filename_in_separate_run_dir(tmp_path: Path):
     source = tmp_path / "same.sln.pic.g"
+    output_dir = tmp_path / "workspace_run"
     original = '<G><Layer><Text id="1" p_NameString="OLD"/></Layer></G>'
     source.write_text(original, encoding="utf-8")
     result = process_basic(
         BasicSettings(
             source_path=source,
             input_mode=InputMode.SINGLE_FILE,
-            output_dir=tmp_path,
+            output_dir=output_dir,
             replace_attribute=True,
             replace_target_tag="Text",
             replace_target_attribute="p_NameString",
@@ -139,7 +140,7 @@ def test_basic_processor_timestamp_policy_does_not_overwrite_source(tmp_path: Pa
     )
     assert result.success
     assert source.read_text(encoding="utf-8") == original
-    output = tmp_path / "same-20260730_145300.sln.pic.g"
+    output = output_dir / source.name
     assert output in result.output_files
     assert ET.parse(output).getroot().find("Layer/Text").get("p_NameString") == "NEW"
 

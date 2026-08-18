@@ -137,7 +137,7 @@ APP_HELP: dict[str, tuple[str, str]] = {
 FIELD_HELP: dict[str, str] = {
     "input_dir": "选择单个待处理 G 文件或包含多个 G 文件的目录。",
     "merge_input_dir": "选择包含 .sln.pic.g 文件的目录。内置图框可自动移除；非内置图框不会参与合并。",
-    "output_dir": "最终结果写入此目录，原始输入不会被修改。",
+    "output_dir": "输出由程序统一写入 workspace/runs 的本次运行目录。路径只读、不可修改；运行记录仅保留 30 天，需要长期保存请自行复制。",
     "template": "默认使用 App 内置模板，也可以选择客户自定义 .sln.pic.g 模板。",
     "feeder_gap": "相邻两张图真实坐标边界之间的水平距离，默认 300。",
     "merge_margin": "合并图形距离画布四边的距离。数值框不响应鼠标滚轮。",
@@ -145,7 +145,7 @@ FIELD_HELP: dict[str, str] = {
     "content_margin": "主体图形距离 G 画布对应边缘的距离，默认 500。仅 G File Studio 内置图框会被排除并同步调整；其他图框需先删除。",
     "title": "仅内置模板使用；留空时自动取输入文件名去掉 .sln.pic.g 后的内容。",
     "output_name": "合并输出统一使用 .sln.pic.g 后缀；留空生成 MERGED-时间戳.sln.pic.g。",
-    "output_suffix": "图框添加已固定保持源文件名，此字段仅为旧配置兼容保留。",
+    "output_suffix": "所有一对一 G 文件处理均固定保持源文件名；不同运行批次由 workspace 运行目录隔离。",
     "draw": "仅内置模板使用。日期默认当前日期，可点击日历按钮修改。",
     "approve": "仅内置模板使用。日期默认当前日期，可点击日历按钮修改。",
     "issue": "仅内置模板使用。日期默认当前日期，可点击日历按钮修改。",

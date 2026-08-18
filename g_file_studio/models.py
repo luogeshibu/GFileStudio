@@ -24,6 +24,7 @@ class InputMode(str, Enum):
 
     SINGLE_FILE = "single_file"
     DIRECTORY = "directory"
+    REMOTE_SSH = "remote_ssh"
 
 
 class IdAction(str, Enum):
@@ -209,6 +210,7 @@ class MergeSettings(BaseModel):
     feeder_min_width: int = Field(default=1000, ge=0)
     merge_main_bus: bool = False
     main_bus_mode: str = "single"
+    main_bus_groups: list[list[str]] = Field(default_factory=list)
     left_margin: int = Field(default=300, ge=0)
     top_margin: int = Field(default=300, ge=0)
     right_margin: int = Field(default=300, ge=0)

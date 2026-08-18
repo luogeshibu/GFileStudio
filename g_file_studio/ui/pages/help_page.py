@@ -44,12 +44,10 @@ class HelpPage(BasePage):
 <p>适合给没有图框的文件添加 SLD 图框、标题和签字信息；输出文件保持源文件名不变并保存到输出目录。</p>
 <h3>目录建议</h3>
 <pre>
-workspace/input      原始输入
-workspace/processed  基础处理结果
-workspace/merged     合并结果
-workspace/adjusted   图形边距调整结果
-workspace/output     最终输出
-workspace/logs       日志
+workspace/input      本地输入/临时输入
+workspace/remote_input  SSH 只读下载快照
+workspace/runs       所有模块运行输出（自动保留 30 天）
+workspace/logs       其他日志
 </pre>
 <h3>文件安全</h3>
 <ul>

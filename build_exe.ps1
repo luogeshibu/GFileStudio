@@ -20,6 +20,8 @@ if (-not (Test-Path $IconPath)) {
   --icon "$IconPath" `
   --add-data "resources;resources" `
   --add-data "config;config" `
+  --collect-all "paramiko" `
+  --collect-all "cryptography" `
   app.py
 
 $ReleaseDir = Join-Path $ProjectRoot "release"

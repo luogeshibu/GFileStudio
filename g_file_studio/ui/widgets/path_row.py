@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QWidget,
 )
 
@@ -36,6 +37,7 @@ class PathRow(QWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.directory = directory
         self.file_filter = file_filter
         self.dialog_title = dialog_title or ("选择目录" if directory else "选择文件")
@@ -47,6 +49,7 @@ class PathRow(QWidget):
         self._missing_restored_path: Path | None = None
 
         self.edit = QLineEdit()
+        self.edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.edit.setClearButtonEnabled(True)
         self.edit.textChanged.connect(self.pathChanged)
         self.edit.editingFinished.connect(self.persist_current_text)

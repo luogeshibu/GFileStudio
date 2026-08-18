@@ -29,8 +29,10 @@ from g_file_studio.engines.small_element_engine import (
 from g_file_studio.processors.common import discover_g_inputs
 from g_file_studio.services.output_naming import make_task_timestamp
 from g_file_studio.services.paths import default_workspace
+from g_file_studio.services.run_history import begin_managed_run, configure_managed_output, update_run_status
 from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.help_content import APP_HELP
+from g_file_studio.ui.path_validation import validate_input_source
 from g_file_studio.ui.pages.base_page import BasePage
 from g_file_studio.ui.widgets import InfoBanner, InputSourceSelector, IntegerInput, PathRow, TaskPanel
 from g_file_studio.ui.widgets.help_widgets import set_secondary
@@ -100,9 +102,10 @@ class SmallElementPage(BasePage):
             settings_service=self.user_settings,
         )
         output_row = QHBoxLayout()
-        label = QLabel("输出目录")
+        label = QLabel("输出目录（workspace，只读）")
         label.setMinimumWidth(72)
         output_row.addWidget(label)
+        configure_managed_output(self.output_path, "small-elements")
         output_row.addWidget(self.output_path, 1)
         io_layout.addLayout(output_row)
         self.layout.addWidget(io_box)
@@ -163,6 +166,16 @@ class SmallElementPage(BasePage):
         return discover_g_inputs(self.source.path(), self.source.mode())
 
     def scan(self) -> None:
+        self.task.log_view.clear()
+        self.task.progress.setValue(0)
+        if not validate_input_source(
+            self,
+            self.source,
+            display_name="异常小尺寸图元输入",
+            log=self.task.append_log,
+        ):
+            return
+        self.source.persist_current()
         try:
             paths = self._inputs()
         except Exception as exc:
@@ -171,10 +184,8 @@ class SmallElementPage(BasePage):
         if not paths:
             QMessageBox.information(self, "没有文件", "没有找到可扫描的 G 文件。")
             return
-        output_dir = self.output_path.path()
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = begin_managed_run(self.output_path, "small-elements", "scan")
         threshold = self.threshold.value()
-        self.task.log_view.clear()
         self.task.progress.setValue(0)
         self.task.append_log(f"开始扫描异常小尺寸图元，共 {len(paths)} 个文件；阈值：w<{threshold} 且 h<{threshold}。")
         progress = QProgressDialog("正在扫描异常短线图元……", "取消", 0, len(paths), self)
@@ -186,6 +197,7 @@ class SmallElementPage(BasePage):
             progress.setLabelText(f"正在扫描：{path.name}\n{index}/{len(paths)}")
             QApplication.processEvents()
             if progress.wasCanceled():
+                update_run_status(output_dir, "CANCELLED")
                 self.task.append_log("扫描已取消。")
                 return
             try:
@@ -194,6 +206,7 @@ class SmallElementPage(BasePage):
                 self.task.append_log(f"[{index}/{len(paths)}] {path.name}：发现 {len(found)} 个异常图元。")
             except Exception as exc:
                 progress.close()
+                update_run_status(output_dir, "FAILED", note=str(exc))
                 self.task.append_log(f"扫描失败：{path.name}：{exc}")
                 QMessageBox.critical(self, "扫描失败", f"{path.name}\n{exc}")
                 return
@@ -328,7 +341,7 @@ class SmallElementPage(BasePage):
             return
         if not self._confirm_process(selected):
             return
-        output_dir = self.output_path.path()
+        output_dir = begin_managed_run(self.output_path, "small-elements", "delete-selected")
         # 每次处理都必须基于本次扫描所对应的原始 G 文件重新生成输出。
         # 不读取上一次处理后的输出，也不累计上一次勾选状态。
         try:
@@ -340,6 +353,7 @@ class SmallElementPage(BasePage):
                 report_kind="process", processed_keys=processed_keys,
             )
         except Exception as exc:
+            update_run_status(output_dir, "FAILED", note=str(exc))
             self.task.append_log(f"执行处理失败：{exc}")
             QMessageBox.critical(self, "处理失败", str(exc))
             return
@@ -379,6 +393,7 @@ class SmallElementPage(BasePage):
         self.task.append_log(f"HTML 报告：{html_path}")
         self.task.open_button.setEnabled(True)
         self.task._output_dir = output_dir
+        update_run_status(output_dir, "SUCCESS")
         QMessageBox.information(
             self,
             "处理完成",

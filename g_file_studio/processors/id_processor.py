@@ -12,7 +12,7 @@ from g_file_studio.models import BasicOutputConflictAction, IdAction, IdSettings
 from g_file_studio.processors.common import LogCallback, ProgressCallback, discover_g_inputs
 from g_file_studio.services.id_rule_service import IdRuleService
 from g_file_studio.services.html_report_selection import selection_bar, selection_cell, selection_header, selection_script, selection_style
-from g_file_studio.services.output_naming import make_task_timestamp, marked_output_name
+from g_file_studio.services.output_naming import make_task_timestamp
 from g_file_studio.services.user_settings_service import UserSettingsService
 
 
@@ -124,10 +124,8 @@ def process_ids(settings: IdSettings, log: LogCallback, progress: ProgressCallba
                 if repair.format_fixed_count:
                     log(f"[ID 模板修复] {input_path.name}：强制修复格式不符 ID {repair.format_fixed_count} 个。")
 
-                output_name = input_path.name
-                if settings.output_conflict_action == BasicOutputConflictAction.TIMESTAMP and settings.task_timestamp:
-                    output_name = marked_output_name(input_path.name, "ID", settings.task_timestamp)
-                output_path = settings.output_dir / output_name
+                # 一对一 G 文件处理统一保持源文件名；运行目录负责隔离不同批次。
+                output_path = settings.output_dir / input_path.name
                 if hasattr(ET, "indent"):
                     ET.indent(tree, space="    ")
                 tmp = output_path.with_name(output_path.name + ".tmp")

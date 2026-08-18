@@ -22,7 +22,6 @@ from g_file_studio.models import (
 from g_file_studio.processors.common import LogCallback, ProgressCallback, discover_g_inputs, enforce_confirmed_id_rules
 from g_file_studio.services.output_naming import (
     make_task_timestamp,
-    marked_output_name,
     strip_g_suffix,
 )
 from g_file_studio.services.html_report_selection import selection_bar, selection_cell, selection_header, selection_script, selection_style
@@ -350,27 +349,13 @@ def _color_rules(settings: BasicSettings) -> list[ColorRule]:
     return rules
 
 
-def _unique_timestamp_path(output_dir: Path, input_name: str, timestamp: str) -> Path:
-    name = marked_output_name(input_name, "", timestamp, append_timestamp=True)
-    candidate = output_dir / name
-    if not candidate.exists():
-        return candidate
-    stem, suffix = strip_g_suffix(candidate.name)
-    counter = 2
-    while True:
-        alternative = candidate.with_name(f"{stem}-{counter}{suffix}")
-        if not alternative.exists():
-            return alternative
-        counter += 1
-
-
 def _output_path_for(
     input_path: Path,
     settings: BasicSettings,
     timestamp: str,
 ) -> Path:
-    if settings.output_conflict_action == BasicOutputConflictAction.TIMESTAMP:
-        return _unique_timestamp_path(settings.output_dir, input_path.name, timestamp)
+    # 一对一处理统一保留源 G 文件名。每次运行使用独立 workspace 目录，
+    # 因此不再通过时间戳修改 G 文件名。
     return settings.output_dir / input_path.name
 
 

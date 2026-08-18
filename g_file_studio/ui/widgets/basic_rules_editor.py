@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
@@ -24,6 +24,7 @@ from g_file_studio.ui.widgets.rule_card import RuleCard
 
 
 class BasicRulesEditor(QWidget):
+    scanRequested = Signal()
     """基础处理规则编辑器。
 
     元素标签与属性名来自输入目录中 G 文件的实际结构。扫描范围与处理范围完全一致：
@@ -52,7 +53,7 @@ class BasicRulesEditor(QWidget):
         self.scan_button.setToolTip(
             "扫描输入文件或目录内 G 文件的直属 Layer 直接子元素，生成元素标签和属性名下拉选项。"
         )
-        self.scan_button.clicked.connect(self.refresh_schema)
+        self.scan_button.clicked.connect(self.scanRequested.emit)
         self.scan_status = QLabel("请选择输入文件或目录后扫描元素与属性")
         self.scan_status.setObjectName("mutedText")
         self.scan_status.setWordWrap(True)

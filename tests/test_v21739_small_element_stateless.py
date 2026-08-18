@@ -18,5 +18,5 @@ def test_process_report_uses_green_success_style():
 
 
 def test_version_21739():
-    assert '__version__ = "2.17.43"' in Path('g_file_studio/__init__.py').read_text(encoding='utf-8')
-    assert 'version = "2.17.43"' in Path('pyproject.toml').read_text(encoding='utf-8')
+    assert '__version__ = "2.17.57"' in Path('g_file_studio/__init__.py').read_text(encoding='utf-8')
+    assert 'version = "2.17.57"' in Path('pyproject.toml').read_text(encoding='utf-8')

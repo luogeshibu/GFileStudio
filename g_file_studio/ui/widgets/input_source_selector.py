@@ -3,17 +3,18 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from g_file_studio.models import InputMode
 from g_file_studio.services.paths import default_workspace
 from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.widgets.path_row import PathRow
+from g_file_studio.ui.widgets.remote_g_source import RemoteGSourceWidget
 from g_file_studio.ui.widgets.wheel_safe_combo_box import WheelSafeComboBox
 
 
 class InputSourceSelector(QWidget):
-    """单文件/目录输入选择器，分别恢复并保存完整路径和输入模式。"""
+    """本地单文件/目录/SSH只读远程文件输入选择器。"""
 
     modeChanged = Signal(str)
     pathChanged = Signal(str)
@@ -35,6 +36,7 @@ class InputSourceSelector(QWidget):
         super().__init__(parent)
         self.settings_prefix = settings_prefix
         self.settings_service = settings_service or UserSettingsService()
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
@@ -44,12 +46,12 @@ class InputSourceSelector(QWidget):
         self.mode_combo = WheelSafeComboBox()
         self.mode_combo.addItem(single_label, InputMode.SINGLE_FILE.value)
         self.mode_combo.addItem(directory_label, InputMode.DIRECTORY.value)
+        self.mode_combo.addItem("SSH 远程 G 文件（只读）", InputMode.REMOTE_SSH.value)
         mode_row.addWidget(self.mode_combo)
         mode_row.addStretch(1)
         root.addLayout(mode_row)
 
         default_dir = default_directory or (default_workspace() / "input")
-        self.stack = QStackedWidget()
         self.file_row = PathRow(
             directory=False,
             file_filter=file_filter,
@@ -68,16 +70,23 @@ class InputSourceSelector(QWidget):
             location_name="G 文件输入目录",
             settings_service=self.settings_service,
         )
+        self.remote = RemoteGSourceWidget(
+            settings_prefix=settings_prefix,
+            settings_service=self.settings_service,
+        )
         self.file_row.set_tooltip(file_tooltip)
         self.dir_row.set_tooltip(directory_tooltip)
-        self.stack.addWidget(self.file_row)
-        self.stack.addWidget(self.dir_row)
-        root.addWidget(self.stack)
+        self.source_container = QWidget()
+        self.source_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        source_layout = QVBoxLayout(self.source_container)
+        source_layout.setContentsMargins(0, 0, 0, 0)
+        source_layout.setSpacing(0)
+        source_layout.addWidget(self.file_row)
+        source_layout.addWidget(self.dir_row)
+        source_layout.addWidget(self.remote)
+        root.addWidget(self.source_container)
 
-        saved_mode = self.settings_service.get_value(
-            f"{settings_prefix}/input_mode",
-            default_mode.value,
-        )
+        saved_mode = self.settings_service.get_value(f"{settings_prefix}/input_mode", default_mode.value)
         try:
             initial_mode = InputMode(saved_mode)
         except ValueError:
@@ -86,21 +95,45 @@ class InputSourceSelector(QWidget):
         self.mode_combo.currentIndexChanged.connect(self._mode_changed)
         self.file_row.pathChanged.connect(self.pathChanged)
         self.dir_row.pathChanged.connect(self.pathChanged)
+        self.remote.prepared.connect(self.pathChanged)
         self.set_mode(initial_mode, persist=False)
+
+    def _apply_mode_visibility(self, mode: InputMode) -> None:
+        """Only the active source widget participates in layout sizing.
+
+        This avoids the tall SSH file table reserving blank space while a local
+        file/directory source is selected.
+        """
+        self.file_row.setVisible(mode == InputMode.SINGLE_FILE)
+        self.dir_row.setVisible(mode == InputMode.DIRECTORY)
+        self.remote.setVisible(mode == InputMode.REMOTE_SSH)
+        # Let the parent layout own the width. Calling adjustSize() here can
+        # shrink the local path row to its sizeHint after hiding the SSH panel.
+        self.source_container.updateGeometry()
+        self.updateGeometry()
 
     def _mode_changed(self, *_args: object) -> None:
         mode = self.mode()
-        self.stack.setCurrentIndex(0 if mode == InputMode.SINGLE_FILE else 1)
+        self._apply_mode_visibility(mode)
         self.settings_service.set_value(f"{self.settings_prefix}/input_mode", mode.value)
         self.modeChanged.emit(mode.value)
         self.pathChanged.emit(str(self.path()))
 
     def mode(self) -> InputMode:
-        value = str(self.mode_combo.currentData())
-        return InputMode(value)
+        return InputMode(str(self.mode_combo.currentData()))
 
     def path(self) -> Path:
-        return self.file_row.path() if self.mode() == InputMode.SINGLE_FILE else self.dir_row.path()
+        mode = self.mode()
+        if mode == InputMode.SINGLE_FILE:
+            return self.file_row.path()
+        if mode == InputMode.DIRECTORY:
+            return self.dir_row.path()
+        return self.remote.cache_dir()
+
+    def prepare_for_processing(self, *, log=None) -> Path:
+        if self.mode() == InputMode.REMOTE_SSH:
+            return self.remote.prepare_selected(log=log)
+        return self.path()
 
     def set_mode(self, mode: InputMode, *, persist: bool = True) -> None:
         target = self.mode_combo.findData(mode.value)
@@ -108,7 +141,7 @@ class InputSourceSelector(QWidget):
             self.mode_combo.blockSignals(True)
             self.mode_combo.setCurrentIndex(target)
             self.mode_combo.blockSignals(False)
-        self.stack.setCurrentIndex(0 if mode == InputMode.SINGLE_FILE else 1)
+        self._apply_mode_visibility(mode)
         if persist:
             self.settings_service.set_value(f"{self.settings_prefix}/input_mode", mode.value)
 
@@ -116,10 +149,13 @@ class InputSourceSelector(QWidget):
         self.settings_service.set_value(f"{self.settings_prefix}/input_mode", self.mode().value)
         if self.mode() == InputMode.SINGLE_FILE:
             self.file_row.persist_valid_path()
-        else:
+        elif self.mode() == InputMode.DIRECTORY:
             self.dir_row.persist_valid_path()
+        else:
+            self.remote.persist()
 
     def persist_all_text(self) -> None:
         self.file_row.persist_current_text()
         self.dir_row.persist_current_text()
+        self.remote.persist()
         self.settings_service.set_value(f"{self.settings_prefix}/input_mode", self.mode().value)

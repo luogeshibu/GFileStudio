@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from g_file_studio.ui.widgets.help_widgets import HelpButton, set_secondary
+from g_file_studio.services.run_history import update_run_status
 from g_file_studio.workers import FunctionWorker
 
 
@@ -34,9 +35,9 @@ class TaskPanel(QFrame):
         self.run_button.setToolTip("按照当前页面参数开始处理。处理会在后台线程中运行。")
         self.run_button.setStatusTip(self.run_button.toolTip())
 
-        self.open_button = QPushButton("打开输出目录")
+        self.open_button = QPushButton("打开本次运行目录")
         set_secondary(self.open_button)
-        self.open_button.setToolTip("处理完成后，在 Windows 文件资源管理器中打开输出目录。")
+        self.open_button.setToolTip("打开本次任务对应的 workspace 运行目录。运行记录仅保留 30 天。")
         self.open_button.setStatusTip(self.open_button.toolTip())
         self.open_button.setEnabled(False)
         self.open_button.clicked.connect(self.open_output)
@@ -128,6 +129,8 @@ class TaskPanel(QFrame):
             for key, value in result.statistics.items():
                 self.append_log(f"  {key}: {value}")
         self.open_button.setEnabled(True)
+        if self._output_dir:
+            update_run_status(self._output_dir, "SUCCESS" if result.success else "WARNING")
         if result.success:
             QMessageBox.information(self, "处理完成", "任务已成功完成，详细结果请查看日志。")
         else:
@@ -138,6 +141,9 @@ class TaskPanel(QFrame):
             )
 
     def on_error(self, traceback_text: str) -> None:
+        if self._output_dir:
+            update_run_status(self._output_dir, "FAILED", note=traceback_text.split("\n", 1)[0])
+        self.open_button.setEnabled(bool(self._output_dir))
         self.append_log("\n处理失败：")
         self.append_log(traceback_text)
         user_message = traceback_text.split("\n\n---TRACEBACK---", 1)[0].strip()

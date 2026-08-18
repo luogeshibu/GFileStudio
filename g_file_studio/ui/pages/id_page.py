@@ -34,6 +34,7 @@ from g_file_studio.processors.id_processor import _write_id_reports, process_ids
 from g_file_studio.services.id_rule_service import IdRule, IdRuleService
 from g_file_studio.services.output_naming import make_task_timestamp
 from g_file_studio.services.paths import default_workspace
+from g_file_studio.services.run_history import begin_managed_run, configure_managed_output, update_run_status
 from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.help_content import APP_HELP, FIELD_HELP
 from g_file_studio.ui.pages.base_page import BasePage
@@ -155,8 +156,9 @@ class IdPage(BasePage):
             settings_service=self.user_settings,
         )
         self.output_path.set_tooltip(FIELD_HELP["output_dir"])
+        configure_managed_output(self.output_path, "id")
         output_row = QHBoxLayout()
-        output_label = QLabel("输出目录")
+        output_label = QLabel("输出目录（workspace，只读）")
         output_label.setMinimumWidth(72)
         output_row.addWidget(output_label)
         output_row.addWidget(self.output_path, 1)
@@ -332,6 +334,7 @@ class IdPage(BasePage):
         self.task.log_view.clear()
         self.task.progress.setValue(0)
         self.task.append_log(f"开始扫描当前 G，共 {len(files)} 个文件。")
+        output_dir = begin_managed_run(self.output_path, "id", "scan")
         candidates: dict[str, IdRule] = {}
         new_messages: list[str] = []
         changed_messages: list[str] = []
@@ -352,6 +355,7 @@ class IdPage(BasePage):
         try:
             for index, path in enumerate(files, start=1):
                 if progress_dialog.wasCanceled():
+                    update_run_status(output_dir, "CANCELLED") if "output_dir" in locals() else None
                     self.task.append_log("扫描已取消。")
                     return
                 progress_dialog.setLabelText(f"正在扫描：{path.name}  （{index}/{len(files)}）")
@@ -384,6 +388,7 @@ class IdPage(BasePage):
                 self.task.append_log(f"[{index}/{len(files)}] 已扫描：{path.name}")
                 QApplication.processEvents()
         except Exception as exc:
+            update_run_status(output_dir, "FAILED", note=str(exc))
             QMessageBox.warning(self, "扫描失败", str(exc))
             return
         finally:
@@ -455,8 +460,6 @@ class IdPage(BasePage):
                     report_rows.append({"File": path.name, "Category": "正常", "ElementType": "", "OriginalID": "", "NewID": "", "Detail": "未发现模板格式异常或重复 ID"})
             except Exception as exc:
                 report_rows.append({"File": path.name, "Category": "处理失败", "ElementType": "", "OriginalID": "", "NewID": "", "Detail": str(exc)})
-        output_dir = self.output_path.path()
-        output_dir.mkdir(parents=True, exist_ok=True)
         timestamp = make_task_timestamp()
         csv_path, html_path = _write_id_reports(output_dir, report_rows, timestamp, report_kind="scan")
         self.last_html_report = html_path
@@ -466,6 +469,7 @@ class IdPage(BasePage):
         self.task.append_log(f"CSV 报告：{csv_path}")
         self.task.append_log(f"HTML 报告：{html_path}")
         self.task.progress.setValue(100)
+        update_run_status(output_dir, "SUCCESS")
         QMessageBox.information(
             self,
             "扫描完成",
@@ -556,27 +560,13 @@ class IdPage(BasePage):
         if not validate_input_source(self, self.source, display_name="ID 处理输入"):
             return
         action = IdAction.REPAIR
-        output_dir = self.output_path.path()
-        if not validate_existing_directory(self, output_dir, "ID 检查与修复输出目录"):
+        if not validate_existing_directory(self, self.output_path.path(), "ID 检查与修复输出目录"):
             return
         self.source.persist_current()
-        self.output_path.persist_valid_path()
+        output_dir = begin_managed_run(self.output_path, "id", "repair")
         timestamp = make_task_timestamp()
+        # 每次修复都进入独立运行目录，处理后的 G 文件严格保持源文件名。
         conflict_action = BasicOutputConflictAction.OVERWRITE
-        if action == IdAction.REPAIR:
-            files = discover_g_inputs(self.source.path(), self.source.mode())
-            conflicts = [p for p in files if (output_dir / p.name).exists() or self._same_path(p, output_dir / p.name)]
-            if conflicts:
-                answer = QMessageBox.question(
-                    self,
-                    "输出文件冲突",
-                    f"检测到 {len(conflicts)} 个目标文件已存在或与源文件相同。是否自动添加时间戳后输出？",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.Yes,
-                )
-                if answer != QMessageBox.StandardButton.Yes:
-                    return
-                conflict_action = BasicOutputConflictAction.TIMESTAMP
         settings = IdSettings(
             source_path=self.source.path(),
             input_mode=self.source.mode(),

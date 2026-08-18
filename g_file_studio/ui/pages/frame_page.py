@@ -12,6 +12,7 @@ from g_file_studio.models import FrameSettings, PersonSettings, TemplateMode
 from g_file_studio.processors.frame_processor import add_drawing_frames
 from g_file_studio.processors.common import discover_g_inputs
 from g_file_studio.services.paths import default_workspace
+from g_file_studio.services.run_history import begin_managed_run, configure_managed_output, update_run_status
 from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.help_content import APP_HELP, FIELD_HELP
 from g_file_studio.ui.pages.base_page import BasePage
@@ -71,7 +72,8 @@ class FramePage(BasePage):
             settings_service=self.user_settings,
         )
         self.output_path.set_tooltip(FIELD_HELP["output_dir"])
-        output_form.addRow(HelpLabel("输出目录", FIELD_HELP["output_dir"]), self.output_path)
+        configure_managed_output(self.output_path, "frame")
+        output_form.addRow(HelpLabel("输出目录（workspace，只读）", "输出由程序统一管理。每次运行创建独立 workspace 目录，仅保留 30 天；需要长期保存请自行复制。"), self.output_path)
         path_layout.addLayout(output_form)
         self.layout.addWidget(path_box)
 
@@ -220,7 +222,7 @@ class FramePage(BasePage):
         if not self.template_selector.validate_selection():
             return
         self.source.persist_current()
-        self.output_path.persist_valid_path()
+        run_dir = begin_managed_run(self.output_path, "frame", "add-frame")
         self.template_selector.persist_current()
         settings = self._confirm_existing_outputs(self.settings())
         if settings is None:

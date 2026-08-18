@@ -30,7 +30,7 @@ def default_workspace() -> Path:
 def ensure_default_workspace() -> Path:
     """创建程序默认使用的输入、输出与日志目录。"""
     root = default_workspace()
-    for name in ("input", "processed", "merged", "adjusted", "work", "output", "logs"):
+    for name in ("input", "processed", "merged", "adjusted", "work", "output", "logs", "runs"):
         (root / name).mkdir(parents=True, exist_ok=True)
     return root
 

@@ -11,26 +11,11 @@ from g_file_studio.models import (
     ProcessingResult,
 )
 from g_file_studio.processors.common import LogCallback, ProgressCallback, discover_g_inputs
-from g_file_studio.services.output_naming import marked_output_name, strip_g_suffix
 
-
-def _unique_timestamp_path(output_dir: Path, input_name: str, timestamp: str) -> Path:
-    name = marked_output_name(input_name, "", timestamp, append_timestamp=True)
-    candidate = output_dir / name
-    if not candidate.exists():
-        return candidate
-    stem, suffix = strip_g_suffix(candidate.name)
-    counter = 2
-    while True:
-        alternative = candidate.with_name(f"{stem}-{counter}{suffix}")
-        if not alternative.exists():
-            return alternative
-        counter += 1
 
 
 def _output_path_for(input_path: Path, settings: ConnectionRepairSettings) -> Path:
-    if settings.output_conflict_action == BasicOutputConflictAction.TIMESTAMP:
-        return _unique_timestamp_path(settings.output_dir, input_path.name, settings.task_timestamp)
+    # 一对一处理统一保持源 G 文件名。
     return settings.output_dir / input_path.name
 
 

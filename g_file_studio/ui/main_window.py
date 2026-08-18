@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from g_file_studio import __version__
 from g_file_studio.services.user_settings_service import UserSettingsService
+from g_file_studio.services.run_history import cleanup_expired_runs
 from g_file_studio.ui.pages import BasicPage, FramePage, HelpPage, IdPage, MarginPage, MergePage, RmuPage, SmallElementPage
 from g_file_studio.ui.theme import build_app_style
 
@@ -28,6 +29,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__()
         self.user_settings = user_settings
+        cleanup_expired_runs()
         self.setWindowTitle("G File Studio · NARI 国际业务部")
         self.resize(1280, 860)
         self.setMinimumSize(1040, 720)

@@ -6,6 +6,7 @@ from g_file_studio.ui.widgets.input_source_selector import InputSourceSelector
 from g_file_studio.ui.widgets.icon_upgrade_editor import IconUpgradeEditor
 from g_file_studio.ui.widgets.integer_input import IntegerInput
 from g_file_studio.ui.widgets.path_row import PathRow
+from g_file_studio.ui.widgets.remote_g_source import RemoteGSourceWidget
 from g_file_studio.ui.widgets.person_editor import PersonEditor
 from g_file_studio.ui.widgets.rule_card import RuleCard
 from g_file_studio.ui.widgets.task_panel import TaskPanel
@@ -24,6 +25,7 @@ __all__ = [
     "IntegerInput",
     "PageHeader",
     "PathRow",
+    "RemoteGSourceWidget",
     "PersonEditor",
     "RuleCard",
     "TaskPanel",

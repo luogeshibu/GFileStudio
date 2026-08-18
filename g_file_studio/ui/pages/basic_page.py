@@ -24,6 +24,7 @@ from g_file_studio.processors.basic_processor import process_basic
 from g_file_studio.processors.common import discover_g_inputs
 from g_file_studio.services.output_naming import make_task_timestamp
 from g_file_studio.services.paths import default_workspace
+from g_file_studio.services.run_history import begin_managed_run, configure_managed_output, update_run_status
 from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.help_content import APP_HELP, FIELD_HELP
 from g_file_studio.ui.pages.base_page import BasePage
@@ -91,7 +92,8 @@ class BasicPage(BasePage):
             settings_service=self.user_settings,
         )
         self.output_path.set_tooltip(FIELD_HELP["output_dir"])
-        output_form.addRow(HelpLabel("输出目录", FIELD_HELP["output_dir"]), self.output_path)
+        configure_managed_output(self.output_path, "basic")
+        output_form.addRow(HelpLabel("输出目录（workspace，只读）", "输出由程序统一管理。每次运行创建独立 workspace 目录，仅保留 30 天；需要长期保存请自行复制。"), self.output_path)
         path_layout.addLayout(output_form)
         self.layout.addWidget(path_box)
 
@@ -102,6 +104,8 @@ class BasicPage(BasePage):
         self.rules_editor = BasicRulesEditor()
         self.rules_editor.set_input_dir(self.source.path())
         self.source.pathChanged.connect(self.rules_editor.set_input_dir)
+        self.rules_editor.scanRequested.connect(self._scan_rules_schema)
+        self.source.remote.selectionChanged.connect(self._remote_schema_selection_changed)
         rules_layout.addWidget(self.rules_editor)
         self.layout.addWidget(rules_box)
 
@@ -115,6 +119,43 @@ class BasicPage(BasePage):
         self.task.run_button.setText("开始基础处理")
         self.task.run_button.clicked.connect(self.run)
         self.layout.addWidget(self.task, 1)
+
+
+    def _remote_schema_selection_changed(self) -> None:
+        """远程勾选变化时不主动访问服务器，只提示需要重新扫描。"""
+        if self.source.mode().value != "remote_ssh":
+            return
+        count = len(self.source.remote.selected_files())
+        if count:
+            self.rules_editor.scan_status.setText(
+                f"已选择 {count} 个服务器 G 文件；点击“扫描元素与属性”后将只读下载到 workspace 并生成下拉选项"
+            )
+        else:
+            self.rules_editor.scan_status.setText("请先在 SSH 文件列表中选择一个或多个 G 文件")
+
+    def _scan_rules_schema(self) -> None:
+        """为通用规则扫描准备当前输入源。
+
+        SSH 模式必须先通过 SFTP GET 把当前所选文件下载到本地 workspace 快照，
+        BasicRulesEditor 只扫描这个本地快照，绝不直接读取或修改服务器文件。
+        """
+        try:
+            if self.source.mode().value == "remote_ssh":
+                self.rules_editor.scan_status.setText("正在只读下载所选服务器 G 文件到 workspace，并扫描元素与属性……")
+                from PySide6.QtWidgets import QApplication
+                from PySide6.QtCore import Qt
+                QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+                try:
+                    local_snapshot = self.source.prepare_for_processing()
+                finally:
+                    QApplication.restoreOverrideCursor()
+                self.rules_editor.set_input_dir(local_snapshot)
+            else:
+                self.rules_editor.set_input_dir(self.source.path())
+            self.rules_editor.refresh_schema()
+        except Exception as exc:
+            self.rules_editor.scan_status.setText(f"扫描元素与属性失败：{exc}")
+            QMessageBox.warning(self, "扫描元素与属性失败", str(exc))
 
     def _build_rmu_options(self) -> None:
         box = QGroupBox("环网柜图元处理")
@@ -452,71 +493,10 @@ class BasicPage(BasePage):
             str(right.resolve(strict=False))
         )
 
-    def _ask_output_conflict_action(
-        self,
-        conflicts: list[tuple[Path, Path]],
-    ) -> BasicOutputConflictAction | None:
-        examples = "\n".join(
-            f"• {source.name} → {target}"
-            for source, target in conflicts[:5]
-        )
-        if len(conflicts) > 5:
-            examples += f"\n• 其余 {len(conflicts) - 5} 个冲突文件……"
-
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle("输出文件冲突")
-        box.setText(
-            f"检测到 {len(conflicts)} 个输出文件与源文件相同，或目标位置已经存在同名文件。"
-        )
-        box.setInformativeText(
-            f"{examples}\n\n请选择本次任务的处理方式。为避免误覆盖，推荐自动添加统一时间戳。"
-        )
-        timestamp_button = box.addButton(
-            "自动添加时间戳（推荐）", QMessageBox.ButtonRole.AcceptRole
-        )
-        overwrite_button = box.addButton(
-            "覆盖原文件/已有文件", QMessageBox.ButtonRole.DestructiveRole
-        )
-        cancel_button = box.addButton("取消任务", QMessageBox.ButtonRole.RejectRole)
-        box.setDefaultButton(timestamp_button)
-        box.exec()
-
-        clicked = box.clickedButton()
-        if clicked is timestamp_button:
-            return BasicOutputConflictAction.TIMESTAMP
-        if clicked is overwrite_button:
-            answer = QMessageBox.question(
-                self,
-                "确认覆盖",
-                "覆盖后原文件或已有输出文件将被替换。程序会先写入临时文件并验证，"
-                "验证成功后再原子替换。是否继续？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer == QMessageBox.StandardButton.Yes:
-                return BasicOutputConflictAction.OVERWRITE
-            return None
-        if clicked is cancel_button:
-            return None
-        return None
-
     def _resolve_output_policy(self) -> tuple[BasicOutputConflictAction, str] | None:
-        files = discover_g_inputs(self.source.path(), self.source.mode())
-        output_dir = self.output_path.path()
-        conflicts: list[tuple[Path, Path]] = []
-        for source in files:
-            target = output_dir / source.name
-            if target.exists() or self._same_path(source, target):
-                conflicts.append((source, target))
-
-        if not conflicts:
-            return BasicOutputConflictAction.OVERWRITE, ""
-        action = self._ask_output_conflict_action(conflicts)
-        if action is None:
-            return None
-        timestamp = make_task_timestamp() if action == BasicOutputConflictAction.TIMESTAMP else ""
-        return action, timestamp
+        # workspace/runs 为每次任务创建独立目录，所以无需通过后缀或时间戳避让。
+        # 所有一对一处理后的 G 文件必须与源文件同名。
+        return BasicOutputConflictAction.OVERWRITE, ""
 
     def _settings(self):
         settings = self.rules_editor.build_settings(
@@ -545,6 +525,7 @@ class BasicPage(BasePage):
     def run(self) -> None:
         if not self._validate_common_paths():
             return
+        run_dir = begin_managed_run(self.output_path, "basic", "process")
         if self.upgrade_icon_geometry.isChecked():
             ok, message = self.icon_upgrade_editor.validate_for_run()
             if not ok:
