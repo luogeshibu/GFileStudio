@@ -133,15 +133,19 @@ class BasicSettings(BaseModel):
     # 兼容 v2.7/v2.8 代码；为 True 且 rmu_action=NONE 时按 GROUP 处理。
     group_rmu_elements: bool = False
 
-    # 线路与母线静态线色。颜色使用 #RRGGBB；仅启用的类型会被修改。
+    # 线路与母线样式。颜色使用 #RRGGBB；线型 keep/solid/dashed 分别表示保持/实线/虚线。
     change_feedline_color: bool = False
     feedline_color: str = "#0000FF"
+    feedline_line_style: str = "keep"
     change_connectline_color: bool = False
     connectline_color: str = "#0000FF"
+    connectline_line_style: str = "keep"
     change_busdis_color: bool = False
     busdis_color: str = "#0000FF"
+    busdis_line_style: str = "keep"
     change_bus_color: bool = False
     bus_color: str = "#0000FF"
+    bus_line_style: str = "keep"
 
     # 环网柜增强处理。可与组合/取消组合同时启用。
     # 仅修改“框内存在 SMART Text”的环网柜外框颜色，不修改 SMART 字体。

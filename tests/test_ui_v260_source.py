@@ -27,7 +27,7 @@ def test_basic_page_uses_selection_mode_and_one_run_button():
     assert 'QRadioButton("不处理环网柜组合")' in source
     assert 'QRadioButton("组合所有环网柜")' in source
     assert 'QRadioButton("取消所有环网柜组合")' in source
-    assert 'QGroupBox("线路与母线颜色")' in source
+    assert 'QGroupBox("线路与母线样式")' in source
     assert 'setText("开始基础处理")' in source
     assert "check_duplicate_ids" not in source
     assert "repair_duplicate_ids" not in source

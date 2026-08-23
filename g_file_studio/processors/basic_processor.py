@@ -337,15 +337,17 @@ def _effective_rmu_action(settings: BasicSettings) -> RmuAction:
 
 
 def _color_rules(settings: BasicSettings) -> list[ColorRule]:
+    """构造线路/母线样式规则。颜色和线型可独立启用。"""
     rules: list[ColorRule] = []
-    if settings.change_feedline_color:
-        rules.append(ColorRule("FeedLine", "馈线", settings.feedline_color))
-    if settings.change_connectline_color:
-        rules.append(ColorRule("ConnectLine", "连接线", settings.connectline_color))
-    if settings.change_busdis_color:
-        rules.append(ColorRule("BusDis", "配网母线", settings.busdis_color))
-    if settings.change_bus_color:
-        rules.append(ColorRule("Bus", "主网母线", settings.bus_color))
+    candidates = [
+        ("FeedLine", "馈线", settings.feedline_color, settings.feedline_line_style, settings.change_feedline_color),
+        ("ConnectLine", "连接线", settings.connectline_color, settings.connectline_line_style, settings.change_connectline_color),
+        ("BusDis", "配网母线", settings.busdis_color, settings.busdis_line_style, settings.change_busdis_color),
+        ("Bus", "主网母线", settings.bus_color, settings.bus_line_style, settings.change_bus_color),
+    ]
+    for tag, label, color, line_style, change_color in candidates:
+        if change_color or line_style != "keep":
+            rules.append(ColorRule(tag, label, color, line_style=line_style, change_color=change_color))
     return rules
 
 
@@ -889,19 +891,23 @@ def process_basic(
                 total_color_changed += color_result.total_changed
                 total_dynamic_colors += color_result.total_dynamic_color
                 labels = {rule.element_tag: rule.display_name for rule in color_rules}
-                colors = {rule.element_tag: rule.color.upper() for rule in color_rules}
-                log(f"[颜色处理] {input_path.name}：")
+                style_names = {"keep": "保持原样", "solid": "实线(ls=1)", "dashed": "虚线(ls=2)"}
+                log(f"[线路与母线样式/颜色处理] {input_path.name}：")
                 for rule in color_rules:
                     count = color_result.changed_by_tag.get(rule.element_tag, 0)
+                    color_count = color_result.color_changed_by_tag.get(rule.element_tag, 0)
+                    style_count = color_result.style_changed_by_tag.get(rule.element_tag, 0)
                     dynamic = color_result.dynamic_color_by_tag.get(rule.element_tag, 0)
-                    line = (
-                        f"  - {labels[rule.element_tag]} <{rule.element_tag}>：修改 {count} 个，"
-                        f"颜色 {colors[rule.element_tag]}"
-                    )
-                    if dynamic:
-                        line += f"；其中 {dynamic} 个启用了动态颜色，运行时可能被动态规则覆盖"
+                    parts = [f"修改 {count} 个"]
+                    if rule.change_color:
+                        parts.append(f"颜色 {rule.color.upper()}（{color_count} 个）")
+                    if rule.line_style != "keep":
+                        parts.append(f"线型 {style_names.get(rule.line_style, rule.line_style)}（{style_count} 个）")
+                    line = f"  - {labels[rule.element_tag]} <{rule.element_tag}>：" + "；".join(parts)
+                    if dynamic and rule.change_color:
+                        line += f"；其中 {dynamic} 个启用了动态颜色，运行时颜色可能被动态规则覆盖"
                     log(line)
-                log(f"[颜色处理] {input_path.name}：合计修改 {color_result.total_changed} 个图元。")
+                log(f"[线路与母线样式/颜色处理] {input_path.name}：合计修改 {color_result.total_changed} 个图元。")
 
             if settings.repair_connection_points:
                 connection = repair_tree_connections(tree, input_path)

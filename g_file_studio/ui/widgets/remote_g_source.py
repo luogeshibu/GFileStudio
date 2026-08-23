@@ -75,12 +75,15 @@ class RemoteGSourceWidget(QWidget):
         actions = QHBoxLayout()
         self.test_button = QPushButton("测试 SSH 连接")
         self.refresh_button = QPushButton("刷新 G 文件列表")
+        self.save_button = QPushButton("保存 SSH 设置")
         self.download_button = QPushButton("下载所选到本地…")
         set_secondary(self.test_button)
         set_secondary(self.refresh_button)
+        set_secondary(self.save_button)
         set_secondary(self.download_button)
         actions.addWidget(self.test_button)
         actions.addWidget(self.refresh_button)
+        actions.addWidget(self.save_button)
         actions.addWidget(self.download_button)
         actions.addStretch(1)
         root.addLayout(actions)
@@ -128,6 +131,7 @@ class RemoteGSourceWidget(QWidget):
         root.addWidget(self.table)
 
         self.test_button.clicked.connect(self.test_connection)
+        self.save_button.clicked.connect(self.save_settings)
         self.refresh_button.clicked.connect(self.refresh_files)
         self.download_button.clicked.connect(self.download_selected_to_local)
         self.search.textChanged.connect(self._apply_filter)
@@ -135,6 +139,12 @@ class RemoteGSourceWidget(QWidget):
         self.unselect_visible.clicked.connect(lambda: self._set_visible_checked(False))
         self.clear_selection.clicked.connect(self._clear_checks)
         self.table.itemChanged.connect(self._item_changed)
+
+        # SSH 连接参数是全局共享设置：任一模块修改后，其他使用 SSH 文件源的
+        # 模块在再次显示时都会读取同一组最后输入值。字段结束编辑时自动保存，
+        # 同时保留显式“保存 SSH 设置”按钮，避免必须先测试连接才会记住输入。
+        for editor in (self.host, self.port, self.username, self.password, self.remote_dir):
+            editor.editingFinished.connect(self._persist_silently)
 
     def _key(self, suffix: str) -> str:
         return f"remote_g_source/{suffix}"
@@ -148,6 +158,39 @@ class RemoteGSourceWidget(QWidget):
         self.settings_service.set_value(self._key("username"), self.username.text().strip())
         self.settings_service.set_value(self._key("password"), self.password.text())
         self.settings_service.set_value(self._key("remote_directory"), self.remote_dir.text().strip())
+
+    def _persist_silently(self) -> None:
+        """保存最后一次 SSH 输入，不弹窗、不发起网络连接。"""
+        self.persist()
+
+    def save_settings(self) -> None:
+        """显式保存 SSH/SFTP 参数；只写本机用户配置，不访问服务器。"""
+        try:
+            # 先校验端口格式，避免把明显无效的连接参数保存成当前配置。
+            self.config()
+            self.persist()
+            self.status.setText("SSH 设置已保存；所有使用 SSH 文件源的模块将复用这组最后输入。")
+        except Exception as exc:
+            QMessageBox.warning(self, "保存 SSH 设置失败", str(exc))
+
+    def _restore_shared_settings(self) -> None:
+        """从全局 SSH 设置恢复字段，供模块切换后同步其他页面的最新输入。"""
+        values = (
+            (self.host, self._saved("host", DEFAULT_SSH_HOST)),
+            (self.port, self._saved("port", str(DEFAULT_SSH_PORT))),
+            (self.username, self._saved("username", DEFAULT_SSH_USERNAME)),
+            (self.password, self._saved("password", DEFAULT_SSH_PASSWORD)),
+            (self.remote_dir, self._saved("remote_directory", DEFAULT_SSH_REMOTE_DIRECTORY)),
+        )
+        for editor, value in values:
+            if not editor.hasFocus() and editor.text() != value:
+                editor.setText(value)
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API naming
+        # MainWindow 会预先创建各页面，因此切换到另一个模块时重新读取共享 SSH
+        # 配置，确保所有模块看到的是用户最近一次保存/结束编辑后的参数。
+        self._restore_shared_settings()
+        super().showEvent(event)
 
     def config(self) -> dict[str, object]:
         try:

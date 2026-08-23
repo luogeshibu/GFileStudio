@@ -1,0 +1,32 @@
+<!doctype html><html><head><meta charset='utf-8'><title>RMU 信息汇总报告</title><style>body{font-family:Segoe UI,Microsoft YaHei,sans-serif;margin:24px;color:#1f2937}.summary{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}.badge{padding:7px 10px;border:1px solid #cbd5e1;border-radius:6px}table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #d1d5db;padding:6px 8px;text-align:left}th{background:#e8f3ef;position:sticky;top:0}tr.good td{background:#dcfce7}tr.warn td{background:#fef9c3}tr.bad td{background:#fee2e2}.report-select-col{width:46px;min-width:46px;text-align:center!important;position:sticky;left:0;z-index:3;}th.report-select-col{background:#dce9e4!important;}td.report-select-col{background:inherit;}.report-select{width:17px;height:17px;cursor:pointer;vertical-align:middle;}tr.report-row-selected td{outline:2px solid rgba(37,99,235,.35);outline-offset:-2px;}tr.report-row-selected td:not(.report-select-col){box-shadow:inset 0 0 0 9999px rgba(59,130,246,.10);}.report-selection-bar{display:flex;align-items:center;gap:12px;margin:10px 0;color:#475569;font-size:13px;}.report-selection-count{font-weight:600;color:#1d4ed8;}</style></head><body><h2>RMU 信息汇总报告</h2><div class='summary'><div class='badge'>RMU 总数：<b>0</b></div><div class='badge'>智能环网柜：<b>0</b></div><div class='badge'>普通环网柜：<b>0</b></div><div class='badge'>重复名称/ID 行：<b>0</b></div><div class='badge'>名称未识别：<b>0</b></div><div class='badge'>柜型未识别：<b>0</b></div><div class='badge'>中/低置信度待确认：<b>0</b></div></div><p>绿色=高置信度且完整；黄色=需要确认；红色=重复、名称/柜型未识别。</p><div class="report-selection-bar"><span>查看辅助：可单选/多选行，勾选后整行高亮。</span><span class="report-selection-count" id="reportSelectionCount">已选择 0 行</span></div><table><thead><tr><th class="report-select-col" title="全选/取消全选"><input id="reportSelectAll" class="report-select" type="checkbox" aria-label="全选"></th><th>File</th><th>RMUName</th><th>RMUType</th><th>IntelligentRMU</th><th>IntelligentSource</th><th>Confidence</th><th>Duplicate</th><th>RectID</th><th>RectX</th><th>RectY</th><th>RectW</th><th>RectH</th><th>Warnings</th></tr></thead><tbody></tbody></table><script>
+(function(){
+  function updateCount(){
+    var checked=document.querySelectorAll('.report-row-select:checked').length;
+    var label=document.getElementById('reportSelectionCount');
+    if(label){label.textContent='已选择 '+checked+' 行';}
+    var all=document.getElementById('reportSelectAll');
+    var boxes=Array.from(document.querySelectorAll('.report-row-select'));
+    if(all){
+      all.checked=boxes.length>0 && checked===boxes.length;
+      all.indeterminate=checked>0 && checked<boxes.length;
+    }
+  }
+  function setRowState(box){
+    var row=box.closest('tr');
+    if(row){row.classList.toggle('report-row-selected', box.checked);}
+  }
+  document.querySelectorAll('.report-row-select').forEach(function(box){
+    box.addEventListener('change', function(){setRowState(box);updateCount();});
+  });
+  var all=document.getElementById('reportSelectAll');
+  if(all){
+    all.addEventListener('change', function(){
+      document.querySelectorAll('.report-row-select').forEach(function(box){
+        box.checked=all.checked; setRowState(box);
+      });
+      updateCount();
+    });
+  }
+  updateCount();
+})();
+</script></body></html>

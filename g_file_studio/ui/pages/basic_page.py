@@ -58,7 +58,7 @@ class BasicPage(BasePage):
         self.layout.addWidget(
             InfoBanner(
                 "输入可以是单个 G 文件，也可以是 G 文件目录。属性替换、元素删除、"
-                "馈线名称定位、连接点修复、图元版本升级以及线路与母线颜色修改，"
+                "馈线名称定位、连接点修复、图元版本升级以及线路与母线样式修改，"
                 "都在点击“开始基础处理”后统一执行。ID 检查/修复已移到全局“ID 检查与修复”模块。连接点修复仅在勾选时处理 node_area/link；"
                 "未勾选时完全跳过。目录模式下每个文件独立处理。"
             )
@@ -313,13 +313,13 @@ class BasicPage(BasePage):
         self.layout.addWidget(box)
 
     def _build_color_options(self) -> None:
-        box = QGroupBox("线路与母线颜色")
+        box = QGroupBox("线路与母线样式")
         layout = QVBoxLayout(box)
         layout.setContentsMargins(16, 18, 16, 14)
         layout.setSpacing(9)
         description = QLabel(
-            "按元素标签修改静态线色，只同步修改 lc（R,G,B）和 lcc（#RRGGBB），不修改填充色、线宽、坐标、ID 或引用。"
-            "启用动态颜色的图元仍会修改静态线色，但运行时显示可能被动态规则覆盖。"
+            "按元素标签统一调整线路与母线样式。颜色仅修改 lc/lcc；线型仅修改 ls：实线=1、虚线=2。"
+            "颜色勾选与线型选择彼此独立；线型选择‘保持原样’时不会修改 ls。不会修改填充色、线宽 lw、坐标、ID 或引用。"
         )
         description.setWordWrap(True)
         description.setObjectName("mutedText")
@@ -442,6 +442,9 @@ class BasicPage(BasePage):
             row.set_enabled(
                 self.user_settings.get_bool(f"basic/colors/{key}_enabled", False)
             )
+            row.set_line_style(
+                self.user_settings.get_value(f"basic/styles/{key}_line_style", "keep")
+            )
 
     def save_state(self) -> None:
         self.source.persist_all_text()
@@ -469,6 +472,9 @@ class BasicPage(BasePage):
             self.user_settings.set_value(f"basic/colors/{key}", row.color())
             self.user_settings.set_value(
                 f"basic/colors/{key}_enabled", row.is_enabled()
+            )
+            self.user_settings.set_value(
+                f"basic/styles/{key}_line_style", row.line_style()
             )
 
     def _validate_common_paths(self) -> bool:
@@ -513,12 +519,16 @@ class BasicPage(BasePage):
                 "move_feeder_titles_above_bus": self.move_feeder_titles_above_bus.isChecked(),
                 "change_feedline_color": self.feedline_color.is_enabled(),
                 "feedline_color": self.feedline_color.color(),
+                "feedline_line_style": self.feedline_color.line_style(),
                 "change_connectline_color": self.connectline_color.is_enabled(),
                 "connectline_color": self.connectline_color.color(),
+                "connectline_line_style": self.connectline_color.line_style(),
                 "change_busdis_color": self.busdis_color.is_enabled(),
                 "busdis_color": self.busdis_color.color(),
+                "busdis_line_style": self.busdis_color.line_style(),
                 "change_bus_color": self.bus_color.is_enabled(),
                 "bus_color": self.bus_color.color(),
+                "bus_line_style": self.bus_color.line_style(),
             }
         )
 
