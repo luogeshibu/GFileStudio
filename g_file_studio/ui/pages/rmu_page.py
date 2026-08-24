@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -54,14 +55,14 @@ class RmuPage(BasePage):
         help_title, help_html = APP_HELP["rmu"]
         super().__init__(
             "环网柜处理",
-            "独立处理环网柜组合/取消组合、增强操作，以及柜名与柜型识别。",
+            "独立处理环网柜组合、增强操作，以及柜名与柜型识别。",
             help_title,
             help_html,
             parent,
         )
         self.layout.addWidget(
             InfoBanner(
-                "本页面由原“基础处理”中的环网柜功能独立拆分而来。环网柜组合/取消组合、SMART 外框改色、"
+                "本页面负责环网柜组合、SMART 外框改色、"
                 "channel_status 状态点、带 Bus 外框处理，以及柜名/柜型识别算法均保持原逻辑不变；SMART 与 SMR 仅在信息汇总统计层统一归类为智能环网柜。"
             )
         )
@@ -141,8 +142,7 @@ class RmuPage(BasePage):
         description = QLabel(
             "“组合所有环网柜”会将每个直属 <rect> 作为环网柜外框，只组合完整位于矩形框内部的直属图元；"
             "任何部分位于框外的连接线、状态图标和文字都不会进入组合。"
-            "“取消所有环网柜组合”会删除成员中含 <rect> 的 <Merge> 头元素，并把 rect 外框移动到柜内设备之前，"
-            "使外框位于设备下层；坐标、ID、引用和业务属性不变，其他业务 Merge 不受影响。"
+            "彻底取消图形组合已经移动到“基础处理 → 图形组合处理”，因为该操作会删除整个 G 文件中的全部 <Merge>，不再属于 RMU 专用功能。"
         )
         description.setWordWrap(True)
         description.setObjectName("mutedText")
@@ -154,8 +154,7 @@ class RmuPage(BasePage):
         self.rmu_action_group.setExclusive(True)
         self.rmu_none = QRadioButton("不处理环网柜组合")
         self.rmu_group = QRadioButton("组合所有环网柜")
-        self.rmu_ungroup = QRadioButton("取消所有环网柜组合")
-        for button in (self.rmu_none, self.rmu_group, self.rmu_ungroup):
+        for button in (self.rmu_none, self.rmu_group):
             button.setProperty("optionChoice", True)
             self.rmu_action_group.addButton(button)
             options.addWidget(button)
@@ -207,8 +206,10 @@ class RmuPage(BasePage):
         layout.setSpacing(10)
         description = QLabel(
             "直接解析 G 文件，不使用 OCR。只有 rect 框内同时存在 BusDis、CBreakerDis 和 ZhaiWaiJieDiDaoZha 才认定为环网柜；"
-            "柜名严格只在用户勾选方向中寻找：单候选直接使用；同一最近文字组存在多个候选时才优先绿色文字。"
-            "柜型优先按 Y1/Y2/... 与 Q1/Q2/... 名称计数，名称无法判断时才回退到设备 devref。SMART 与 SMR 统一统计为“智能环网柜”，并保留识别来源。"
+            "柜名优先严格只在用户勾选方向中寻找：单候选直接使用；同一最近文字组存在多个候选时才优先绿色文字。"
+            "常规几何匹配失败时，仅当柜内 BusDis.key_name 唯一候选与所选方向附近同名 Text 完全一致时回退。"
+            "柜名排除字符串按完整文本匹配过滤。柜型优先按 Y1/Y2/... 与 Q1/Q2/... 名称计数，名称无法判断时才回退到设备 devref。"
+            "SMART 与 SMR 统一统计为“智能环网柜”，并保留识别来源。"
         )
         description.setWordWrap(True)
         description.setObjectName("mutedText")
@@ -230,6 +231,17 @@ class RmuPage(BasePage):
         name_row.addStretch(1)
         layout.addLayout(name_row)
 
+        exclude_row = QHBoxLayout()
+        exclude_row.addWidget(QLabel("柜名排除字符串："))
+        self.rmu_name_exclusions = QLineEdit()
+        self.rmu_name_exclusions.setPlaceholderText("例如：NOP, DAS/OK, SFI")
+        self.rmu_name_exclusions.setToolTip(
+            "多个字符串使用逗号或分号分隔。按完整字符串匹配，忽略大小写和首尾空白；"
+            "不会使用包含关系，例如排除 SFI 不会排除 SFI-1201。"
+        )
+        exclude_row.addWidget(self.rmu_name_exclusions, 1)
+        layout.addLayout(exclude_row)
+
         self.rmu_smart_in_type = QCheckBox("启用智能环网柜分类（SMART / SMR）")
         self.rmu_smart_in_type.setProperty("optionChoice", True)
         self.rmu_smart_in_type.setToolTip(
@@ -244,7 +256,7 @@ class RmuPage(BasePage):
         classify_note.setWordWrap(True)
         classify_note.setObjectName("mutedText")
         layout.addWidget(classify_note)
-        for item in (self.rmu_name_top, self.rmu_name_bottom, self.rmu_name_left, self.rmu_name_right, self.rmu_smart_in_type):
+        for item in (self.rmu_name_top, self.rmu_name_bottom, self.rmu_name_left, self.rmu_name_right, self.rmu_name_exclusions, self.rmu_smart_in_type):
             self.identify_rmu.toggled.connect(item.setEnabled)
         self.layout.addWidget(box)
 
@@ -326,7 +338,7 @@ class RmuPage(BasePage):
         )
 
     def _connect_report_button_linkage(self) -> None:
-        for button in (self.rmu_none, self.rmu_group, self.rmu_ungroup):
+        for button in (self.rmu_none, self.rmu_group):
             button.toggled.connect(self._refresh_report_buttons)
         self.rmu_smart_frame_color.enabled_box.toggled.connect(self._refresh_report_buttons)
         self.rmu_smr_frame_color.enabled_box.toggled.connect(self._refresh_report_buttons)
@@ -375,13 +387,11 @@ class RmuPage(BasePage):
     def _selected_rmu_action(self) -> RmuAction:
         if self.rmu_group.isChecked():
             return RmuAction.GROUP
-        if self.rmu_ungroup.isChecked():
-            return RmuAction.UNGROUP
         return RmuAction.NONE
 
     def _restore_options(self) -> None:
         value = self.user_settings.get_value("basic/rmu_action", RmuAction.NONE.value)
-        {RmuAction.NONE.value: self.rmu_none, RmuAction.GROUP.value: self.rmu_group, RmuAction.UNGROUP.value: self.rmu_ungroup}.get(value, self.rmu_none).setChecked(True)
+        {RmuAction.NONE.value: self.rmu_none, RmuAction.GROUP.value: self.rmu_group}.get(value, self.rmu_none).setChecked(True)
         self.rmu_smart_frame_color.set_color(self.user_settings.get_value("basic/rmu/smart_frame_color", "#00A651"))
         self.rmu_smart_frame_color.set_enabled(self.user_settings.get_bool("basic/rmu/smart_frame_color_enabled", False))
         self.rmu_smr_frame_color.set_color(self.user_settings.get_value("basic/rmu/smr_frame_color", "#FF0000"))
@@ -399,6 +409,7 @@ class RmuPage(BasePage):
         self.rmu_name_bottom.setChecked(self.user_settings.get_bool("basic/rmu/name_bottom", False))
         self.rmu_name_left.setChecked(self.user_settings.get_bool("basic/rmu/name_left", False))
         self.rmu_name_right.setChecked(self.user_settings.get_bool("basic/rmu/name_right", False))
+        self.rmu_name_exclusions.setText(self.user_settings.get_value("basic/rmu/name_exclusions", ""))
         self.rmu_smart_in_type.setChecked(self.user_settings.get_bool("basic/rmu/smart_in_type", False))
         self.compare_rmu_ledger.setChecked(self.user_settings.get_bool("rmu/ledger/compare_enabled", False))
         ledger_mode = self.user_settings.get_value("rmu/ledger/input_mode", RmuLedgerInputMode.FILE.value)
@@ -410,7 +421,7 @@ class RmuPage(BasePage):
         self.rmu_ledger_text.setPlainText(self.user_settings.get_value("rmu/ledger/text", ""))
         self._refresh_ledger_controls()
         enabled = self.identify_rmu.isChecked()
-        for item in (self.rmu_name_top, self.rmu_name_bottom, self.rmu_name_left, self.rmu_name_right, self.rmu_smart_in_type):
+        for item in (self.rmu_name_top, self.rmu_name_bottom, self.rmu_name_left, self.rmu_name_right, self.rmu_name_exclusions, self.rmu_smart_in_type):
             item.setEnabled(enabled)
 
     def _persist_options(self) -> None:
@@ -428,6 +439,7 @@ class RmuPage(BasePage):
         self.user_settings.set_value("basic/rmu/name_bottom", self.rmu_name_bottom.isChecked())
         self.user_settings.set_value("basic/rmu/name_left", self.rmu_name_left.isChecked())
         self.user_settings.set_value("basic/rmu/name_right", self.rmu_name_right.isChecked())
+        self.user_settings.set_value("basic/rmu/name_exclusions", self.rmu_name_exclusions.text().strip())
         self.user_settings.set_value("basic/rmu/smart_in_type", self.rmu_smart_in_type.isChecked())
         self.user_settings.set_value("rmu/ledger/compare_enabled", self.compare_rmu_ledger.isChecked())
         self.user_settings.set_value("rmu/ledger/input_mode", self._selected_ledger_mode().value)
@@ -484,6 +496,7 @@ class RmuPage(BasePage):
             rmu_name_bottom=self.rmu_name_bottom.isChecked(),
             rmu_name_left=self.rmu_name_left.isChecked(),
             rmu_name_right=self.rmu_name_right.isChecked(),
+            rmu_name_exclusions=self.rmu_name_exclusions.text().strip(),
             rmu_smart_in_type=(self.rmu_smart_in_type.isChecked() or self.compare_rmu_ledger.isChecked()),
             export_rmu_identification_csv=True,
             compare_rmu_ledger=self.compare_rmu_ledger.isChecked(),

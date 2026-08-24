@@ -1,4 +1,6 @@
 from pathlib import Path
+
+import pytest
 import xml.etree.ElementTree as ET
 
 from g_file_studio.engines.rmu_group_engine import enhance_rmu_tree
@@ -6,6 +8,8 @@ from g_file_studio.engines.rmu_group_engine import enhance_rmu_tree
 
 def test_smr_matches_nearest_valid_rmu_rect_on_real_file():
     path = Path('/mnt/data/JED-NTH-ABH.sln.pic(2).g')
+    if not path.is_file():
+        pytest.skip('external real-file fixture is not available in this environment')
     tree = ET.parse(path)
     result = enhance_rmu_tree(
         tree,
@@ -22,6 +26,8 @@ def test_smr_matches_nearest_valid_rmu_rect_on_real_file():
 
 def test_smr_feature_does_not_run_when_disabled_on_real_file():
     path = Path('/mnt/data/JED-NTH-ABH.sln.pic(2).g')
+    if not path.is_file():
+        pytest.skip('external real-file fixture is not available in this environment')
     tree = ET.parse(path)
     result = enhance_rmu_tree(tree, path)
     assert result.smr_text_count == 0

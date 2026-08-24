@@ -10,8 +10,8 @@ from g_file_studio.engines.color_engine import ColorRule, apply_line_colors
 from g_file_studio.engines.connection_engine import repair_tree_connections
 from g_file_studio.engines.feeder_title_engine import move_feeder_titles_above_buses
 from g_file_studio.engines.icon_upgrade_engine import analyze_icon_pairs, apply_icon_upgrade
-from g_file_studio.engines.rmu_group_engine import enhance_rmu_tree, group_rmu_tree, ungroup_rmu_tree
-from g_file_studio.engines.rmu_identification_engine import identify_rmus
+from g_file_studio.engines.rmu_group_engine import enhance_rmu_tree, group_rmu_tree, remove_all_graphic_merges, ungroup_rmu_tree
+from g_file_studio.engines.rmu_identification_engine import identify_rmus, parse_name_exclusions
 from g_file_studio.models import (
     BasicOutputConflictAction,
     BasicSettings,
@@ -25,6 +25,7 @@ from g_file_studio.services.output_naming import (
     strip_g_suffix,
 )
 from g_file_studio.services.html_report_selection import selection_bar, selection_cell, selection_header, selection_script, selection_style
+from g_file_studio.services.report_i18n import report_is_english, report_text
 from g_file_studio.services.rmu_ledger_service import (
     GraphicRmuRow,
     compare_ledger,
@@ -54,18 +55,24 @@ def _write_rmu_processing_report(output_dir: Path, rows: list[dict[str, object]]
         writer = csv.writer(stream)
         writer.writerow(headers)
         for row in rows:
-            writer.writerow([row.get(h, "") for h in headers])
+            writer.writerow([report_text(row.get(h, "")) for h in headers])
 
     body = []
     for row in rows:
-        cells = "".join(f"<td>{escape(str(row.get(h, '')))}</td>" for h in headers)
+        cells = "".join(f"<td>{escape(report_text(row.get(h, '')))}</td>" for h in headers)
         body.append("<tr>" + selection_cell() + cells + "</tr>")
+    english = report_is_english()
+    report_title = "RMU Graphic Processing Report" if english else "环网柜图元处理报告"
+    report_note = (
+        "This report records the RMU graphic operations enabled for this run; running again replaces the previous report of the same type."
+        if english else "本报告记录本次启用的环网柜图元操作；再次执行会覆盖上一份同类报告。"
+    )
     html_path.write_text(
-        "<!doctype html><html><head><meta charset='utf-8'><title>环网柜图元处理报告</title>"
+        f"<!doctype html><html lang='{"en" if english else "zh-CN"}'><head><meta charset='utf-8'><title>{report_title}</title>"
         "<style>body{font-family:Segoe UI,Microsoft YaHei,sans-serif;margin:24px;color:#1f2937}"
         "table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #d1d5db;padding:6px 8px;text-align:left}"
         "th{background:#e8f3ef;position:sticky;top:0}" + selection_style() + "</style></head><body>"
-        "<h2>环网柜图元处理报告</h2><p>本报告记录本次启用的环网柜图元操作；再次执行会覆盖上一份同类报告。</p>"
+        + f"<h2>{report_title}</h2><p>{report_note}</p>"
         + selection_bar() + "<table><thead><tr>" + selection_header()
         + "".join(f"<th>{escape(h)}</th>" for h in headers)
         + "</tr></thead><tbody>" + "".join(body) + "</tbody></table>"
@@ -94,7 +101,7 @@ def _write_rmu_summary_reports(
         for row in rows:
             writer.writerow([
                 row.file_name, row.name, row.rmu_type, row.intelligent, row.intelligent_source,
-                row.confidence, row.duplicate, row.rect_id, row.rect_x, row.rect_y, row.rect_w, row.rect_h, row.warnings,
+                report_text(row.confidence), row.duplicate, row.rect_id, row.rect_x, row.rect_y, row.rect_w, row.rect_h, report_text(row.warnings),
             ])
 
     def row_class(row: GraphicRmuRow) -> str:
@@ -108,7 +115,7 @@ def _write_rmu_summary_reports(
     for row in rows:
         vals = [
             row.file_name, row.name, row.rmu_type, row.intelligent, row.intelligent_source,
-            row.confidence, row.duplicate, row.rect_id, row.rect_x, row.rect_y, row.rect_w, row.rect_h, row.warnings,
+            report_text(row.confidence), row.duplicate, row.rect_id, row.rect_x, row.rect_y, row.rect_w, row.rect_h, report_text(row.warnings),
         ]
         body.append(
             f"<tr class='{row_class(row)}'>" + selection_cell()
@@ -121,20 +128,36 @@ def _write_rmu_summary_reports(
     unnamed = sum(1 for row in rows if not row.name)
     untyped = sum(1 for row in rows if not row.rmu_type or row.rmu_type == "0L0T")
     warning_rows = sum(1 for row in rows if row.confidence not in {"高", "HIGH", "High"} and row.name and row.rmu_type and row.duplicate != "YES")
+    english = report_is_english()
+    report_title = "RMU Summary Report" if english else "RMU 信息汇总报告"
+    if english:
+        summary_html = (
+            f"<div class='summary'><div class='badge'>Total RMUs: <b>{total}</b></div>"
+            + (f"<div class='badge'>Smart RMUs: <b>{intelligent}</b></div><div class='badge'>Normal RMUs: <b>{ordinary}</b></div>" if intelligent_classification_enabled else "<div class='badge'>Smart Classification: <b>Disabled</b></div>")
+            + f"<div class='badge'>Duplicate Name/ID Rows: <b>{duplicates}</b></div>"
+            + f"<div class='badge'>Unrecognized Names: <b>{unnamed}</b></div>"
+            + f"<div class='badge'>Unrecognized Cabinet Types: <b>{untyped}</b></div>"
+            + f"<div class='badge'>Medium/Low Confidence Pending Review: <b>{warning_rows}</b></div></div>"
+        )
+        legend = "Green = complete with high confidence; yellow = review required; red = duplicate or unrecognized name/cabinet type."
+    else:
+        summary_html = (
+            f"<div class='summary'><div class='badge'>RMU 总数：<b>{total}</b></div>"
+            + (f"<div class='badge'>智能环网柜：<b>{intelligent}</b></div><div class='badge'>普通环网柜：<b>{ordinary}</b></div>" if intelligent_classification_enabled else "<div class='badge'>智能分类：<b>未启用</b></div>")
+            + f"<div class='badge'>重复名称/ID 行：<b>{duplicates}</b></div>"
+            + f"<div class='badge'>名称未识别：<b>{unnamed}</b></div>"
+            + f"<div class='badge'>柜型未识别：<b>{untyped}</b></div>"
+            + f"<div class='badge'>中/低置信度待确认：<b>{warning_rows}</b></div></div>"
+        )
+        legend = "绿色=高置信度且完整；黄色=需要确认；红色=重复、名称/柜型未识别。"
     html_path.write_text(
-        "<!doctype html><html><head><meta charset='utf-8'><title>RMU 信息汇总报告</title>"
+        f"<!doctype html><html lang='{"en" if english else "zh-CN"}'><head><meta charset='utf-8'><title>{report_title}</title>"
         "<style>body{font-family:Segoe UI,Microsoft YaHei,sans-serif;margin:24px;color:#1f2937}"
         ".summary{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}.badge{padding:7px 10px;border:1px solid #cbd5e1;border-radius:6px}"
         "table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #d1d5db;padding:6px 8px;text-align:left}"
         "th{background:#e8f3ef;position:sticky;top:0}tr.good td{background:#dcfce7}tr.warn td{background:#fef9c3}tr.bad td{background:#fee2e2}"
-        + selection_style() + "</style></head><body><h2>RMU 信息汇总报告</h2>"
-        f"<div class='summary'><div class='badge'>RMU 总数：<b>{total}</b></div>"
-        + (f"<div class='badge'>智能环网柜：<b>{intelligent}</b></div><div class='badge'>普通环网柜：<b>{ordinary}</b></div>" if intelligent_classification_enabled else "<div class='badge'>智能分类：<b>未启用</b></div>")
-        + f"<div class='badge'>重复名称/ID 行：<b>{duplicates}</b></div>"
-        + f"<div class='badge'>名称未识别：<b>{unnamed}</b></div>"
-        + f"<div class='badge'>柜型未识别：<b>{untyped}</b></div>"
-        + f"<div class='badge'>中/低置信度待确认：<b>{warning_rows}</b></div></div>"
-        "<p>绿色=高置信度且完整；黄色=需要确认；红色=重复、名称/柜型未识别。</p>"
+        + selection_style() + f"</style></head><body><h2>{report_title}</h2>"
+        + summary_html + f"<p>{legend}</p>"
         + selection_bar() + "<table><thead><tr>" + selection_header()
         + "".join(f"<th>{escape(h)}</th>" for h in headers)
         + "</tr></thead><tbody>" + "".join(body) + "</tbody></table>"
@@ -269,12 +292,17 @@ def _write_smr_frame_reports(output_dir: Path, rows: list[dict[str, object]]) ->
     html_path = output_dir / "rmu-smr-frame-report.html"
     headers = ["File","SMRTextID","SMRX","SMRY","RectID","RectX","RectY","RectW","RectH","Distance","OldColor","NewColor","Result"]
     with csv_path.open("w", encoding="utf-8-sig", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=headers); writer.writeheader(); writer.writerows(rows)
+        writer = csv.writer(stream); writer.writerow(headers)
+        for row in rows:
+            writer.writerow([report_text(row.get(h, "")) for h in headers])
     trs=[]
     for row in rows:
-        cells="".join("<td>%s</td>" % escape(str(row.get(h,""))) for h in headers)
+        cells="".join("<td>%s</td>" % escape(report_text(row.get(h,""))) for h in headers)
         trs.append("<tr>%s%s</tr>" % (selection_cell(), cells))
-    html = ("<!doctype html><html><head><meta charset='utf-8'><title>RMU SMR 外框处理报告</title><style>" + selection_style() + "table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:left}</style></head><body><h2>RMU SMR 外框处理报告</h2><p>本报告每次执行覆盖上一份同类报告。</p>" + selection_bar() + "<table><thead><tr>" + selection_header() + "".join("<th>%s</th>" % escape(h) for h in headers) + "</tr></thead><tbody>" + "".join(trs) + "</tbody></table>" + selection_script() + "</body></html>")
+    english = report_is_english()
+    report_title = "RMU SMR Frame Processing Report" if english else "RMU SMR 外框处理报告"
+    report_note = "This report replaces the previous report of the same type on each run." if english else "本报告每次执行覆盖上一份同类报告。"
+    html = (f"<!doctype html><html lang='{"en" if english else "zh-CN"}'><head><meta charset='utf-8'><title>{report_title}</title><style>" + selection_style() + "table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:left}</style></head><body>" + f"<h2>{report_title}</h2><p>{report_note}</p>" + selection_bar() + "<table><thead><tr>" + selection_header() + "".join("<th>%s</th>" % escape(h) for h in headers) + "</tr></thead><tbody>" + "".join(trs) + "</tbody></table>" + selection_script() + "</body></html>")
     html_path.write_text(html, encoding="utf-8")
     return csv_path, html_path
 
@@ -392,11 +420,11 @@ def _write_rmu_csv(output_path: Path, identification) -> Path:
             writer.writerow([
                 item.name, item.rmu_type, getattr(item, "type_source", ""), getattr(item, "text_yq_type", ""),
                 getattr(item, "devref_type", ""), getattr(item, "type_cross_check", "N/A"),
-                getattr(item, "type_validation_status", "WARN"), getattr(item, "type_cross_note", ""),
+                getattr(item, "type_validation_status", "WARN"), report_text(getattr(item, "type_cross_note", "")),
                 item.l_count, item.t_count, item.smart_count, getattr(item, "smart_source", ""),
-                item.name_position, item.confidence, duplicate, item.rect_id,
+                item.name_position, report_text(item.confidence), duplicate, item.rect_id,
                 f"{item.rect_x:g}", f"{item.rect_y:g}", f"{item.rect_w:g}", f"{item.rect_h:g}",
-                " | ".join(item.warnings),
+                report_text(" | ".join(item.warnings)),
             ])
     return csv_path
 
@@ -438,13 +466,20 @@ def _write_rmu_html(output_path: Path, identification) -> Path:
             return "high"
         return "medium"
 
-    headers = [
+    english = report_is_english()
+    headers = ([
+        "RMU Name", "RMU Type", "Type Source", "Y/Q Text Type", "devref Type",
+        "Type Cross-Check", "Type Validation Status", "Type Cross-Check Note",
+        "L Count", "T Count", "Smart RMU", "Smart Source",
+        "Name Position", "Confidence", "Duplicate", "RectID",
+        "RectX", "RectY", "RectW", "RectH", "Warnings",
+    ] if english else [
         "环网柜名称", "环网柜类型", "类型识别来源", "柜内Y/Q文字类型", "devref类型",
         "类型交叉校验", "柜型校验状态", "柜型交叉校验说明",
         "L数量", "T数量", "智能环网柜", "智能标识来源",
         "柜名位置", "识别置信度", "是否重复", "RectID",
         "RectX", "RectY", "RectW", "RectH", "Warnings",
-    ]
+    ])
     rows: list[str] = []
     for item in identification.items:
         key = (item.name or "").strip().casefold()
@@ -452,11 +487,11 @@ def _write_rmu_html(output_path: Path, identification) -> Path:
         values = [
             item.name, item.rmu_type, getattr(item, "type_source", ""), getattr(item, "text_yq_type", ""),
             getattr(item, "devref_type", ""), getattr(item, "type_cross_check", "N/A"),
-            getattr(item, "type_validation_status", "WARN"), getattr(item, "type_cross_note", ""),
+            getattr(item, "type_validation_status", "WARN"), report_text(getattr(item, "type_cross_note", "")),
             str(item.l_count), str(item.t_count), str(item.smart_count), getattr(item, "smart_source", ""),
-            item.name_position, item.confidence, duplicate, item.rect_id,
+            item.name_position, report_text(item.confidence), duplicate, item.rect_id,
             f"{item.rect_x:g}", f"{item.rect_y:g}", f"{item.rect_w:g}", f"{item.rect_h:g}",
-            " | ".join(item.warnings),
+            report_text(" | ".join(item.warnings)),
         ]
         cells = "".join(f"<td>{escape(value)}</td>" for value in values)
         rows.append(f'<tr class="{row_class(item)}">{selection_cell()}{cells}</tr>')
@@ -468,17 +503,43 @@ def _write_rmu_html(output_path: Path, identification) -> Path:
             key,
         )
         duplicate_list.append(f"{escape(display_name)} × {counts[key]}")
-    duplicate_text = "、".join(duplicate_list) if duplicate_list else "无"
+    duplicate_text = ((", ".join(duplicate_list) if duplicate_list else "None") if english else ("、".join(duplicate_list) if duplicate_list else "无"))
 
     header_cells = "".join(f"<th>{escape(header)}</th>" for header in headers)
     body_rows = "".join(rows)
+    if english:
+        report_title = f"{stem} RMU Identification Report"
+        report_heading = "RMU Identification Report"
+        report_summary = (
+            f'<div class="summary"><div class="badge">Total RMUs: <b>{len(identification.items)}</b></div>'
+            f'<div class="badge">Names Identified: <b>{identification.named_count}</b></div>'
+            f'<div class="badge">Types Identified: <b>{identification.typed_count}</b></div>'
+            f'<div class="badge">High Confidence: <b>{high_count}</b></div>'
+            f'<div class="badge">Medium/Pending: <b>{medium_count}</b></div>'
+            f'<div class="badge">Unrecognized: <b>{unidentified_count}</b></div>'
+            f'<div class="badge">Duplicate RMU Names/IDs: <b>{len(duplicates)}</b> ({duplicate_row_count} rows)</div></div>'
+        )
+        report_note = f"Colors: green = high confidence; yellow = medium/pending review; red = unrecognized or duplicate RMU name/ID. Duplicates: {duplicate_text}"
+    else:
+        report_title = f"{stem} RMU 信息汇总报告"
+        report_heading = "RMU 信息汇总报告"
+        report_summary = (
+            f'<div class="summary"><div class="badge">总环网柜：<b>{len(identification.items)}</b></div>'
+            f'<div class="badge">柜名成功：<b>{identification.named_count}</b></div>'
+            f'<div class="badge">柜型成功：<b>{identification.typed_count}</b></div>'
+            f'<div class="badge">高置信度：<b>{high_count}</b></div>'
+            f'<div class="badge">中/待确认：<b>{medium_count}</b></div>'
+            f'<div class="badge">未识别：<b>{unidentified_count}</b></div>'
+            f'<div class="badge">重复柜名/ID：<b>{len(duplicates)}</b> 个（涉及 {duplicate_row_count} 行）</div></div>'
+        )
+        report_note = f"颜色：绿色=高置信度；黄色=中等/待确认；红色=未识别或柜名/环网柜 ID 重复。重复项：{duplicate_text}"
     html = f"""<!DOCTYPE html>
-<html lang=\"zh-CN\">
+<html lang="{'en' if english else 'zh-CN'}">
 <head>
-<meta charset=\"utf-8\">
-<title>{escape(stem)} RMU 信息汇总报告</title>
+<meta charset="utf-8">
+<title>{escape(report_title)}</title>
 <style>
-body {{ font-family: \"Microsoft YaHei\", Arial, sans-serif; margin: 24px; color: #1f2937; }}
+body {{ font-family: "Microsoft YaHei", Arial, sans-serif; margin: 24px; color: #1f2937; }}
 h1 {{ margin: 0 0 16px; font-size: 24px; }}
 .summary {{ display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }}
 .badge {{ border: 1px solid #d1d5db; border-radius: 6px; padding: 7px 10px; background: #f8fafc; }}
@@ -493,17 +554,9 @@ tr.bad td {{ background: #fee2e2; }}
 </style>
 </head>
 <body>
-<h1>RMU 信息汇总报告</h1>
-<div class=\"summary\">
-  <div class=\"badge\">总环网柜：<b>{len(identification.items)}</b></div>
-  <div class=\"badge\">柜名成功：<b>{identification.named_count}</b></div>
-  <div class=\"badge\">柜型成功：<b>{identification.typed_count}</b></div>
-  <div class=\"badge\">高置信度：<b>{high_count}</b></div>
-  <div class=\"badge\">中/待确认：<b>{medium_count}</b></div>
-  <div class=\"badge\">未识别：<b>{unidentified_count}</b></div>
-  <div class=\"badge\">重复柜名/ID：<b>{len(duplicates)}</b> 个（涉及 {duplicate_row_count} 行）</div>
-</div>
-<div class=\"note\">颜色：绿色=高置信度；黄色=中等/待确认；红色=未识别或柜名/环网柜 ID 重复。重复项：{duplicate_text}</div>
+<h1>{report_heading}</h1>
+{report_summary}
+<div class="note">{report_note}</div>
 {selection_bar()}
 <table>
 <thead><tr>{selection_header()}{header_cells}</tr></thead>
@@ -558,6 +611,9 @@ def process_basic(
     total_rmu_ungrouped = 0
     total_rmu_released_members = 0
     total_rmu_lowered_rects = 0
+    total_graphic_merges_removed = 0
+    total_graphic_merge_cleanup_rmu_rects = 0
+    total_graphic_merge_cleanup_lowered_rects = 0
     total_color_changed = 0
     total_dynamic_colors = 0
     total_smart_rmu_rects = 0
@@ -641,7 +697,11 @@ def process_basic(
                     ) if enabled
                 )
                 rmu_identification = identify_rmus(
-                    tree, input_path, name_positions=positions, smart_in_type=settings.rmu_smart_in_type
+                    tree,
+                    input_path,
+                    name_positions=positions,
+                    smart_in_type=settings.rmu_smart_in_type,
+                    excluded_name_values=parse_name_exclusions(settings.rmu_name_exclusions),
                 )
                 total_rmu_identified += rmu_identification.cabinet_count
                 total_rmu_named += rmu_identification.named_count
@@ -654,7 +714,10 @@ def process_basic(
                 )
                 for item in rmu_identification.items:
                     name = item.name or "<未识别>"
-                    position_label = {"top": "上方", "bottom": "下方", "left": "左侧", "right": "右侧"}.get(item.name_position, item.name_position or "-")
+                    position_label = {
+                        "top": "上方", "bottom": "下方", "left": "左侧", "right": "右侧",
+                        "BusDis.key_name+Text": "BusDis.key_name + Text 确认回退",
+                    }.get(item.name_position, item.name_position or "-")
                     log(
                         f"  - rect {item.rect_id or '<无ID>'}：柜名 {name}（{position_label}），"
                         f"类型 {item.rmu_type}，L={item.l_count}，T={item.t_count}，智能={item.smart_count}（{item.smart_source or "-"}），"
@@ -707,6 +770,23 @@ def process_basic(
                     log("  - 升级图元 ID：" + ", ".join(icon_result.changed_instance_ids))
                 for warning in icon_result.warnings:
                     log(f"[图元版本升级告警] {input_path.name}：{warning}")
+
+            if settings.remove_all_graphic_merges:
+                cleanup = remove_all_graphic_merges(
+                    tree,
+                    input_path,
+                    lower_rmu_rects=settings.lower_rmu_rects_after_merge_cleanup,
+                )
+                total_graphic_merges_removed += cleanup.removed_merge_count
+                total_graphic_merge_cleanup_rmu_rects += cleanup.rmu_rect_count
+                total_graphic_merge_cleanup_lowered_rects += cleanup.lowered_rect_count
+                log(
+                    f"[图形组合清理] {input_path.name}：原 Merge {cleanup.previous_merge_count} 个，"
+                    f"删除 {cleanup.removed_merge_count} 个，处理后剩余 {cleanup.remaining_merge_count} 个；"
+                    f"识别 RMU 外框 {cleanup.rmu_rect_count} 个，置底 {cleanup.lowered_rect_count} 个。"
+                )
+                if cleanup.lowered_rect_count:
+                    log("  - RMU 外框仅调整 XML 元素顺序；坐标、ID、keyid、devref、tfr 和其他业务属性均未修改。")
 
             rmu_processing_row = {
                 "File": input_path.name,
@@ -1018,6 +1098,11 @@ def process_basic(
         f"{total_bus_rect_removed} 个，标题上移 {total_bus_title_moved} 个；"
         f"线路/母线颜色修改 {total_color_changed} 个图元"
     )
+    if settings.remove_all_graphic_merges:
+        summary += (
+            f"；彻底取消图形组合删除 Merge {total_graphic_merges_removed} 个，"
+            f"识别 RMU 外框 {total_graphic_merge_cleanup_rmu_rects} 个、置底 {total_graphic_merge_cleanup_lowered_rects} 个"
+        )
     if settings.identify_rmu_name_and_type:
         summary += (
             f"；环网柜识别 {total_rmu_identified} 个、柜名成功 {total_rmu_named} 个、"
@@ -1072,6 +1157,10 @@ def process_basic(
             "rmu_ungrouped_count": total_rmu_ungrouped,
             "rmu_released_member_count": total_rmu_released_members,
             "rmu_lowered_rect_count": total_rmu_lowered_rects,
+            "graphic_merge_cleanup_enabled": settings.remove_all_graphic_merges,
+            "graphic_merge_removed_count": total_graphic_merges_removed,
+            "graphic_merge_cleanup_rmu_rect_count": total_graphic_merge_cleanup_rmu_rects,
+            "graphic_merge_cleanup_lowered_rect_count": total_graphic_merge_cleanup_lowered_rects,
             "color_changed_count": total_color_changed,
             "dynamic_color_warning_count": total_dynamic_colors,
             "smart_rmu_rect_count": total_smart_rmu_rects,

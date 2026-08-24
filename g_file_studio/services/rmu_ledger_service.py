@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from html import escape
 
 from g_file_studio.services.html_report_selection import selection_bar, selection_cell, selection_header, selection_script, selection_style
+from g_file_studio.services.report_i18n import report_is_english, report_text
 from pathlib import Path
 from typing import Iterable
 
@@ -278,8 +279,8 @@ def write_comparison_reports(output_dir: Path, rows: list[ComparisonRow], stats:
             writer.writerow([
                 row.ledger_name, row.graphic_name, row.ledger_type, row.graphic_type,
                 row.ledger_intelligent, row.graphic_intelligent, row.intelligent_source,
-                row.file_name, row.rect_id, row.confidence, row.graphic_duplicate,
-                row.ledger_duplicate, row.result, row.warnings,
+                row.file_name, row.rect_id, report_text(row.confidence), row.graphic_duplicate,
+                row.ledger_duplicate, report_text(row.result), report_text(row.warnings),
             ])
 
     def css_class(result: str) -> str:
@@ -294,29 +295,51 @@ def write_comparison_reports(output_dir: Path, rows: list[ComparisonRow], stats:
         values = [
             row.ledger_name, row.graphic_name, row.ledger_type, row.graphic_type,
             row.ledger_intelligent, row.graphic_intelligent, row.intelligent_source,
-            row.file_name, row.rect_id, row.confidence, row.graphic_duplicate,
-            row.ledger_duplicate, row.result, row.warnings,
+            row.file_name, row.rect_id, report_text(row.confidence), row.graphic_duplicate,
+            row.ledger_duplicate, report_text(row.result), report_text(row.warnings),
         ]
-        body.append(f'<tr class="{css_class(row.result)}">' + selection_cell() + ''.join(f'<td>{escape(str(v))}</td>' for v in values) + '</tr>')
+        body.append(
+            f'<tr class="{css_class(row.result)}">' + selection_cell()
+            + ''.join(f'<td>{escape(str(v))}</td>' for v in values) + '</tr>'
+        )
+
+    english = report_is_english()
+    summary_labels = ([
+        ("ledger_count", "Ledger RMUs"), ("graphic_count", "Graphic RMUs"), ("matched_count", "Fully Matched"),
+        ("type_mismatch_count", "Cabinet Type Mismatch"), ("intelligent_mismatch_count", "Smart Attribute Mismatch"),
+        ("graphic_missing_count", "Missing in Graphic"), ("ledger_missing_count", "Missing in Ledger"),
+        ("graphic_duplicate_count", "Duplicate Graphic Names"), ("ledger_duplicate_count", "Duplicate Ledger Names"),
+        ("graphic_unnamed_count", "Unrecognized Graphic RMU Names"),
+    ] if english else [
+        ("ledger_count", "台账 RMU"), ("graphic_count", "图形 RMU"), ("matched_count", "完全一致"),
+        ("type_mismatch_count", "柜型不一致"), ("intelligent_mismatch_count", "智能属性不一致"),
+        ("graphic_missing_count", "图形缺失"), ("ledger_missing_count", "台账缺失"),
+        ("graphic_duplicate_count", "图形重复名称"), ("ledger_duplicate_count", "台账重复名称"),
+        ("graphic_unnamed_count", "图形柜名未识别"),
+    ])
+    separator = ": " if english else "："
     summary = ''.join(
-        f'<div class="badge">{escape(label)}：<b>{stats[key]}</b></div>' for key, label in [
-            ("ledger_count", "台账 RMU"), ("graphic_count", "图形 RMU"), ("matched_count", "完全一致"),
-            ("type_mismatch_count", "柜型不一致"), ("intelligent_mismatch_count", "智能属性不一致"),
-            ("graphic_missing_count", "图形缺失"), ("ledger_missing_count", "台账缺失"),
-            ("graphic_duplicate_count", "图形重复名称"), ("ledger_duplicate_count", "台账重复名称"),
-            ("graphic_unnamed_count", "图形柜名未识别"),
-        ]
+        f'<div class="badge">{escape(label)}{separator}<b>{stats[key]}</b></div>'
+        for key, label in summary_labels
+    )
+    report_title = "RMU Ledger Comparison Report" if english else "RMU 台账对比报告"
+    report_heading = "RMU Ledger vs. G-File Graphic Comparison Report" if english else "RMU 台账与 G 图形对比报告"
+    report_legend = (
+        "Green = fully matched; yellow = present in the G graphic but missing from the ledger; "
+        "red = missing in graphic, cabinet-type/smart-attribute mismatch, duplicate, or unrecognized RMU name."
+        if english else
+        "绿色=完全一致；黄色=G 图形中存在但台账缺失；红色=图形缺失、柜型/智能属性不一致、重复或柜名未识别。"
     )
     html = f'''<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>RMU 台账对比报告</title>
+<html lang="{'en' if english else 'zh-CN'}"><head><meta charset="utf-8"><title>{report_title}</title>
 <style>
 body{{font-family:"Microsoft YaHei",Arial,sans-serif;margin:24px;color:#1f2937}}h1{{font-size:24px}}
 .summary{{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0}}.badge{{border:1px solid #d1d5db;border-radius:6px;padding:7px 10px;background:#f8fafc}}
 table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{border:1px solid #cbd5e1;padding:6px 8px;text-align:left;vertical-align:top}}th{{background:#e2e8f0;position:sticky;top:0}}
 tr.good td{{background:#dcfce7}}tr.warn td{{background:#fef9c3}}tr.bad td{{background:#fee2e2}}
 {selection_style()}
-</style></head><body><h1>RMU 台账与 G 图形对比报告</h1><div class="summary">{summary}</div>
-<p>绿色=完全一致；黄色=G 图形中存在但台账缺失；红色=图形缺失、柜型/智能属性不一致、重复或柜名未识别。</p>
+</style></head><body><h1>{report_heading}</h1><div class="summary">{summary}</div>
+<p>{report_legend}</p>
 {selection_bar()}
 <table><thead><tr>{selection_header()}{''.join(f'<th>{escape(h)}</th>' for h in headers)}</tr></thead><tbody>{''.join(body)}</tbody></table>{selection_script()}</body></html>'''
     html_path.write_text(html, encoding="utf-8")

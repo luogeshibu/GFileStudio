@@ -11,6 +11,7 @@ from typing import Iterable
 
 from g_file_studio.services.output_naming import make_task_timestamp
 from g_file_studio.services.html_report_selection import selection_bar, selection_cell, selection_header, selection_script, selection_style
+from g_file_studio.services.report_i18n import report_is_english, report_text
 
 TARGET_TAGS = {"ConnectLine", "FeedLine", "Bus", "BusDis"}
 REFERENCE_LIST_ATTRIBUTES = ("link", "node_area")
@@ -124,12 +125,12 @@ def write_reports(
             values = [
                 item.file_name, item.element_type, item.xml_id, item.x, item.y,
                 item.w, item.h, item.keyid,
-                f"w<{threshold} 且 h<{threshold}",
+                (f"w<{threshold} and h<{threshold}" if report_is_english() else f"w<{threshold} 且 h<{threshold}"),
             ]
             if is_process:
                 key = (str(item.file_path), item.element_type, item.ordinal, item.xml_id)
                 selected = key in (processed_keys or set())
-                values.extend(["YES" if selected else "NO", "已删除" if selected else "未处理"])
+                values.extend(["YES" if selected else "NO", report_text("已删除" if selected else "未处理")])
             writer.writerow(values)
 
     rows = []
@@ -140,32 +141,44 @@ def write_reports(
         row_class = "processed" if was_processed else ("unprocessed" if is_process else ("issue keyid" if item.keyid else "issue"))
         values = [
             item.file_name, item.element_type, item.xml_id, item.x, item.y,
-            item.w, item.h, item.keyid, f"w<{threshold} 且 h<{threshold}",
+            item.w, item.h, item.keyid, (f"w<{threshold} and h<{threshold}" if report_is_english() else f"w<{threshold} 且 h<{threshold}"),
         ]
         if is_process:
-            values.extend(["YES" if was_processed else "NO", "已删除" if was_processed else "未处理"])
+            values.extend(["YES" if was_processed else "NO", report_text("已删除" if was_processed else "未处理")])
         rows.append(
             f"<tr class='{row_class}'>"
             + selection_cell()
             + "".join(f"<td>{html.escape(str(v))}</td>" for v in values)
             + "</tr>"
         )
+    english = report_is_english()
+    report_title = (
+        "Abnormal Small Element Processing Report" if (english and is_process) else
+        "Abnormal Small Element Detection Report" if english else
+        "异常小尺寸图元处理报告" if is_process else "异常小尺寸图元检测报告"
+    )
+    selected_count = sum(1 for x in issues if (str(x.file_path), x.element_type, x.ordinal, x.xml_id) in (processed_keys or set()))
+    keyid_count = sum(1 for x in issues if x.keyid)
+    if english:
+        summary_html = (
+            f"<div class='summary'>Original abnormal elements: {len(issues)}; Selected this run: {selected_count}; Deleted: {selected_count}; Not processed: {len(issues)-selected_count}; With keyid: {keyid_count}. Green = deleted this run; white = not processed.</div>"
+            if is_process else
+            f"<div class='summary'>Generated: {html.escape(stamp)}; Threshold: w &lt; {threshold} and h &lt; {threshold}; Abnormal elements: {len(issues)}; With keyid: {keyid_count}</div>"
+        )
+    else:
+        summary_html = (
+            f"<div class='summary'>原始异常图元：{len(issues)}；本次选择：{selected_count}；已删除：{selected_count}；未处理：{len(issues)-selected_count}；带 keyid：{keyid_count}。绿色=本次已删除；白色=本次未处理。</div>"
+            if is_process else
+            f"<div class='summary'>生成时间：{html.escape(stamp)}；阈值：w &lt; {threshold} 且 h &lt; {threshold}；异常数量：{len(issues)}；带 keyid：{keyid_count}</div>"
+        )
     html_path.write_text(
-        "<!doctype html><html><head><meta charset='utf-8'><title>" + ("异常小尺寸图元处理报告" if is_process else "异常小尺寸图元检测报告") + "</title>"
+        f"<!doctype html><html lang='{"en" if english else "zh-CN"}'><head><meta charset='utf-8'><title>{report_title}</title>"
         "<style>body{font-family:Segoe UI,Microsoft YaHei,sans-serif;margin:24px;color:#1f2937}"
         "table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #d1d5db;padding:6px 8px;text-align:left}"
         "th{background:#e8f3ef}.issue{background:#fff2f2}.issue.keyid{background:#ffd7d7;font-weight:600}"
         ".processed{background:#e8f7ee}.processed td:last-child{color:#087443;font-weight:700;background:#ccefd9}.unprocessed{background:#ffffff}.unprocessed td:last-child{color:#475569;font-weight:600}"
         ".summary{margin:12px 0;padding:10px;background:#f3f7f5;border-left:4px solid #12815f}" + selection_style() + "</style></head><body>"
-        f"<h2>{'异常小尺寸图元处理报告' if is_process else '异常小尺寸图元检测报告'}</h2>"
-        + (
-            f"<div class='summary'>原始异常图元：{len(issues)}；本次选择：{sum(1 for x in issues if (str(x.file_path), x.element_type, x.ordinal, x.xml_id) in (processed_keys or set()))}；"
-            f"已删除：{sum(1 for x in issues if (str(x.file_path), x.element_type, x.ordinal, x.xml_id) in (processed_keys or set()))}；"
-            f"未处理：{sum(1 for x in issues if (str(x.file_path), x.element_type, x.ordinal, x.xml_id) not in (processed_keys or set()))}；"
-            f"带 keyid：{sum(1 for x in issues if x.keyid)}。绿色=本次已删除；白色=本次未处理。</div>"
-            if is_process else
-            f"<div class='summary'>生成时间：{html.escape(stamp)}；阈值：w &lt; {threshold} 且 h &lt; {threshold}；异常数量：{len(issues)}；带 keyid：{sum(1 for x in issues if x.keyid)}</div>"
-        )
+        f"<h2>{report_title}</h2>" + summary_html
         + selection_bar() + "<table><thead><tr>" + selection_header() + "".join(f"<th>{html.escape(h)}</th>" for h in headers) + "</tr></thead><tbody>"
         + "".join(rows)
         + "</tbody></table>" + selection_script() + "</body></html>",

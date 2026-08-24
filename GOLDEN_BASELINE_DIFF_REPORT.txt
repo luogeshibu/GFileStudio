@@ -1,0 +1,61 @@
+G File Studio v2.18.14 - Golden Baseline Integrity Report
+=========================================================
+Golden baseline: GFileStudio_PySide6_v2.17.60(2).zip
+Golden baseline SHA256: b98897a503bc7377f303c648db2dee9e1a4be0afc9813d364335e45648121386
+
+Release policy
+--------------
+The v2.17.60(2) Chinese source remains the functional golden baseline.
+English/i18n changes must not alter existing business behavior. This release has
+one additional user-approved functional scope only: RMU name recognition may use
+a conservative BusDis.key_name + matching nearby Text fallback, and users may
+configure exact RMU-name exclusion strings. No feeder-merge or main-bus logic is changed.
+
+Golden baseline protection
+--------------------------
+102 original non-i18n files remain SHA256 locked byte-for-byte against v2.17.60(2).
+The previously approved remote-file UI exception remains separately locked.
+The four RMU files changed for this explicitly requested feature are separately
+SHA256 locked as approved feature exceptions.
+
+Critical feeder-merge files verified byte-identical
+----------------------------------------------------
+g_file_studio/ui/pages/merge_page.py
+  ac753fd25255937a24e27be8f4f09c901b1a6bc2c70985cccdd0d6c59baff74b
+g_file_studio/processors/merge_processor.py
+  97c2d5ee92482dfe13e5cbfcb7aefdfa3f32189290f7de4298e6db8e49bc3a06
+g_file_studio/engines/merge_engine.py
+  a885bcaaeee125e890ef6e23754d758272f748258ba055bb463cfbfd6033fadd
+
+Approved user-requested RMU feature exceptions
+----------------------------------------------
+g_file_studio/engines/rmu_identification_engine.py
+  04fa6c009717040548bcd84442a4f1185641227acb4f6519a16140426b671310
+  User-approved RMU name fallback and exact exclusion filtering only.
+g_file_studio/models.py
+  21d426cc77cde8650355978e4ed16040e94221be8ce93de3c65b943634f303f5
+  Adds RMU name exclusion setting field only.
+g_file_studio/processors/basic_processor.py
+  613cac8131dbcfdf851f43d07d3ff3104bc5f2710da24dda23809aa735ecd42f
+  Passes RMU name exclusions to the shared RMU identification engine and labels fallback source.
+g_file_studio/ui/pages/rmu_page.py
+  1031fa77e764f935eb7ef0431c4d332e6ffc76e65d07bdf2e7096215b795463c
+  Adds persisted bilingual RMU name exclusion input to RMU Processing UI only.
+
+RMU name fallback safety rule
+-----------------------------
+- Existing selected-direction Text matching always runs first and is unchanged.
+- Metadata fallback is NOT metadata-only: a unique BusDis.key_name such as 38995_BUS
+  must be confirmed by nearby Text whose complete value is exactly 38995 in one of
+  the user-selected directions.
+- User exclusions use complete-string, case-insensitive matching after trimming;
+  excluding SFI does not exclude SFI-1201.
+- Exclusions apply to both Text candidates and metadata fallback candidates.
+
+Validation
+----------
+Python compileall: PASS
+Pytest: 282 passed, 2 skipped
+Real-file validation: JED-CTL-BABJ.sln.pic(1).g rect 2001193 resolves to RMU name
+38995 via BusDis.key_name + Text confirmation; cabinet type remains 2L1T.
+The 2 skipped tests require external real G-file fixtures not present in the build environment.

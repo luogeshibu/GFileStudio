@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from g_file_studio.ui.help_content import APP_HELP, APP_HELP_EN
+
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -60,7 +62,20 @@ class HelpButton(QToolButton):
         self.clicked.connect(self.show_help)
 
     def show_help(self) -> None:
-        dialog = HelpDialog(self.help_title, self.help_text, self.window())
+        window = self.window()
+        manager = getattr(window, "language_manager", None)
+        title = manager.text(self.help_title) if manager is not None else self.help_title
+        help_text = manager.runtime_text(self.help_text) if manager is not None else self.help_text
+        if manager is not None and manager.is_english:
+            # Help bodies are long-form content. Use the curated English payload
+            # rather than sentence-fragment fallback translation.
+            for key, (zh_title, zh_html) in APP_HELP.items():
+                if self.help_title == zh_title and self.help_text == zh_html and key in APP_HELP_EN:
+                    title, help_text = APP_HELP_EN[key]
+                    break
+        dialog = HelpDialog(title, help_text, window)
+        if manager is not None:
+            manager.translate_widget_tree(dialog)
         dialog.exec()
 
 

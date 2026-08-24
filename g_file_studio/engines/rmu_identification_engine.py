@@ -143,14 +143,41 @@ def _is_green_name_text(element: ET.Element) -> bool:
     return lcc == "#00ff00" or lc == "0,255,0"
 
 
-def _valid_name_text(element: ET.Element) -> bool:
+def _normalize_excluded_name(value: str) -> str:
+    """Normalize one user-specified RMU-name exclusion for exact matching."""
+    return re.sub(r"\s+", " ", (value or "").strip()).casefold()
+
+
+def parse_name_exclusions(raw: str) -> tuple[str, ...]:
+    """Parse comma/semicolon/newline separated exact RMU-name exclusions.
+
+    Matching is whole-string, case-insensitive, and ignores surrounding/repeated
+    whitespace.  It deliberately does NOT use substring matching, so excluding
+    ``SFI`` will not exclude a legitimate name such as ``SFI-1201``.
+    """
+    values = re.split(r"[,;，；\n\r]+", raw or "")
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = re.sub(r"\s+", " ", value.strip())
+        key = _normalize_excluded_name(cleaned)
+        if cleaned and key and key not in seen:
+            seen.add(key)
+            unique.append(cleaned)
+    return tuple(unique)
+
+
+def _valid_name_text(element: ET.Element, excluded_names: frozenset[str] = frozenset()) -> bool:
     """柜名候选的基础过滤。
 
     名称颜色不是硬条件。这里仅排除明确属于柜内设备/状态的短标签，
     其余数字、字母数字、带连字符的名称均允许参与距离匹配。
+    用户配置的排除项只做完整字符串匹配，不做包含/模糊匹配。
     """
     value = (element.get("ts") or "").strip()
     if not value or not any(ch.isalnum() for ch in value):
+        return False
+    if _normalize_excluded_name(value) in excluded_names:
         return False
     compact = re.sub(r"\s+", "", value).upper()
     if _Y_LABEL_RE.fullmatch(compact) or _Q_LABEL_RE.fullmatch(compact):
@@ -224,6 +251,7 @@ def _all_candidates_for_rect(
     texts: list[ET.Element],
     rect: _Box,
     positions: tuple[str, ...],
+    excluded_names: frozenset[str] = frozenset(),
 ) -> list[tuple[float, float, str, str, str, bool]]:
     """Collect candidates only from explicitly selected directions.
 
@@ -233,7 +261,7 @@ def _all_candidates_for_rect(
     """
     best_by_text: dict[str, tuple[float, float, str, str, str, bool]] = {}
     for index, text in enumerate(texts):
-        if not _valid_name_text(text):
+        if not _valid_name_text(text, excluded_names):
             continue
         value = (text.get("ts") or "").strip()
         text_id = (text.get("id") or "").strip()
@@ -254,15 +282,17 @@ def _name_candidates_for_rect(
     texts: list[ET.Element],
     rect: _Box,
     positions: tuple[str, ...],
+    excluded_names: frozenset[str] = frozenset(),
 ) -> list[tuple[float, float, str, str, str, bool]]:
     """Compatibility helper: candidates from selected directions only."""
-    return _all_candidates_for_rect(texts, rect, positions)
+    return _all_candidates_for_rect(texts, rect, positions, excluded_names)
 
 
 def _assign_names_globally(
     texts: list[ET.Element],
     cabinets: list[tuple[str, _Box]],
     positions: tuple[str, ...],
+    excluded_names: frozenset[str] = frozenset(),
 ) -> dict[str, tuple[str, str, str, list[str]]]:
     """Assign RMU names with strict direction and one-owner rules.
 
@@ -277,7 +307,7 @@ def _assign_names_globally(
     """
     rect_map = dict(cabinets)
     per_rect_raw: dict[str, list[tuple[float, float, str, str, str, bool]]] = {
-        rect_id: _all_candidates_for_rect(texts, rect, positions)
+        rect_id: _all_candidates_for_rect(texts, rect, positions, excluded_names)
         for rect_id, rect in cabinets
     }
 
@@ -327,13 +357,18 @@ def _assign_names_globally(
     return result
 
 
-def _find_name(texts: list[ET.Element], rect: _Box, positions: tuple[str, ...]) -> tuple[str, str, str, list[str]]:
+def _find_name(
+    texts: list[ET.Element],
+    rect: _Box,
+    positions: tuple[str, ...],
+    excluded_names: frozenset[str] = frozenset(),
+) -> tuple[str, str, str, list[str]]:
     """Compatibility wrapper used by focused unit tests/single-cabinet callers."""
-    matches = _assign_names_globally(texts, [("__single__", rect)], positions)
+    matches = _assign_names_globally(texts, [("__single__", rect)], positions, excluded_names)
     return matches["__single__"]
 
 
-def _bus_key_name_candidate(inside_buses: list[ET.Element]) -> str:
+def _bus_key_name_candidate(inside_buses: list[ET.Element], excluded_names: frozenset[str] = frozenset()) -> str:
     """Extract an RMU cabinet name encoded by BusDis.key_name, e.g. 30864_BUS.
 
     This is a metadata fallback only.  It does not inspect any unselected text
@@ -349,7 +384,7 @@ def _bus_key_name_candidate(inside_buses: list[ET.Element]) -> str:
         if not match:
             continue
         value = match.group(1).strip()
-        if value and value.upper() != "BUS":
+        if value and value.upper() != "BUS" and _normalize_excluded_name(value) not in excluded_names:
             candidates.append(value)
     unique = []
     seen = set()
@@ -359,6 +394,59 @@ def _bus_key_name_candidate(inside_buses: list[ET.Element]) -> str:
             seen.add(key)
             unique.append(value)
     return unique[0] if len(unique) == 1 else ""
+
+
+def _metadata_name_confirmed_by_text(
+    texts: list[ET.Element],
+    rect: _Box,
+    positions: tuple[str, ...],
+    candidate: str,
+    excluded_names: frozenset[str] = frozenset(),
+) -> bool:
+    """Confirm a BusDis.key_name fallback using nearby Text with the exact same value.
+
+    This is intentionally more tolerant than normal name geometry only because
+    the metadata value already supplies an exact candidate.  It handles tall
+    Text bounding boxes such as ``38995`` whose box overlaps the RMU frame by
+    more than the normal 20-unit tolerance, while still respecting the user's
+    selected directions and refusing metadata-only guesses.
+    """
+    key = _normalize_excluded_name(candidate)
+    if not key or key in excluded_names:
+        return False
+
+    max_distance = 160.0
+    edge_tolerance = 80.0
+    for text in texts:
+        value = (text.get("ts") or "").strip()
+        if _normalize_excluded_name(value) != key:
+            continue
+        box = _box(text)
+        if box is None:
+            continue
+        for position in positions:
+            if position == "top":
+                gap = rect.top - box.bottom
+                if (-edge_tolerance <= gap <= max_distance and box.center_y < rect.top
+                        and rect.left - edge_tolerance <= box.center_x <= rect.right + edge_tolerance):
+                    return True
+            elif position == "bottom":
+                gap = box.top - rect.bottom
+                if (-edge_tolerance <= gap <= max_distance and box.center_y > rect.bottom
+                        and rect.left - edge_tolerance <= box.center_x <= rect.right + edge_tolerance):
+                    return True
+            elif position == "left":
+                gap = rect.left - box.right
+                if (-edge_tolerance <= gap <= max_distance and box.center_x < rect.left
+                        and rect.top - edge_tolerance <= box.center_y <= rect.bottom + edge_tolerance):
+                    return True
+            elif position == "right":
+                gap = box.left - rect.right
+                if (-edge_tolerance <= gap <= max_distance and box.center_x > rect.right
+                        and rect.top - edge_tolerance <= box.center_y <= rect.bottom + edge_tolerance):
+                    return True
+    return False
+
 
 def _label_counts(inside_texts: list[ET.Element]) -> tuple[int, int, set[str], set[str]]:
     y_labels: set[str] = set()
@@ -389,13 +477,14 @@ def identify_rmus(
     *,
     name_positions: tuple[str, ...] = ("top",),
     smart_in_type: bool = False,
+    excluded_name_values: tuple[str, ...] = (),
 ) -> RmuIdentificationResult:
     """识别环网柜名称、L/T 柜型及 SMART 状态，不修改 XML。
 
     v2.17.11 规则：
     1. 必须存在环网柜 rect，且框内同时具有 BusDis、CBreakerDis、ZhaiWaiJieDiDaoZha。
     2. 柜名只在用户指定方向寻找并做全局一对一匹配；单候选直接使用，多候选时绿色优先。
-       指定方向无可用 Text 时，仅允许使用柜内 BusDis.key_name 元数据回退，不跨方向找字。
+       指定方向的常规几何匹配失败时，仅当柜内 BusDis.key_name 唯一候选与所选方向附近同名 Text 完全一致时回退；不跨方向猜名。
     3. 柜型第一来源为框内 Y1/Y2/... 与 Q1/Q2/...：Y 数量=L，Q 数量=T，并检查序号连续性。
        第二来源仅按 CBreakerDis.devref 图元文件名：Load_Breaker*=L，Circuit_Breaker*=T。
        两种来源同时存在时强制交叉校验；某一类 Y/Q 完全缺失时才用 devref 对应类别回退。
@@ -405,6 +494,11 @@ def identify_rmus(
     """
     if not name_positions:
         raise ValueError("环网柜名称位置至少选择一个方向。")
+
+    excluded_names = frozenset(
+        key for value in excluded_name_values
+        if (key := _normalize_excluded_name(value))
+    )
 
     elements = direct_layer_elements(tree.getroot())
     rects = [element for element in elements if local_name(element.tag) == "rect"]
@@ -432,7 +526,7 @@ def identify_rmus(
 
     cabinet_boxes = [((rect.get("id") or f"__rect_{index}"), rect_box)
                      for index, (rect, rect_box) in enumerate(valid_cabinets)]
-    name_assignments = _assign_names_globally(texts, cabinet_boxes, name_positions)
+    name_assignments = _assign_names_globally(texts, cabinet_boxes, name_positions, excluded_names)
 
     # SMR is also an intelligent RMU marker. It is usually outside the cabinet frame,
     # so map each direct Text[ts=SMR] to the nearest valid RMU rect. This is read-only
@@ -529,6 +623,18 @@ def identify_rmus(
             rect_key, ("", "", "未识别", [])
         )
         warnings.extend(name_warnings)
+        # Conservative metadata fallback: only when the existing direction-based
+        # Text algorithm found no usable name.  A unique BusDis.key_name such as
+        # 38995_BUS may then supply 38995.  This does not broaden direction geometry
+        # and does not alter cabinet/type detection.
+        if not name:
+            bus_name = _bus_key_name_candidate(inside_buses, excluded_names)
+            if bus_name and _metadata_name_confirmed_by_text(
+                texts, rect_box, name_positions, bus_name, excluded_names
+            ):
+                name = bus_name
+                position = "BusDis.key_name+Text"
+                confidence = "高"
 
         smart_count = 0
         smart_source = ""

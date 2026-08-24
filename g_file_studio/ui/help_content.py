@@ -17,7 +17,7 @@ APP_HELP: dict[str, tuple[str, str]] = {
         "环网柜处理帮助",
         """
 <h3>环网柜图元处理</h3>
-<p>可选择“不处理”“组合所有环网柜”或“取消所有环网柜组合”。组合时，每个直属 &lt;rect&gt; 对应一个 &lt;Merge&gt;，只组合完整位于 rect 矩形框内部的直属图元；框外连接线、状态图标和上方标题文字不会进入组合。取消时，只删除成员中含 &lt;rect&gt; 的 Merge 头元素，并把 rect 移到柜内设备之前，使外框位于设备下层；成员坐标、ID、引用和业务属性保持不变，其他业务 Merge 不受影响。</p>
+<p>环网柜页面可选择“不处理”或“组合所有环网柜”。彻底取消图形组合已移动到“基础处理 → 图形组合处理”：该操作删除整个 G 文件 Layer 中全部 &lt;Merge&gt;，并将识别到的 RMU 外框置于设备底层；除 XML 顺序外不修改设备属性、坐标、ID 或引用。</p>
 <p>SMART 外框改色、channel_status 状态点位置以及带 Bus 外框处理均沿用原基础处理中的既有算法。</p>
 <h3>RMU 信息汇总</h3>
 <p>直接解析 G 文件，不使用 OCR。柜名可多选“上方/下方/左侧/右侧”搜索；所选方向为硬约束，未勾选方向绝不参与兜底。单候选直接使用，最近组存在多个候选时才优先绿色文字。柜型优先按 Y/Q 名称统计，必要时回退设备 devref；SMART 与 SMR 统一归类为智能环网柜，并保留识别来源。识别结果导出 .rmu.csv 与 .rmu.html。</p>
@@ -149,4 +149,33 @@ FIELD_HELP: dict[str, str] = {
     "draw": "仅内置模板使用。日期默认当前日期，可点击日历按钮修改。",
     "approve": "仅内置模板使用。日期默认当前日期，可点击日历按钮修改。",
     "issue": "仅内置模板使用。日期默认当前日期，可点击日历按钮修改。",
+}
+
+
+APP_HELP_EN: dict[str, tuple[str, str]] = {
+    "small_elements": ("Abnormal Small Element Detection Help", """<h3>Purpose</h3><p>Scans &lt;ConnectLine&gt;, &lt;FeedLine&gt;, &lt;Bus&gt; and &lt;BusDis&gt; independently. An element is reported when both w and h are below the user threshold (default 10). Bus orientation is not restricted.</p><h3>Reports and deletion</h3><p>Each scan exports CSV and HTML details including file, element type, XML ID, x/y/w/h and keyid. Select one or more findings using the first-column checkboxes, then process them together. If a selected element has a non-empty keyid, deletion requires explicit confirmation.</p><h3>Relation to feeder merge</h3><p>Main-bus merge no longer applies a special w&lt;10 filter. Suspicious short Bus elements are handled in this module.</p>"""),
+    "rmu": ("RMU Processing Help", """<h3>RMU graphic processing</h3><p>The RMU page can leave grouping unchanged or group all recognized RMUs. Whole-file ungrouping is available under Basic Processing → Graphic Group Processing; it removes every &lt;Merge&gt; and sends recognized RMU frames behind devices without changing device attributes, coordinates, IDs or references.</p><h3>RMU summary</h3><p>G files are parsed directly without OCR. Name search directions are strict constraints. Cabinet type is primarily derived from Y/Q names with devref as fallback when required. SMART and SMR are classified as intelligent RMUs while preserving the recognition source.</p>"""),
+    "basic": ("Basic Processing Help", """<h3>Input</h3><p>Basic Processing supports one G file or a directory of G files.</p><h3>Rule-based processing</h3><p>General attribute replacement and element deletion operate only on direct children of the root Layer. They do not recursively modify internal symbol children.</p><h3>Feeder title positioning</h3><p>When enabled, feeder titles are identified from valid horizontal &lt;Bus&gt; geometry and nearby &lt;Text&gt; content. key_name and keyid are not used. Only the target Text x/y position is changed.</p><h3>Connection repair</h3><p>Uses conservative incremental repair. Existing port numbers and references are preserved; ambiguous or invalid candidates are skipped.</p><h3>Line and bus styles</h3><p>Color changes only lc/lcc. Line style changes only ls: solid=1 and dashed=2. Fill, lw, coordinates, IDs and references are not modified.</p><h3>Output conflicts</h3><p>Safe overwrite writes to a temporary file and validates it before replacing the destination.</p>"""),
+    "id_rules": ("Element ID Rule Template Help", """<h3>Single source of rules</h3><p>This module manages XML element ID rules. Each element type uses a manually confirmed fixed numeric prefix and fixed total length.</p><h3>Scan current G</h3><p>New element types require explicit user confirmation before a candidate rule is added. Existing types with nonconforming IDs produce warnings and do not silently change templates.</p><h3>Duplicate ID repair</h3><p>The first duplicate ID is preserved. Later duplicates receive IDs from the confirmed template, starting after the current maximum valid ID of the same type. Historical gaps are not filled. Unknown, disabled or unconfirmed types cannot generate new IDs.</p>"""),
+    "merge": ("Feeder Diagram Merge Help", """<h3>Files and order</h3><p>Input files must end with .sln.pic.g. The user-defined list order is the merge order; the first row is the baseline. Built-in G File Studio frames are removed from in-memory copies before merge, while unknown/customer frames are blocked.</p><h3>Vertical alignment</h3><p>Only non-zero horizontal &lt;Bus&gt; elements are used. &lt;BusDis&gt; does not participate. The topmost Bus is selected; if no Bus exists, the highest graphic element is used.</p><h3>Main-bus processing</h3><p>Supports single- and double-bus processing with manual bus groups. Files in one group must be contiguous. Upper and lower buses remain separate in double-bus mode. Output IDs are validated against confirmed global ID templates.</p>"""),
+    "margin": ("Drawing Margin Adjustment Help", """<h3>Main drawing margins</h3><p>The main drawing is translated so its left, top, right and bottom margins match the configured values.</p><h3>Existing frames</h3><p>Only confirmed G File Studio built-in frames are adjusted automatically. Customer or unknown frames stop processing and must be removed first.</p><h3>Input</h3><p>Supports one G file or directory batch processing. Output keeps the original source filename.</p>"""),
+    "frame": ("Drawing Frame Help", """<h3>Input</h3><p>Supports one G file or a directory of G files.</p><h3>Built-in template</h3><p>The bundled template is adjusted to the configured margins. Title and signature fields are updated only for the built-in template.</p><h3>Custom template</h3><p>Custom frame geometry is adapted without changing Text content, names, dates, fonts, colors, line widths or table content.</p><h3>Template upgrades</h3><p>The built-in template is packaged under resources/templates and versioned in templates.json.</p>"""),
+    "help": ("Help Center", """<h3>Recommended workflow</h3><ol><li>Detect abnormal small elements, then check/repair IDs, process RMUs when needed, and run Basic Processing.</li><li>Use Feeder Diagram Merge when multiple feeder drawings must be combined.</li><li>Run Drawing Margin Adjustment and Drawing Frame as required.</li></ol><h3>Recent folders</h3><p>Each page remembers its own recent input and output locations.</p><h3>Packaging</h3><p>The packaged dist/GFileStudio folder must be distributed as a complete folder or ZIP, not as the EXE alone.</p>"""),
+}
+
+FIELD_HELP_EN: dict[str, str] = {
+    "input_dir": "Select one G file or a directory containing G files.",
+    "merge_input_dir": "Select a directory containing .sln.pic.g files. Built-in frames may be removed automatically; unknown frames are blocked.",
+    "output_dir": "Output is written to the managed workspace/runs directory. The path is read-only and run data is retained for 30 days.",
+    "template": "Use the built-in template or select a custom .sln.pic.g template.",
+    "feeder_gap": "Horizontal gap between adjacent drawing coordinate bounds. Default: 300.",
+    "merge_margin": "Margins around the merged drawing. Mouse-wheel changes are disabled.",
+    "frame_margin": "Distance between the drawing-frame border and the target G canvas edge.",
+    "content_margin": "Distance from the main drawing to the corresponding G canvas edge. Default: 500.",
+    "title": "Built-in template only. If empty, the input filename without .sln.pic.g is used.",
+    "output_name": "Merged output always uses .sln.pic.g. If empty, a timestamped MERGED filename is generated.",
+    "output_suffix": "One-to-one G-file processing always preserves the source filename; run folders isolate separate executions.",
+    "draw": "Built-in template only. The date defaults to today and can be changed with the calendar button.",
+    "approve": "Built-in template only. The date defaults to today and can be changed with the calendar button.",
+    "issue": "Built-in template only. The date defaults to today and can be changed with the calendar button.",
 }

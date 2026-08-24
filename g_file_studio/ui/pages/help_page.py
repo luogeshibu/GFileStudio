@@ -24,8 +24,7 @@ class HelpPage(BasePage):
         browser = QTextBrowser()
         browser.setOpenExternalLinks(True)
         browser.setMinimumHeight(560)
-        browser.setHtml(
-            """
+        help_body_zh = """
 <h2>G File Studio 使用说明</h2>
 <h3>1. 基础处理</h3>
 <p>包含通用属性替换、元素删除、重复 ID 检查与修复、环网柜图元处理，以及线路和母线颜色修改。所有规则只作用于 G 根节点直属 Layer 的直接子元素。</p>
@@ -44,10 +43,10 @@ class HelpPage(BasePage):
 <p>适合给没有图框的文件添加 SLD 图框、标题和签字信息；输出文件保持源文件名不变并保存到输出目录。</p>
 <h3>目录建议</h3>
 <pre>
-workspace/input      本地输入/临时输入
+workspace/input         本地输入/临时输入
 workspace/remote_input  SSH 只读下载快照
-workspace/runs       所有模块运行输出（自动保留 30 天）
-workspace/logs       其他日志
+workspace/runs          所有模块运行输出（自动保留 30 天）
+workspace/logs          其他日志
 </pre>
 <h3>文件安全</h3>
 <ul>
@@ -60,5 +59,42 @@ workspace/logs       其他日志
 <h3>未来扩展</h3>
 <p>新的 G 文件规则优先集成到基础处理页，通过统一的“开始基础处理”按钮执行。</p>
 """
-        )
+        help_body_en = """
+<h2>G File Studio User Guide</h2>
+<h3>1. Basic Processing</h3>
+<p>Provides general attribute replacement, element deletion, ID checking and repair, RMU graphic processing, and line/bus style processing. Rules operate only on direct children of Layers directly under the G-file root.</p>
+<p>SMART RMU frame coloring changes only the corresponding rect border; it does not modify SMART text or unrelated RMUs.</p>
+<h3>2. Feeder Diagram Merge</h3>
+<p>Place the feeder files to be merged in any directory. Filenames do not need to contain a station or feeder number, but they must end with <b>.sln.pic.g</b>.</p>
+<ul>
+<li>After scanning, use Move Up, Move Down, Move to Top, and Move to Bottom to define the merge order. Natural order is used if no manual ordering is applied.</li>
+<li>If a top horizontal Bus exists, drawings are aligned to that Bus.</li>
+<li>If no Bus exists, drawings are aligned using the highest graphic element.</li>
+<li>Built-in G File Studio drawing frames are removed from in-memory copies before merging. Customer or unknown frames are not allowed to participate.</li>
+</ul>
+<h3>3. Drawing Margin Adjustment</h3>
+<p>The default main-drawing margin is 500 on all four sides. A confirmed built-in G File Studio frame is preserved and adjusted with the drawing; its text and signature content are not changed. Customer or unknown frames must be removed first.</p>
+<h3>4. Drawing Frame</h3>
+<p>Adds an SLD frame, title, and signature information to drawings that do not already have a frame. Output keeps the original source filename and is written to the managed output directory.</p>
+<h3>Recommended Directories</h3>
+<pre>
+workspace/input         Local or temporary input
+workspace/remote_input  Read-only SSH download snapshots
+workspace/runs          Output from all modules (retained for 30 days)
+workspace/logs          Other logs
+</pre>
+<h3>File Safety</h3>
+<ul>
+<li>Input files are never overwritten directly.</li>
+<li>Output is first written to a temporary file, reparsed as XML, and saved only after validation succeeds.</li>
+<li>Use Git for source control and do not commit .venv or business files under workspace.</li>
+</ul>
+<h3>Path Memory</h3>
+<p>Saved paths are stored in the dedicated user_settings.ini under AppData. The application restores single-file/directory mode, input paths, output directories, and customer template paths. Invalid saved paths are reported and cleared.</p>
+<h3>Future Extensions</h3>
+<p>New G-file rules should normally be integrated into Basic Processing and executed through its unified processing action.</p>
+"""
+        browser.setProperty("_i18n_html", help_body_zh)
+        browser.setProperty("_i18n_html_en", help_body_en)
+        browser.setHtml(help_body_zh)
         self.layout.addWidget(browser, 1)

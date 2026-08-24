@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -18,6 +20,7 @@ from PySide6.QtWidgets import (
 from g_file_studio import __version__
 from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.services.run_history import cleanup_expired_runs
+from g_file_studio.i18n import LANG_EN, LANG_ZH, LanguageManager
 from g_file_studio.ui.pages import BasicPage, FramePage, HelpPage, IdPage, MarginPage, MergePage, RmuPage, SmallElementPage
 from g_file_studio.ui.theme import build_app_style
 
@@ -29,6 +32,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__()
         self.user_settings = user_settings
+        self.language_manager = LanguageManager(user_settings, self)
         cleanup_expired_runs()
         self.setWindowTitle("G File Studio · NARI 国际业务部")
         self.resize(1280, 860)
@@ -63,13 +67,22 @@ class MainWindow(QMainWindow):
         root.addWidget(self.stack, 1)
         self.setCentralWidget(central)
         self.setStyleSheet(build_app_style())
-
+        from PySide6.QtWidgets import QApplication
+        qt_app = QApplication.instance()
+        if qt_app is not None:
+            qt_app.installEventFilter(self.language_manager)
+        self.language_manager.languageChanged.connect(self._apply_language)
+        # English runtime translation is event-driven. Do not periodically walk the
+        # entire application tree: pages may contain thousands of table cells, and a
+        # 300 ms full-tree refresh causes visible lag when switching modules.
         self.statusBar().showMessage("NARI 国际业务部 · G 文件处理工具已就绪。鼠标停留在控件上可查看提示，按 F1 打开帮助中心。")
+        self._apply_language(self.language_manager.language)
         self._install_help_shortcut()
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
+        self.sidebar = sidebar
         sidebar.setFixedWidth(250)
         side_layout = QVBoxLayout(sidebar)
         side_layout.setContentsMargins(18, 20, 18, 18)
@@ -108,6 +121,14 @@ class MainWindow(QMainWindow):
         self.nav = QListWidget()
         self.nav.setObjectName("navigation")
         self.nav.setSpacing(1)
+        # Navigation module names are always shown in full on one line.
+        # English labels are longer, so the whole sidebar grows instead of
+        # wrapping, eliding with "...", or exposing a horizontal scrollbar.
+        self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.nav.setWordWrap(False)
+        self.nav.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.nav.setUniformItemSizes(True)
+        self.nav.setResizeMode(QListView.ResizeMode.Fixed)
         navigation = [
             ("异常小尺寸图元检测", "检测 ConnectLine、FeedLine、Bus、BusDis 中 w/h 同时过小的疑似残留短线图元；通过首列勾选单选/多选/全选后统一执行处理"),
             ("ID 检查与修复", "全局 ID 规则中心：维护模板、扫描覆盖并强制修复格式异常或重复 ID"),
@@ -124,6 +145,20 @@ class MainWindow(QMainWindow):
             item.setStatusTip(tip)
             self.nav.addItem(item)
 
+        language_label = QLabel("语言 / Language")
+        language_label.setObjectName("sidebarLanguageLabel")
+        language_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.language_combo = QComboBox()
+        self.language_combo.setObjectName("languageSelector")
+        self.language_combo.addItem("中文", LANG_ZH)
+        self.language_combo.addItem("English", LANG_EN)
+        current_language = self.language_manager.language
+        current_index = self.language_combo.findData(current_language)
+        self.language_combo.setCurrentIndex(max(0, current_index))
+        self.language_combo.setToolTip("切换界面语言；选择会自动保存，下次启动继续使用。")
+        self.language_combo.currentIndexChanged.connect(self._language_combo_changed)
+
         version = QLabel(f"G File Studio {__version__}")
         version.setObjectName("sidebarVersion")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -134,8 +169,44 @@ class MainWindow(QMainWindow):
         side_layout.addSpacing(12)
         side_layout.addWidget(self.nav, 1)
         side_layout.addSpacing(10)
+        side_layout.addWidget(language_label)
+        side_layout.addSpacing(5)
+        side_layout.addWidget(self.language_combo)
+        side_layout.addSpacing(10)
         side_layout.addWidget(version)
         return sidebar
+
+
+    def _language_combo_changed(self, index: int) -> None:
+        language = self.language_combo.itemData(index)
+        if language:
+            self.language_manager.set_language(str(language))
+
+    def _apply_language(self, language: str) -> None:
+        del language
+        self.language_manager.translate_widget_tree(self)
+        if hasattr(self, "nav"):
+            # English module names are longer. Grow the sidebar so every module
+            # name remains fully visible on one line, with no wrap/ellipsis.
+            self._adjust_sidebar_width()
+            QTimer.singleShot(0, self._adjust_sidebar_width)
+            item = self.nav.currentItem()
+            if item:
+                self.statusBar().showMessage(item.statusTip() or item.toolTip())
+
+    def _adjust_sidebar_width(self) -> None:
+        """Keep every navigation module name fully visible on one line."""
+        if not hasattr(self, "nav") or not hasattr(self, "sidebar"):
+            return
+        metrics = self.nav.fontMetrics()
+        widest = 0
+        for row in range(self.nav.count()):
+            widest = max(widest, metrics.horizontalAdvance(self.nav.item(row).text()))
+        # 36 px QList item horizontal padding + sidebar layout margins and a
+        # small reserve for selection decoration. Keep Chinese compact while
+        # allowing long English module names to remain unabridged.
+        width = max(250, min(380, widest + 78))
+        self.sidebar.setFixedWidth(width)
 
     def _change_page(self, index: int) -> None:
         if 0 <= index < self.stack.count():

@@ -1,0 +1,151 @@
+{
+  "baseline": "GFileStudio_PySide6_v2.17.60(2).zip",
+  "baseline_sha256": "b98897a503bc7377f303c648db2dee9e1a4be0afc9813d364335e45648121386",
+  "protected_files": {
+    ".gitignore": "eb96f1443d12698dce8d6845a512d56a1fd9a2af2531961850d432b0491b8d92",
+    "CHANGELOG.md": "40a7f0fd9b219a465a59bb6885f0e4102a6afda7b010737d9d8695cd81423464",
+    "DESIGN.md": "59b57a78cc16d10e2678728a5dd35b1324b919c962a0cd0fac73d88c273fd8ad",
+    "README.md": "3e4eb3aa8f0adcd41450d5078720dcf9c39bf09e9833d5d03ceca2143fbe0ea8",
+    "app.py": "ec9545afcfb5d7154cb0105928600dcaa5b06856b8215491375e4fcae2225154",
+    "build_exe.ps1": "50d8a00676158e666ed237df1916eb495beccfd093d9dfeabcd37e03827307b7",
+    "config/drawing_frame_config.json": "781a4ae6c203945b492678f92d3ae8010cc579d16446a0680733691fafdb49ac",
+    "docs/validation/GFileStudio_v2.17.10_VALIDATION.md": "30dc9e9d7441af4e96858227d14c1e5a3111eb04f97d577e88f7ae46b7f835ad",
+    "docs/validation/GFileStudio_v2.17.11_VALIDATION.md": "589b5029826c2f4f2946dd95b41dbba084bc6122be8801533ffb242d3b6093ca",
+    "docs/validation/GFileStudio_v2.17.12_VALIDATION.md": "50128ed23714bab97d62920cff63bfba5d89a89918ed8c64db8dd24829fed1a2",
+    "docs/validation/GFileStudio_v2.17.13_VALIDATION.md": "fee1630a225f46f9584b5641a64d7b42f5ea9b50055c66b366ce4034310af37c",
+    "docs/validation/GFileStudio_v2.17.14_VALIDATION.md": "63a6da9ea268aa5baec0a26fb41ed75bfdf93b60fec631bff6e93dc6e7ea4ba0",
+    "docs/validation/GFileStudio_v2.17.15_VALIDATION.md": "9b47f362fe1d519e32c0f3b8160c549db6691d46bf8d577bc35a244a6cc1de9d",
+    "docs/validation/GFileStudio_v2.17.16_VALIDATION.md": "d4b03b80ebb4e62e5d9c54dc8671df48121ec0c8001a44295614c1b3449a747a",
+    "docs/validation/GFileStudio_v2.17.17_VALIDATION.md": "86e8931fbc725a4211b89d16073a50e0e570e0c5895a32a07e4e542e549fdb4c",
+    "docs/validation/GFileStudio_v2.17.18_VALIDATION.md": "076e6c9a0de1ffe453eb866c29b7ff4e9ed664bcbcfff878fa80c4271ce52e2d",
+    "docs/validation/GFileStudio_v2.17.19_VALIDATION.md": "b6406f8c75d5898704ef311101943fb3ed2271363dd21b9a8705b6240af726ae",
+    "docs/validation/GFileStudio_v2.17.20_VALIDATION.md": "05d2c8a306d21c16782978db3cbd70370f27aad6c64cee985526132c660aa134",
+    "docs/validation/GFileStudio_v2.17.21_VALIDATION.md": "89e4d9c1384f2c722164dc2c89f4e9dbb392f3489a52863e4fdf5ef3864ea81a",
+    "docs/validation/GFileStudio_v2.17.22_VALIDATION.md": "5cdf538fb7a95747c45d9753ee5ff72b5e48cd523a3f736c918fe026d07e7c26",
+    "docs/validation/GFileStudio_v2.17.23_VALIDATION.md": "65f6e8fd8d7eca7789a1471d43bc13cedd87ed1d25a6fd49d2761a9c1c293008",
+    "docs/validation/GFileStudio_v2.17.24_VALIDATION.md": "995a61d30100d56297c25af9abe44fb0bbe87d4a36837fbd6d57bba728c050a5",
+    "docs/validation/GFileStudio_v2.17.28_VALIDATION.md": "ae267929bd1717b2fd6b3a83f4788145d57d5a3ddeed46bef3c2438ec4ca5e2e",
+    "docs/validation/GFileStudio_v2.17.29_VALIDATION.md": "cc4187401a3df4086513d753695ee35daa566f2294cb864388a4d26f79cc8f43",
+    "docs/validation/GFileStudio_v2.17.30_VALIDATION.md": "4a0dade2fc3d08f19cbf4eb12549ee5ba6bd67c9fc45e15fe7bad6868d2dd65c",
+    "docs/validation/GFileStudio_v2.17.32_VALIDATION.md": "d800cc120ebe9ebd21423ba6ed1a114c7daa29313603c2d688f5f00a38cc0d3c",
+    "docs/validation/GFileStudio_v2.17.33_VALIDATION.md": "18ef2a0aea93aee1d3f1b867eecccee6ffa2b7a61964742b35a95308bfc49c94",
+    "docs/validation/GFileStudio_v2.17.34_VALIDATION.md": "16c2a275f739ec4d12dde8dc06bd0a76f2ea8a2d970db500e2ebcc0fc4186fa5",
+    "docs/validation/GFileStudio_v2.17.35_VALIDATION.md": "e36aa7edde79f0ea221bfae1c9491aabb9a782c99393ead00929dfec43cb713d",
+    "docs/validation/GFileStudio_v2.17.36_VALIDATION.md": "3d0e4cc7b3d08e33a958a174f81cb26aec63b102f65b8ecc0be4064d07034453",
+    "docs/validation/GFileStudio_v2.17.39_VALIDATION.md": "969b7b5e31bf0c647958bd215aba3083deb25792784142e37512b61d25ed5677",
+    "docs/validation/GFileStudio_v2.17.41_VALIDATION.md": "8b29d594acd248686a08b93154fce12a29b55d39ae2e89c7f6742ce43a1b9110",
+    "docs/validation/GFileStudio_v2.17.43_VALIDATION.md": "dca37fe554687d1bba71e5a3a586953b22f5e258ae1d8e48162d15318257be65",
+    "docs/validation/VALIDATION.md": "63a6da9ea268aa5baec0a26fb41ed75bfdf93b60fec631bff6e93dc6e7ea4ba0",
+    "g_file_studio/app.py": "8b6058389227320c675e0598215b33d44ef81d24644d6d5610d0349a1de273a5",
+    "g_file_studio/engines/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "g_file_studio/engines/color_engine.py": "8608421a2ea8cc53d477612ffd9c705a1ff233ceec66b8edd50ace2700e857cb",
+    "g_file_studio/engines/connection_engine.py": "34f553f866faa541bd04e5078aaaea9c9a43c2c5bfd29d4455165fcbf601efc8",
+    "g_file_studio/engines/feeder_title_engine.py": "8275dc02736155f1229962c0a929e78dccb5bc8bb1a2540daa6b0ddd60a96fd1",
+    "g_file_studio/engines/frame_engine.py": "18eb4d7b655ceb3a6e93b51e48f46574c868441e76b955597c90f664e49ae48f",
+    "g_file_studio/engines/icon_upgrade_engine.py": "80da72021af920c86a4c00ce42848bf1fd31d9ce7e59a08f2c5c18011200bc5e",
+    "g_file_studio/engines/id_engine.py": "fed66e6995539506eeef72130b689cb3e208fbae2b53b91fd8fbe438e0142c7f",
+    "g_file_studio/engines/id_rule_engine.py": "595d26963580be79d35bdcd50d4e3f18f1db33a54c455a765acd203266dad380",
+    "g_file_studio/engines/margin_engine.py": "ee036efd8d5ab64296d0f59d24957867c053ccf24dccd2c3529145282b492789",
+    "g_file_studio/engines/merge_engine.py": "a885bcaaeee125e890ef6e23754d758272f748258ba055bb463cfbfd6033fadd",
+    "g_file_studio/engines/merge_frame_inspector.py": "9c187debee1573c08890462705ed98bac36f9d1a7c2c25487efd5540ef725f2e",
+    "g_file_studio/engines/rmu_group_engine.py": "df6b0e877891eaedb005458bb5c5532ae6eb3ec15bed30575ea7797fecf3b608",
+    "g_file_studio/engines/rmu_identification_engine.py.bak": "5c74556920ca0bf48b52f76f4503d9ab5bc8d00286fb214d13e84f8217f1580a",
+    "g_file_studio/engines/small_element_engine.py.tmp": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "g_file_studio/processors/__init__.py": "58a34b35ab9fa7134a6dc7d089f37632b4ed7868cb7d0de94100804158b164e5",
+    "g_file_studio/processors/common.py": "8e6814b835e6d6506b6209bb98ef72d923f026936f2521018f2ec9f33d10d540",
+    "g_file_studio/processors/connection_processor.py": "d9cf1c6a104b4ce8ef7fd2dbc0a407725bb92eed45c3f33612a28536b0cb899e",
+    "g_file_studio/processors/frame_processor.py": "95dd111fcc3252f59f3e39b516234725d846e5da6be74869c0a27744c5a64b5d",
+    "g_file_studio/processors/margin_processor.py": "09ee8c0793c0124a40bddcaa7b41487354d4bf8a544b06634602ceac82329ceb",
+    "g_file_studio/processors/merge_processor.py": "97c2d5ee92482dfe13e5cbfcb7aefdfa3f32189290f7de4298e6db8e49bc3a06",
+    "g_file_studio/services/__init__.py": "0bd164b77a535848e70a6cf7979ebc8daf1dc46b4caefb953170f481617177a6",
+    "g_file_studio/services/g_schema_service.py": "df3fad02b53a8d3fad36cf952cc74a5c649dac58783b760b27610f39fa4d9e87",
+    "g_file_studio/services/id_rule_service.py": "d5296f56304a79c1458daca18ef8142306064c13dd5900fd262aa2e48b4f9155",
+    "g_file_studio/services/output_naming.py": "c5bcf2089742b815270055f3887664c9e3da85029bbcd24b59b704076ea1154a",
+    "g_file_studio/services/paths.py": "9ef79cd11a1bad22530de87b169c6da3e503215eaba530ce36cde093d853a3ad",
+    "g_file_studio/services/remote_g_source.py": "0cddc3d46e857e8ddd52cb7b27425bc8cecdf32f7ff78f5dc3c5dc6a464af385",
+    "g_file_studio/services/run_history.py": "aa2b618e4b8b7ea2ac0f0000c21da93f7212bf3c46e82f06249d5e26df16cbfb",
+    "g_file_studio/services/template_service.py": "21fc0b1e9ed686b26c33d001cc26ee66f1cce17ecbaad27677bac6d679d7e120",
+    "g_file_studio/services/user_settings_service.py": "bab059ded25486aabdd451871c5867b76b829629bc6c088d1c4a4cb6ec15a92d",
+    "g_file_studio/ui/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "g_file_studio/ui/pages/__init__.py": "9c9de00d711a941fd33a12759573a4747de5080e9fad538019a155a6937be532",
+    "g_file_studio/ui/pages/base_page.py": "d4ba828419bebbdea350d229d5662f33666b50d874670e89e742de4f93c5ee22",
+    "g_file_studio/ui/pages/basic_page.py": "981a774c672c57597452e7a879a5c08161b5d45ad632a10fd74c9bfdb50d0743",
+    "g_file_studio/ui/pages/frame_page.py": "c266336e38b8012b50695ecb03e1b210813ad229be54e2f3a1ba0c1f584f2c6b",
+    "g_file_studio/ui/pages/id_page.py": "81a83751dbf172403ab7549ea04bd9b42c15b1af813da0378b95be058c83f030",
+    "g_file_studio/ui/pages/margin_page.py": "b0c11e145ae7790ed9dadd09fd140a24188fde4704a646bfcdccfe1ef049450d",
+    "g_file_studio/ui/pages/merge_page.py": "ac753fd25255937a24e27be8f4f09c901b1a6bc2c70985cccdd0d6c59baff74b",
+    "g_file_studio/ui/pages/small_element_page.py": "2558c0baccc725e6a5802589c45b53b184187b86b4e4479858983cc4dd21a953",
+    "g_file_studio/ui/path_validation.py": "3024bcb8b70cc4476d8431266eb15c4221cf71c4acc04d2c234764c6b4c8f869",
+    "g_file_studio/ui/theme.py": "b3a2f791b31a49fcaabd699ac519b8c34936dcc48db4075e88c9a551a25ce8a1",
+    "g_file_studio/ui/widgets/__init__.py": "4333cdcc078d6f557538b485ed7ab583aeb132278ef95ab364e39a2112e07330",
+    "g_file_studio/ui/widgets/basic_rules_editor.py": "20c8ab7c3d94174f6de13e7da4b1224968f2347ccb6ccc0319e199ef87a3d887",
+    "g_file_studio/ui/widgets/color_rule_row.py": "885525c8b12841ee07fb88a25e67c699c6abfd9328ec749e924e51581a804611",
+    "g_file_studio/ui/widgets/file_order_editor.py": "057b22601e3014e0b1449d57bcc2f7b91f428c0c075a209321ce207f9727e417",
+    "g_file_studio/ui/widgets/icon_upgrade_editor.py": "9aa7703f714f45d752e236ad83f031ba24ee60d5d19155f06f0e42b27d894f82",
+    "g_file_studio/ui/widgets/input_source_selector.py": "74a5da293be7b1040c71568554b7c9a3bf7f2548d3c9fd8589efa9c054ea2f41",
+    "g_file_studio/ui/widgets/integer_input.py": "0463607c9b41e46a7524c3c02dfa5ee8ccf9facaeb8807abfe7b924c84f8c0ec",
+    "g_file_studio/ui/widgets/path_row.py": "a9599e46724da50310d3d304e7c55817bed8abb6038ef7700d0c02cec8424292",
+    "g_file_studio/ui/widgets/person_editor.py": "f467fd3276baf0f6127360d87845ae333c7ab0b4fe2b2b08592984e150192b32",
+    "g_file_studio/ui/widgets/rule_card.py": "08c462eed5b75f9fa9ff7a84412ded1ad9a80b048401774ab2989138c55438db",
+    "g_file_studio/ui/widgets/template_selector.py": "570df8c68736a82102f0a4e5851b35f2bf3d989c739a7367b519ee6bf18556ad",
+    "g_file_studio/ui/widgets/wheel_safe_combo_box.py": "afa24ef1939a623d127bb885b2795b850ebfd99675d442dd0ecdc63b8d4ef012",
+    "g_file_studio/workers.py": "65033ca6d81f5a03c682f03f76f735717120eb21261f7d26fd4b87dc9679a516",
+    "requirements-dev.txt": "a182dfcd835f1a6616d0709cac6aad645bb86891cb725703885956768745626c",
+    "requirements.txt": "d6487c13fd63506d9086cd3f460c2cd0de9ce3eeec9bcc9c65e34acf76fae56c",
+    "resources/icons/app.ico": "2c77e13e61003637f49848d3876042bf5d870357313fae14dafd6db570073020",
+    "resources/icons/app.png": "cc18e2b7449fe63a955fd94e04eaa1970a2a1875861a3af048615b26546c9b1d",
+    "resources/icons/check.svg": "5c7ebafb9f59ee335434514a73026e6d959f5b97ed888816bcb78a8f8ca11243",
+    "resources/icons/radio_checked.svg": "63f82c18d1de49dd863e2fcccf51ec03ff0e27769935b9491528dcbd514a1e4a",
+    "resources/templates/SLD-Drawing-Frame-Template.sln.pic.g": "d0e41937528886c8f8514b943733ef1f7050562fa0022b582025a0f461157a01",
+    "resources/templates/templates.json": "2d7240118d011a9fe1354a3a98d1c5846306200314fc8118034ef552921b68b2",
+    "run_dev.ps1": "2ccad29d6aa66be0fcdc0541cd5987b88c3d1397e203ebb1c8df9e892d655ed8",
+    "setup_env.ps1": "eb811bea55276c74abd4fac0226db911125599343ca2e6f7b43c6a6990f32359"
+  },
+  "approved_ui_exceptions": {
+    "g_file_studio/ui/widgets/remote_g_source.py": {
+      "baseline_sha256": "4e4c358f6a8cb19309beccd288452cd688f5a4ae84f3f3367c37297bcc7938ce",
+      "release_sha256": "8383fc077a3a8f7024a3b92d4ae9b61e5b5f7097d45da69eb9fb3cf85f5d3fc9",
+      "reason": "User explicitly requested removal of “取消当前结果” and changed “清空全部” to clear all selections plus the search keyword."
+    }
+  },
+  "approved_feature_exceptions": {
+    "g_file_studio/engines/rmu_identification_engine.py": {
+      "release_sha256": "04fa6c009717040548bcd84442a4f1185641227acb4f6519a16140426b671310",
+      "reason": "User-approved RMU name fallback and exact exclusion filtering only."
+    },
+    "g_file_studio/models.py": {
+      "release_sha256": "21d426cc77cde8650355978e4ed16040e94221be8ce93de3c65b943634f303f5",
+      "reason": "Adds RMU name exclusion setting field only."
+    },
+    "g_file_studio/processors/basic_processor.py": {
+      "release_sha256": "34a50638bd1a198d225d620e0d5c0fa62b613487db061a006f5d14ccc1fc7298",
+      "reason": "Passes RMU name exclusions to the shared RMU identification engine and adds bilingual report rendering only; processing decisions are unchanged."
+    },
+    "g_file_studio/ui/pages/rmu_page.py": {
+      "release_sha256": "1031fa77e764f935eb7ef0431c4d332e6ffc76e65d07bdf2e7096215b795463c",
+      "reason": "Adds persisted bilingual RMU name exclusion input to RMU Processing UI only."
+    }
+  },
+  "approved_report_exceptions": {
+    "g_file_studio/processors/id_processor.py": {
+      "baseline_sha256": "5f92365944846eba0f7f0c3e13cda4cf420fd0008d705b781951b1fd620c6e57",
+      "release_sha256": "59929856245cc57471f32f9f546f6ad43011ea6fed3f49c43883b93628166e50",
+      "reason": "User-approved bilingual report presentation only; business data and processing decisions remain unchanged."
+    },
+    "g_file_studio/engines/small_element_engine.py": {
+      "baseline_sha256": "6f4f778f6d52788e02ed6443272fde0dc1161869d8b6c1332d3db3d279266957",
+      "release_sha256": "9f876c62da05a6298506c363a3b2ef1996be3b2729b9d7ab0cfb2715aea8e985",
+      "reason": "User-approved bilingual report presentation only; business data and processing decisions remain unchanged."
+    },
+    "g_file_studio/services/rmu_ledger_service.py": {
+      "baseline_sha256": "f5ddfd249c72fd02f2d5d31cec5781e33e102053b264e95cbff0aa3e08ad1b78",
+      "release_sha256": "038de53ed7c3cb2da2f2aed21d3c4e3095edf8f485bd1a16d8ff842fc2c53b59",
+      "reason": "User-approved bilingual report presentation only; business data and processing decisions remain unchanged."
+    },
+    "g_file_studio/services/html_report_selection.py": {
+      "baseline_sha256": "05537ea4353d845e8ca92badad0783d7f28caf7b3b7a2133d70bbf0a5a28128f",
+      "release_sha256": "e3e6722694a559f02040967ed07429a121e2dba052df9ae94febd89fecbaccbf",
+      "reason": "User-approved bilingual report presentation only; business data and processing decisions remain unchanged."
+    }
+  }
+}

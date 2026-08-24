@@ -1,0 +1,16 @@
+G File Studio v2.18.16 - English UI Performance Optimization
+
+Cause in v2.18.15:
+1. MainWindow translated the entire widget tree every 300 ms in English mode.
+2. The global Qt event filter translated every table cell again on Paint.
+3. Show events from stacked-page child widgets scheduled repeated subtree translations.
+With 2,000+ remote G files, these presentation-only scans caused visible module-switch lag.
+
+Fix in v2.18.16 (presentation layer only):
+- Removed the 300 ms full-window i18n refresh timer.
+- Dynamic table translation now listens to the table model's dataChanged signal.
+- Paint no longer rescans all QTableWidget cells.
+- Show-time subtree translation is limited to newly shown top-level windows/dialogs.
+- Dynamic labels/buttons continue to translate lazily in English mode.
+- No engine, processor, page business logic, RMU algorithm, merge algorithm, SSH behavior,
+  or report business rules were changed by this performance update.

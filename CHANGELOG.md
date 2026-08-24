@@ -1,3 +1,11 @@
+# v2.17.60
+
+- 将“彻底取消图形组合”从 RMU 专用语义调整为基础处理中的通用“图形组合处理”。
+- 启用后删除当前 G 文件 Layer 中全部 `<Merge>`，不再区分 RMU Merge / 其他业务 Merge。
+- 删除 Merge 后，按 BusDis + CBreakerDis + ZhaiWaiJieDiDaoZha 硬条件识别 RMU 外框，并仅调整 `<rect>` 的 XML 顺序使其位于设备底层。
+- 除删除 `<Merge>` 和调整 RMU `<rect>` 顺序外，不修改任何设备属性、坐标、ID、keyid、devref、tfr 或业务关联。
+- RMU 页面不再提供“取消所有环网柜组合”，避免把全图 Merge 清理误解为 RMU 专用操作。
+
 ## v2.17.59
 
 - SSH/SFTP 只读文件源新增“保存 SSH 设置”按钮，可保存 IP/主机、端口、用户名、密码和远程目录。

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from g_file_studio.services.report_i18n import report_is_english
+
 
 def selection_style() -> str:
     """Shared HTML report styles for row selection used only for visual review."""
@@ -16,60 +18,70 @@ def selection_style() -> str:
 
 
 def selection_bar() -> str:
+    if report_is_english():
+        help_text = "Review aid: select one or multiple rows; selected rows are highlighted."
+        count_text = "Selected 0 rows"
+    else:
+        help_text = "查看辅助：可单选/多选行，勾选后整行高亮。"
+        count_text = "已选择 0 行"
     return (
         '<div class="report-selection-bar">'
-        '<span>查看辅助：可单选/多选行，勾选后整行高亮。</span>'
-        '<span class="report-selection-count" id="reportSelectionCount">已选择 0 行</span>'
+        f'<span>{help_text}</span>'
+        f'<span class="report-selection-count" id="reportSelectionCount">{count_text}</span>'
         '</div>'
     )
 
 
 def selection_header() -> str:
+    title = "Select/Clear All" if report_is_english() else "全选/取消全选"
+    aria = "Select all" if report_is_english() else "全选"
     return (
-        '<th class="report-select-col" title="全选/取消全选">'
-        '<input id="reportSelectAll" class="report-select" type="checkbox" aria-label="全选">'
+        f'<th class="report-select-col" title="{title}">'
+        f'<input id="reportSelectAll" class="report-select" type="checkbox" aria-label="{aria}">'
         '</th>'
     )
 
 
 def selection_cell() -> str:
+    aria = "Select this row" if report_is_english() else "选择此行"
     return (
         '<td class="report-select-col">'
-        '<input class="report-select report-row-select" type="checkbox" aria-label="选择此行">'
+        f'<input class="report-select report-row-select" type="checkbox" aria-label="{aria}">'
         '</td>'
     )
 
 
 def selection_script() -> str:
-    return r'''<script>
-(function(){
-  function updateCount(){
+    label_expr = "'Selected '+checked+' rows'" if report_is_english() else "'已选择 '+checked+' 行'"
+    return rf'''<script>
+(function(){{
+  function updateCount(){{
     var checked=document.querySelectorAll('.report-row-select:checked').length;
     var label=document.getElementById('reportSelectionCount');
-    if(label){label.textContent='已选择 '+checked+' 行';}
+    if(label){{label.textContent={label_expr};}}
     var all=document.getElementById('reportSelectAll');
     var boxes=Array.from(document.querySelectorAll('.report-row-select'));
-    if(all){
+    if(all){{
       all.checked=boxes.length>0 && checked===boxes.length;
       all.indeterminate=checked>0 && checked<boxes.length;
-    }
-  }
-  function setRowState(box){
+    }}
+  }}
+  function setRowState(box){{
     var row=box.closest('tr');
-    if(row){row.classList.toggle('report-row-selected', box.checked);}
-  }
-  document.querySelectorAll('.report-row-select').forEach(function(box){
-    box.addEventListener('change', function(){setRowState(box);updateCount();});
-  });
+    if(row){{row.classList.toggle('report-row-selected', box.checked);}}
+  }}
+  document.querySelectorAll('.report-row-select').forEach(function(box){{
+    box.addEventListener('change', function(){{setRowState(box);updateCount();}});
+  }});
   var all=document.getElementById('reportSelectAll');
-  if(all){
-    all.addEventListener('change', function(){
-      document.querySelectorAll('.report-row-select').forEach(function(box){
+  if(all){{
+    all.addEventListener('change', function(){{
+      document.querySelectorAll('.report-row-select').forEach(function(box){{
         box.checked=all.checked; setRowState(box);
-      });
+      }});
       updateCount();
-    });
-  }
+    }});
+  }}
   updateCount();
-})();
+}})();
 </script>'''

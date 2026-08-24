@@ -61,6 +61,18 @@ class RmuUngroupingResult:
     warnings: list[str] = field(default_factory=list)
 
 
+@dataclass
+class GraphicMergeCleanupResult:
+    file_path: Path
+    previous_merge_count: int = 0
+    removed_merge_count: int = 0
+    remaining_merge_count: int = 0
+    rmu_rect_count: int = 0
+    lowered_rect_count: int = 0
+    removed_merge_ids: list[str] = field(default_factory=list)
+    lowered_rect_ids: list[str] = field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class _MergeBlock:
     index: int
@@ -772,6 +784,58 @@ def ungroup_rmu_layer(layer: ET.Element, file_path: Path) -> RmuUngroupingResult
     }
     if remove_ids & remaining_merge_object_ids:
         raise RmuGroupingError("取消环网柜组合后仍残留待删除的环网柜 Merge。")
+    return result
+
+
+
+
+def remove_all_graphic_merges(
+    tree: ET.ElementTree,
+    file_path: Path,
+    *,
+    lower_rmu_rects: bool = True,
+) -> GraphicMergeCleanupResult:
+    """彻底取消图形组合：删除所有 Layer 直属 ``<Merge>``。
+
+    这是通用图形清理能力，不限定 Merge 是否属于 RMU。除删除 Merge 头元素和
+    可选调整 RMU 外框的 XML 顺序外，不修改任何其他元素属性、坐标、ID 或引用。
+    """
+    root = tree.getroot()
+    layers = [child for child in list(root) if local_name(child.tag) == "Layer"]
+    if not layers:
+        raise RmuGroupingError(f"文件 {file_path.name} 的 G 根节点下没有直属 Layer。")
+
+    result = GraphicMergeCleanupResult(file_path=file_path)
+    for layer in layers:
+        children = list(layer)
+        merges = [element for element in children if local_name(element.tag) == "Merge"]
+        result.previous_merge_count += len(merges)
+        result.removed_merge_count += len(merges)
+        result.removed_merge_ids.extend((element.get("id") or "").strip() for element in merges)
+
+        # 在移除 Merge 前/后识别 RMU 均可；识别只依赖实际图元几何，不读取 Merge。
+        rmu_rects = _valid_rmu_rects_for_smr(layer) if lower_rmu_rects else []
+        result.rmu_rect_count += len(rmu_rects)
+
+        without_merges = [element for element in children if local_name(element.tag) != "Merge"]
+        if lower_rmu_rects and rmu_rects:
+            without_merges, lowered_ids = _lower_released_rects_below_devices(without_merges, rmu_rects)
+            result.lowered_rect_ids.extend(lowered_ids)
+            result.lowered_rect_count += len(lowered_ids)
+
+        if merges or (lower_rmu_rects and rmu_rects):
+            for element in list(layer):
+                layer.remove(element)
+            for element in without_merges:
+                layer.append(element)
+
+        remaining = [element for element in list(layer) if local_name(element.tag) == "Merge"]
+        result.remaining_merge_count += len(remaining)
+
+    if result.remaining_merge_count:
+        raise RmuGroupingError(
+            f"彻底取消图形组合后仍残留 {result.remaining_merge_count} 个 <Merge>。"
+        )
     return result
 
 

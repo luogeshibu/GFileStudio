@@ -112,9 +112,8 @@ class RemoteGSourceWidget(QWidget):
 
         select_row = QHBoxLayout()
         self.select_visible = QPushButton("全选当前结果")
-        self.unselect_visible = QPushButton("取消当前结果")
-        self.clear_selection = QPushButton("清空全部选择")
-        for btn in (self.select_visible, self.unselect_visible, self.clear_selection):
+        self.clear_selection = QPushButton("清空全部")
+        for btn in (self.select_visible, self.clear_selection):
             set_secondary(btn)
             select_row.addWidget(btn)
         select_row.addStretch(1)
@@ -136,8 +135,7 @@ class RemoteGSourceWidget(QWidget):
         self.download_button.clicked.connect(self.download_selected_to_local)
         self.search.textChanged.connect(self._apply_filter)
         self.select_visible.clicked.connect(lambda: self._set_visible_checked(True))
-        self.unselect_visible.clicked.connect(lambda: self._set_visible_checked(False))
-        self.clear_selection.clicked.connect(self._clear_checks)
+        self.clear_selection.clicked.connect(self._clear_all)
         self.table.itemChanged.connect(self._item_changed)
 
         # SSH 连接参数是全局共享设置：任一模块修改后，其他使用 SSH 文件源的
@@ -295,6 +293,13 @@ class RemoteGSourceWidget(QWidget):
         self.table.blockSignals(False)
         self._apply_filter()
         self.selectionChanged.emit()
+
+    def _clear_all(self) -> None:
+        """清空全部勾选，并清空搜索关键字。"""
+        self.search.blockSignals(True)
+        self.search.clear()
+        self.search.blockSignals(False)
+        self._clear_checks()
 
     def _item_changed(self, item: QTableWidgetItem) -> None:
         if item.column() == 0:

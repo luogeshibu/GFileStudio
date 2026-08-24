@@ -133,6 +133,10 @@ class BasicSettings(BaseModel):
     # 兼容 v2.7/v2.8 代码；为 True 且 rmu_action=NONE 时按 GROUP 处理。
     group_rmu_elements: bool = False
 
+    # 图形组合清理：删除 Layer 直属全部 <Merge>，并可将识别到的 RMU 外框置于设备底层。
+    remove_all_graphic_merges: bool = False
+    lower_rmu_rects_after_merge_cleanup: bool = True
+
     # 线路与母线样式。颜色使用 #RRGGBB；线型 keep/solid/dashed 分别表示保持/实线/虚线。
     change_feedline_color: bool = False
     feedline_color: str = "#0000FF"
@@ -166,6 +170,8 @@ class BasicSettings(BaseModel):
     rmu_name_bottom: bool = False
     rmu_name_left: bool = False
     rmu_name_right: bool = False
+    # 用户指定的 RMU 柜名排除字符串。仅用于名称候选过滤，不影响柜体/柜型识别。
+    rmu_name_exclusions: str = ""
     rmu_smart_in_type: bool = False
     export_rmu_identification_csv: bool = True
 

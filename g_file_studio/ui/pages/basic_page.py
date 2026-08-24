@@ -109,6 +109,7 @@ class BasicPage(BasePage):
         rules_layout.addWidget(self.rules_editor)
         self.layout.addWidget(rules_box)
 
+        self._build_graphic_merge_options()
         self._build_color_options()
         self._build_feeder_title_options()
         self._build_icon_upgrade_options()
@@ -312,6 +313,30 @@ class BasicPage(BasePage):
 
         self.layout.addWidget(box)
 
+
+    def _build_graphic_merge_options(self) -> None:
+        box = QGroupBox("图形组合处理")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(16, 18, 16, 14)
+        layout.setSpacing(9)
+
+        description = QLabel(
+            "这是整个 G 文件级的组合清理，不只针对环网柜。启用后删除 Layer 中全部 <Merge>，"
+            "并将识别到的 RMU 外框 <rect> 移到柜内设备之前，使外框位于设备底层。"
+            "除删除 Merge 和调整 rect 的 XML 顺序外，不修改任何设备属性、坐标、ID、keyid、devref 或 tfr。"
+        )
+        description.setWordWrap(True)
+        description.setObjectName("mutedText")
+        layout.addWidget(description)
+
+        self.remove_all_graphic_merges = QCheckBox("彻底取消图形组合（删除全部 <Merge>，并将 RMU 外框置底）")
+        self.remove_all_graphic_merges.setProperty("optionChoice", True)
+        self.remove_all_graphic_merges.setToolTip(
+            "输出文件中删除全部 Layer 直属 Merge；原文件不修改。RMU 外框只调整 XML 前后顺序，不修改任何属性。"
+        )
+        layout.addWidget(self.remove_all_graphic_merges)
+        self.layout.addWidget(box)
+
     def _build_color_options(self) -> None:
         box = QGroupBox("线路与母线样式")
         layout = QVBoxLayout(box)
@@ -420,6 +445,9 @@ class BasicPage(BasePage):
         self.layout.addWidget(box)
 
     def _restore_options(self) -> None:
+        self.remove_all_graphic_merges.setChecked(
+            self.user_settings.get_bool("basic/remove_all_graphic_merges", False)
+        )
         self.move_feeder_titles_above_bus.setChecked(
             self.user_settings.get_bool("basic/move_feeder_titles_above_bus", False)
         )
@@ -452,6 +480,9 @@ class BasicPage(BasePage):
         self._persist_options()
 
     def _persist_options(self) -> None:
+        self.user_settings.set_value(
+            "basic/remove_all_graphic_merges", self.remove_all_graphic_merges.isChecked()
+        )
         self.user_settings.set_value(
             "basic/move_feeder_titles_above_bus",
             self.move_feeder_titles_above_bus.isChecked(),
@@ -517,6 +548,8 @@ class BasicPage(BasePage):
                 "new_icon_files": self.icon_upgrade_editor.new_paths(),
                 "repair_connection_points": self.repair_connection_points.isChecked(),
                 "move_feeder_titles_above_bus": self.move_feeder_titles_above_bus.isChecked(),
+                "remove_all_graphic_merges": self.remove_all_graphic_merges.isChecked(),
+                "lower_rmu_rects_after_merge_cleanup": True,
                 "change_feedline_color": self.feedline_color.is_enabled(),
                 "feedline_color": self.feedline_color.color(),
                 "feedline_line_style": self.feedline_color.line_style(),

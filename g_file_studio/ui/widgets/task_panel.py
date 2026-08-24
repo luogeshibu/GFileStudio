@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from g_file_studio.ui.widgets.help_widgets import HelpButton, set_secondary
+from g_file_studio.i18n import LANG_ZH, tr_runtime
 from g_file_studio.services.run_history import update_run_status
 from g_file_studio.workers import FunctionWorker
 
@@ -30,6 +31,7 @@ class TaskPanel(QFrame):
         self.setObjectName("taskPanel")
         self.thread_pool = QThreadPool.globalInstance()
         self._output_dir: Path | None = None
+        self._raw_log_lines: list[str] = []
 
         self.run_button = QPushButton("开始执行")
         self.run_button.setToolTip("按照当前页面参数开始处理。处理会在后台线程中运行。")
@@ -87,14 +89,32 @@ class TaskPanel(QFrame):
         layout.addWidget(self.log_view, 1)
 
     def log_view_clear(self) -> None:
+        self._raw_log_lines.clear()
         self.log_view.clear()
+        self.log_view.setProperty("_i18n_plainText", "")
+        self.log_view.setProperty("_i18n_plainText_rendered", "")
 
     def append_log(self, text: str) -> None:
         if text:
-            self.log_view.appendPlainText(text.rstrip("\n"))
+            source = text.rstrip("\n")
+            self._raw_log_lines.append(source)
+            language = LANG_ZH
+            window = self.window()
+            manager = getattr(window, "language_manager", None)
+            if manager is not None:
+                language = manager.language
+            rendered = tr_runtime(source, language)
+            self.log_view.appendPlainText(rendered)
+            # Store the untouched source log on the widget so switching languages
+            # rerenders text only and never affects worker/business output.
+            raw_text = "\n".join(self._raw_log_lines)
+            self.log_view.setProperty("_i18n_plainText", raw_text)
+            self.log_view.setProperty("_i18n_plainText_rendered", self.log_view.toPlainText())
+            if manager is not None and rendered != source:
+                manager.remember_runtime_translation(source, rendered)
 
     def start(self, function, output_dir: Path) -> None:
-        self.log_view.clear()
+        self.log_view_clear()
         self.progress.setValue(0)
         self.run_button.setEnabled(False)
         self.open_button.setEnabled(False)
