@@ -78,5 +78,5 @@ def test_site_profile_management_is_inline_table_not_popup_dialog():
     assert "QTableWidget" in source
     assert "当前图元标准" in source
     assert "图元标准" in source
-    assert "G 文件输入与输出（标准学习 / 检查共用）" in source
+    assert "待检查 G 文件" in source
     assert "SiteProfileDialog" not in source

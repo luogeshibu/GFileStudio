@@ -7,10 +7,10 @@ def test_site_profile_uses_one_shared_g_input_and_has_report_button():
     assert source.count("self.source = InputSourceSelector(") == 1
     assert "self.sample_source" not in source
     assert "self.apply_source" not in source
-    assert "G 文件输入与输出（标准学习 / 检查共用）" in source
+    assert "待检查 G 文件" in source
     assert "扫描标准样本 / 创建标准" in source
     assert "检查并升级" not in source
-    assert 'QPushButton("打开报告")' in source
+    assert 'QPushButton("查看检查报告")' in source
     assert "_on_processing_result" in source
     assert source.index("self.output_path = PathRow(") > source.index("self.source = InputSourceSelector(")
     assert source.index("self.output_path = PathRow(") < source.index("apply_box = QGroupBox")

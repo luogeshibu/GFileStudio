@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import Qt, QThreadPool, QUrl
+from PySide6.QtCore import Qt, QThreadPool, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -48,6 +48,8 @@ class SiteProfilePage(BasePage):
     This page only learns/version-controls standards and checks business G files.
     It never upgrades, replaces, copies, or overwrites a source G file.
     """
+
+    activeProfileChanged = Signal(str)
 
     def __init__(self, user_settings: UserSettingsService, parent=None) -> None:
         self.user_settings = user_settings
@@ -102,15 +104,25 @@ class SiteProfilePage(BasePage):
         self.new_action = self.profile_menu.addAction("新建标准")
         self.scan_action = self.profile_menu.addAction("扫描标准样本 / 创建标准")
         self.profile_menu.addSeparator()
+        self.review_discovery_action = self.profile_menu.addAction("查看待确认图元")
+        self.reset_ignored_action = self.profile_menu.addAction("重新显示已忽略图元")
+        self.profile_menu.addSeparator()
         self.restore_action = self.profile_menu.addAction("恢复此版本")
         self.delete_action = self.profile_menu.addAction("删除标准")
         self.new_action.triggered.connect(self._new_profile)
         self.scan_action.triggered.connect(self._scan_samples)
+        self.review_discovery_action.triggered.connect(self._review_pending_discoveries)
+        self.reset_ignored_action.triggered.connect(self._reset_ignored_discoveries)
         self.restore_action.triggered.connect(self._restore_selected_version)
         self.delete_action.triggered.connect(self._delete_profile)
         self.profile_manage_button.setMenu(self.profile_menu)
         manage_row.addWidget(self.profile_manage_button)
-        manage_hint = QLabel("版本历史直接显示在下方列表；ACTIVE 为当前真正执行的图元标准。")
+        self.edit_standard_button = QPushButton("编辑标准")
+        set_secondary(self.edit_standard_button)
+        self.edit_standard_button.setCheckable(True)
+        self.edit_standard_button.toggled.connect(self._toggle_standard_editor)
+        manage_row.addWidget(self.edit_standard_button)
+        manage_hint = QLabel("日常只需选择 ACTIVE 标准并执行检查；新增/修改标准时再展开编辑。")
         manage_hint.setObjectName("mutedText")
         manage_row.addWidget(manage_hint)
         manage_row.addStretch(1)
@@ -124,7 +136,8 @@ class SiteProfilePage(BasePage):
         self.profile_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.profile_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.profile_table.horizontalHeader().setStretchLastSection(True)
-        self.profile_table.setMinimumHeight(180)
+        self.profile_table.setMinimumHeight(105)
+        self.profile_table.setMaximumHeight(165)
         self.profile_table.itemSelectionChanged.connect(self._profile_selection_changed)
         configure_known_dense_table(self.profile_table)
         profile_layout.addWidget(self.profile_table)
@@ -240,13 +253,13 @@ class SiteProfilePage(BasePage):
         editor_layout.addLayout(save_row)
         self.layout.addWidget(editor_box)
 
-        source_box = QGroupBox("G 文件输入与输出（标准学习 / 检查共用）")
+        source_box = QGroupBox("待检查 G 文件")
         source_layout = QVBoxLayout(source_box)
         source_layout.setContentsMargins(14, 18, 14, 12)
         source_layout.setSpacing(10)
         source_note = QLabel(
-            "先选择 G 文件，再决定用途：确认过的标准样本用于学习/更新图元标准；业务 G 文件用于只读标准检查。"
-            "待检查文件不会被自动学习为标准；检查结果只写入下方 workspace 输出目录，不生成修改后的 G。"
+            "选择需要检查的 G 文件或目录。本模块只读，不修改源 G；输出目录只保存检查报告和日志。"
+            "标准样本的维护请使用上方“标准管理”。"
         )
         source_note.setWordWrap(True)
         source_note.setObjectName("mutedText")
@@ -278,7 +291,7 @@ class SiteProfilePage(BasePage):
 
         self.layout.addWidget(source_box)
 
-        apply_box = QGroupBox("检查结果与日志")
+        apply_box = QGroupBox("图元标准检查")
         apply_layout = QVBoxLayout(apply_box)
         apply_layout.setContentsMargins(14, 18, 14, 12)
         apply_layout.setSpacing(10)
@@ -286,11 +299,11 @@ class SiteProfilePage(BasePage):
         self.current_profile_label = QLabel("当前执行标准：未选择")
         self.current_profile_label.setObjectName("sectionCaption")
         self.current_profile_label.setWordWrap(True)
+        self.current_profile_label.setVisible(False)
         apply_layout.addWidget(self.current_profile_label)
 
         execute_note = QLabel(
-            "点击“只检查标准”后只生成检查报告，不修改、覆盖或复制源 G。"
-            "若发现图元类型/变体、devref 或几何与 ACTIVE 标准不一致，会明确告警；需要做同类 OLD → NEW 版本升级时请到“基础处理”模块。"
+            "按当前 ACTIVE 标准检查图元类型/变体、devref 与几何。只检查和告警，不修改 G；同类 OLD → NEW 版本升级请到“基础处理”。"
         )
         execute_note.setWordWrap(True)
         execute_note.setObjectName("mutedText")
@@ -301,18 +314,38 @@ class SiteProfilePage(BasePage):
         self.result_summary.setWordWrap(True)
         apply_layout.addWidget(self.result_summary)
 
+        discovery_row = QHBoxLayout()
+        self.discovery_status = QLabel("")
+        self.discovery_status.setObjectName("mutedText")
+        self.discovery_status.setVisible(False)
+        discovery_row.addWidget(self.discovery_status)
+        self.review_discovery_button = QPushButton("查看待确认图元")
+        set_secondary(self.review_discovery_button)
+        self.review_discovery_button.setVisible(False)
+        self.review_discovery_button.clicked.connect(self._review_pending_discoveries)
+        discovery_row.addWidget(self.review_discovery_button)
+        discovery_row.addStretch(1)
+        apply_layout.addLayout(discovery_row)
+
         self.task = TaskPanel()
         self.task.set_result_dialogs_enabled(False)
         self.task.run_button.hide()
-        self.check_button = QPushButton("只检查标准")
-        set_secondary(self.check_button)
+        self.check_button = QPushButton("检查图元标准")
         self.check_button.clicked.connect(self._check_profile)
         self.task.buttons_layout.insertWidget(0, self.check_button)
-        self.open_report_button = QPushButton("打开报告")
+        self.open_report_button = QPushButton("查看检查报告")
         set_secondary(self.open_report_button)
         self.open_report_button.setEnabled(False)
         self.open_report_button.clicked.connect(self._open_report)
-        self.task.buttons_layout.insertWidget(3, self.open_report_button)
+        self.task.buttons_layout.insertWidget(1, self.open_report_button)
+        self.task.open_button.setText("打开结果目录")
+        self.toggle_log_button = QPushButton("显示日志")
+        set_secondary(self.toggle_log_button)
+        self.toggle_log_button.setCheckable(True)
+        self.toggle_log_button.toggled.connect(self._toggle_log)
+        self.task.buttons_layout.insertWidget(3, self.toggle_log_button)
+        self.task.log_view.setVisible(False)
+        self.task.clear_button.setVisible(False)
         self.task.resultReceived.connect(self._on_processing_result)
         self.task.busyChanged.connect(self._task_busy_changed)
         apply_layout.addWidget(self.task)
@@ -326,9 +359,196 @@ class SiteProfilePage(BasePage):
         self.layout.insertWidget(2, profile_box)
         self.layout.insertWidget(3, editor_box)
         self.layout.insertWidget(4, apply_box)
+        self.editor_box = editor_box
+        self.editor_box.setVisible(False)
 
         self._reload_profiles()
         self._update_action_state()
+
+
+    def _toggle_standard_editor(self, checked: bool) -> None:
+        if not hasattr(self, "editor_box"):
+            return
+        visible = bool(checked)
+        self.editor_box.setVisible(visible)
+        self.edit_standard_button.setText("收起标准编辑" if visible else "编辑标准")
+
+    def _toggle_log(self, checked: bool) -> None:
+        visible = bool(checked)
+        self.task.log_view.setVisible(visible)
+        self.task.clear_button.setVisible(visible)
+        self.toggle_log_button.setText("隐藏日志" if visible else "显示日志")
+
+    def _refresh_discovery_status(self, profile: SiteSmartProfile | None = None) -> None:
+        if profile is None:
+            name, _version, active = self._selected_profile_key()
+            profile = self.service.load_profiles().get(name) if name and active else None
+        pending = []
+        ignored = []
+        if profile is not None:
+            pending = [devref for devref, state in profile.discovery_decisions.items() if state == "pending"]
+            ignored = [devref for devref, state in profile.discovery_decisions.items() if state == "ignored"]
+        has_pending = bool(pending)
+        self.discovery_status.setVisible(has_pending)
+        self.review_discovery_button.setVisible(has_pending)
+        if has_pending:
+            self.discovery_status.setText(f"待确认图元：{len(pending)} 种（已提示过，不会在每次检查时重复弹窗）")
+            self.review_discovery_button.setText(f"查看待确认图元（{len(pending)}）")
+        self.review_discovery_action.setEnabled(has_pending and not self._task_busy)
+        self.reset_ignored_action.setEnabled(bool(ignored) and not self._task_busy)
+
+    @staticmethod
+    def _discovery_role(meta: dict[str, object]) -> str:
+        body_id = str(meta.get("element_id", "")).strip()
+        tag = str(meta.get("element_tag", "")).strip()
+        return body_id or tag or "自定义设备"
+
+    def _handle_discovered_symbols(self, candidates: list[dict[str, object]]) -> None:
+        name, version, active = self._selected_profile_key()
+        profile = self.service.load_profiles().get(name) if name else None
+        if profile is None or not active or version != profile.profile_version:
+            return
+        original = dict(profile.discovery_decisions)
+        decisions = dict(original)
+        catalog = dict(profile.discovery_catalog)
+        new_rows: list[dict[str, object]] = []
+        for raw in candidates:
+            if not isinstance(raw, dict):
+                continue
+            devref = str(raw.get("devref", "")).strip()
+            if not devref:
+                continue
+            catalog[devref] = dict(raw)
+            if devref not in decisions:
+                decisions[devref] = "pending"
+                new_rows.append(dict(raw))
+        self.service.update_discovery_metadata(name, catalog=catalog, decisions=decisions)
+        profile = self.service.load_profiles().get(name)
+        self._refresh_discovery_status(profile)
+        if not new_rows:
+            return
+        answer = QMessageBox.question(
+            self,
+            "发现新的图元类型",
+            f"本次检查发现 {len(new_rows)} 种尚未纳入当前图元标准的图元。\n\n"
+            "它们不会自动判定为错误，也不会自动加入标准。是否现在逐个确认？\n"
+            "如果选择“否”，这些图元会保留在“待确认图元”中，并且后续检查不会重复弹窗提醒。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._review_pending_discoveries(only_devrefs={str(row.get("devref", "")).strip() for row in new_rows})
+
+    def _review_pending_discoveries(self, *_args, only_devrefs: set[str] | None = None) -> None:
+        name, version, active = self._selected_profile_key()
+        profile = self.service.load_profiles().get(name) if name else None
+        if profile is None or not active or version != profile.profile_version:
+            QMessageBox.information(self, "请选择当前标准", "请先选择一个 ACTIVE 图元标准。")
+            return
+        decisions = dict(profile.discovery_decisions)
+        rows: list[dict[str, object]] = []
+        for devref, state in decisions.items():
+            if state != "pending":
+                continue
+            if only_devrefs is not None and devref not in only_devrefs:
+                continue
+            meta = dict(profile.discovery_catalog.get(devref, {}))
+            meta.setdefault("devref", devref)
+            rows.append(meta)
+        rows.sort(key=lambda row: (-int(row.get("count", 0) or 0), str(row.get("devref", "")).casefold()))
+        if not rows:
+            QMessageBox.information(self, "没有待确认图元", "当前标准没有需要确认的新图元。")
+            self._refresh_discovery_status(profile)
+            return
+
+        additions: list[dict[str, object]] = []
+        ignored = 0
+        existing_standard = {str(row.get("standard_devref", "")).strip() for row in profile.custom_symbols}
+        for index, meta in enumerate(rows, 1):
+            devref = str(meta.get("devref", "")).strip()
+            tag = str(meta.get("element_tag", "")).strip() or "-"
+            body_id = str(meta.get("element_id", "")).strip() or "-"
+            count = int(meta.get("count", 0) or 0)
+            source_file = str(meta.get("source_file", "")).strip() or "-"
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle(f"确认新图元 {index}/{len(rows)}")
+            box.setText(f"XML 元素：{tag}\n图元：{devref}")
+            box.setInformativeText(
+                f"主体 ID：{body_id}\n出现次数：{count}\n示例文件：{source_file}\n\n"
+                "“加入当前标准”：作为一个新的自定义设备图元加入；\n"
+                "“不纳入此标准”：以后不再提示这个 devref；\n"
+                "“剩余稍后处理”：保留待确认状态并结束本次确认。"
+            )
+            add_button = box.addButton("加入当前标准", QMessageBox.ButtonRole.AcceptRole)
+            ignore_button = box.addButton("不纳入此标准", QMessageBox.ButtonRole.DestructiveRole)
+            later_button = box.addButton("剩余稍后处理", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is add_button:
+                if devref not in existing_standard:
+                    additions.append({
+                        "uid": f"custom-{uuid4().hex[:10]}",
+                        "scope": "ANY",
+                        "role": self._discovery_role(meta),
+                        "element_tag": "" if tag == "-" else tag,
+                        "standard_devref": devref,
+                        "match_attr": "devref",
+                        "match_value": devref,
+                        "enabled": True,
+                        "source_file": "" if source_file == "-" else source_file,
+                    })
+                    existing_standard.add(devref)
+                decisions.pop(devref, None)
+            elif clicked is ignore_button:
+                decisions[devref] = "ignored"
+                ignored += 1
+            else:
+                break
+
+        if additions:
+            profile.custom_symbols = list(profile.custom_symbols) + additions
+            merged_catalog = dict(profile.symbol_catalog)
+            for row in rows:
+                devref = str(row.get("devref", "")).strip()
+                if devref in {str(item.get("standard_devref", "")).strip() for item in additions}:
+                    merged_catalog[devref] = dict(row)
+            profile.symbol_catalog = merged_catalog
+            try:
+                profile = self.service.upsert(profile)
+            except ValueError as exc:
+                QMessageBox.warning(self, "加入标准失败", str(exc))
+                return
+        self.service.update_discovery_metadata(name, catalog=profile.discovery_catalog, decisions=decisions)
+        current = self.service.load_profiles().get(name)
+        if current is not None:
+            self._reload_profiles(current.profile_name, current.profile_version)
+            self._refresh_discovery_status(current)
+            if additions:
+                self.activeProfileChanged.emit(current.profile_name)
+        if additions or ignored:
+            QMessageBox.information(
+                self,
+                "新图元已处理",
+                f"加入当前标准：{len(additions)} 种；不纳入本标准：{ignored} 种。\n"
+                "未处理的图元会保留在待确认列表中，不会在每次检查时重复弹窗。",
+            )
+
+    def _reset_ignored_discoveries(self, *_args) -> None:
+        name, version, active = self._selected_profile_key()
+        profile = self.service.load_profiles().get(name) if name else None
+        if profile is None or not active or version != profile.profile_version:
+            return
+        decisions = dict(profile.discovery_decisions)
+        ignored = [devref for devref, state in decisions.items() if state == "ignored"]
+        if not ignored:
+            QMessageBox.information(self, "没有已忽略图元", "当前标准没有已忽略的新图元。")
+            return
+        for devref in ignored:
+            decisions[devref] = "pending"
+        profile = self.service.update_discovery_metadata(name, decisions=decisions)
+        self._refresh_discovery_status(profile)
+        QMessageBox.information(self, "已恢复提示", f"已将 {len(ignored)} 种图元重新放回待确认列表。")
 
     def _selected_profile_key(self) -> tuple[str, int | None, bool]:
         row = self.profile_table.currentRow()
@@ -737,6 +957,8 @@ class SiteProfilePage(BasePage):
         self.save_button.setEnabled(enabled)
 
     def _new_profile(self, *_args, clear_selection: bool = True) -> None:
+        if hasattr(self, "edit_standard_button"):
+            self.edit_standard_button.setChecked(True)
         if clear_selection:
             self.profile_table.clearSelection()
             self.profile_table.setCurrentCell(-1, -1)
@@ -812,6 +1034,7 @@ class SiteProfilePage(BasePage):
         self.restore_action.setEnabled(not active)
         self.delete_action.setEnabled(active)
         self._update_action_state()
+        self._refresh_discovery_status(current if active else None)
 
     def _restore_selected_version(self) -> None:
         name, version, active = self._selected_profile_key()
@@ -837,6 +1060,7 @@ class SiteProfilePage(BasePage):
             QMessageBox.warning(self, "恢复失败", str(exc))
             return
         self._reload_profiles(restored.profile_name, restored.profile_version)
+        self.activeProfileChanged.emit(restored.profile_name)
         QMessageBox.information(
             self,
             "已恢复",
@@ -923,6 +1147,8 @@ class SiteProfilePage(BasePage):
         return False
 
     def _scan_samples(self) -> None:
+        if hasattr(self, "edit_standard_button"):
+            self.edit_standard_button.setChecked(True)
         if self._scan_worker is not None:
             return
         if not self.site_name.text().strip():
@@ -1232,6 +1458,7 @@ class SiteProfilePage(BasePage):
             QMessageBox.warning(self, "保存失败", str(exc))
             return
         self._reload_profiles(profile.profile_name, profile.profile_version)
+        self.activeProfileChanged.emit(profile.profile_name)
         QMessageBox.information(self, "标准已保存", f"已保存 {profile.profile_name}（适用范围：{profile.site_name}）V{profile.profile_version}。")
 
     def _delete_profile(self) -> None:
@@ -1257,6 +1484,7 @@ class SiteProfilePage(BasePage):
             return
         self.service.remove(name)
         self._reload_profiles()
+        self.activeProfileChanged.emit("")
 
     def _check_profile(self) -> None:
         self._start_profile_run()
@@ -1279,7 +1507,7 @@ class SiteProfilePage(BasePage):
         self.source.persist_current()
         self._last_report_path = None
         self.open_report_button.setEnabled(False)
-        self.result_summary.setText("正在只读检查图元标准……源 G 文件不会修改。")
+        self.result_summary.setText("正在检查图元标准……源 G 文件不会修改。")
         run_dir = begin_managed_run(self.output_path, "symbol-standard", "check")
         settings = SmartProfileProcessingSettings(
             source_path=self.source.path(),
@@ -1310,6 +1538,11 @@ class SiteProfilePage(BasePage):
         )
         self.restore_action.setEnabled(bool(name and profile and not active and not busy))
         self.delete_action.setEnabled(bool(name and profile and active and not busy))
+        if hasattr(self, "review_discovery_action"):
+            pending = bool(profile and any(state == "pending" for state in profile.discovery_decisions.values()))
+            ignored = bool(profile and any(state == "ignored" for state in profile.discovery_decisions.values()))
+            self.review_discovery_action.setEnabled(bool(active and pending and not busy))
+            self.reset_ignored_action.setEnabled(bool(active and ignored and not busy))
         self.new_action.setEnabled(not busy)
 
     def _task_busy_changed(self, busy: bool) -> None:
@@ -1325,31 +1558,27 @@ class SiteProfilePage(BasePage):
                 break
         self.open_report_button.setEnabled(bool(self._last_report_path and self._last_report_path.exists()))
         stats = getattr(result, "statistics", {}) or {}
+        discovered = stats.get("_UnmappedSymbolCandidates", [])
+        discovery_rows = [dict(row) for row in discovered if isinstance(row, dict)] if isinstance(discovered, list) else []
         bad = int(stats.get("Nonstandard Symbols", 0) or 0)
         if stats:
-            self.result_summary.setText(
-                "标准检查完成（源 G 未修改）：SMART RMU {smart}，NORMAL RMU {normal}；不符合标准图元/几何共 {bad}；"
-                "SMART LBS/CB/接地 {slbs}/{sq}/{sg}，NORMAL LBS/CB/接地 {nlbs}/{nq}/{ng}，自定义设备不符合 {custom}，几何不符合 {geo}；标准漂移候选 {drift}。".format(
-                    smart=stats.get("SMART RMUs", 0),
-                    normal=stats.get("NORMAL RMUs", 0),
-                    bad=bad,
-                    slbs=stats.get("SMART LBS Changed", 0),
-                    sq=stats.get("SMART Breaker Changed", 0),
-                    sg=stats.get("SMART Ground Changed", 0),
-                    nlbs=stats.get("NORMAL LBS Changed", 0),
-                    nq=stats.get("NORMAL Breaker Changed", 0),
-                    ng=stats.get("NORMAL Ground Changed", 0),
-                    custom=stats.get("Custom Symbols Changed", 0),
-                    geo=stats.get("Geometry Adjusted", 0),
-                    drift=stats.get("Profile Drift Candidates", 0),
-                )
-            )
+            new_unmapped = int(stats.get("New Unmapped Symbols", 0) or 0)
+            pending_unmapped = int(stats.get("Pending Unmapped Symbols", 0) or 0)
+            unmanaged = new_unmapped + pending_unmapped
+            if bad:
+                text = f"检查完成：发现 {bad} 个不符合当前标准的问题。"
+            else:
+                text = "检查完成：已配置的图元标准全部通过。"
+            if unmanaged:
+                text += f" 另发现 {unmanaged} 种尚未纳入当前标准的图元（不计为错误），可在“待确认图元”中决定是否加入。"
+            text += " 源 G 未修改；详细原因请查看检查报告。"
+            self.result_summary.setText(text)
         if bad > 0:
             QMessageBox.warning(
                 self,
                 "图元标准不一致",
                 f"检测到 {bad} 个图元/几何与当前 ACTIVE 标准不一致。\n\n"
-                "本模块只检查，不会修改 G。请查看下方日志或打开 HTML 报告确认具体差异。\n"
+                "本模块只检查，不会修改 G。请点击“查看检查报告”确认具体图元、当前值、标准值和不符合原因。\n"
                 "如果是同一设备图元的旧版本 → 新版本升级，请到“基础处理 → 同类图元版本升级”处理。",
             )
         else:
@@ -1358,11 +1587,13 @@ class SiteProfilePage(BasePage):
                 "图元标准检查完成",
                 "未发现图元类型/变体、devref 或几何与当前 ACTIVE 标准不一致；源 G 文件未修改。",
             )
+        if discovery_rows:
+            self._handle_discovered_symbols(discovery_rows)
 
     def _open_report(self) -> None:
         path = self._last_report_path
         if path is None or not path.exists():
-            QMessageBox.information(self, "报告不存在", "当前还没有可打开的图元标准检查 HTML 报告，请先执行检查。")
+            QMessageBox.information(self, "报告不存在", "当前还没有检查报告，请先点击“检查图元标准”。")
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve())))
 

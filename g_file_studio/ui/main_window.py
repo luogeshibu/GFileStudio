@@ -36,6 +36,7 @@ class MainWindow(QMainWindow):
         self.user_settings = user_settings
         self.language_manager = LanguageManager(user_settings, self)
         cleanup_expired_runs()
+        self._clear_legacy_managed_output_paths()
         self.setWindowTitle("G File Studio · NARI 国际业务部")
         self.resize(1280, 860)
         self.setMinimumSize(1040, 720)
@@ -49,18 +50,24 @@ class MainWindow(QMainWindow):
         sidebar = self._build_sidebar()
         self.stack = QStackedWidget()
         self.stack.setObjectName("contentRoot")
+        self.site_profile_page = SiteProfilePage(self.user_settings)
+        self.jeddah_batch_page = JeddahBatchPage(self.user_settings)
         self.pages = [
             SmallElementPage(self.user_settings),
             IdPage(self.user_settings),
-            SiteProfilePage(self.user_settings),
+            self.site_profile_page,
             RmuPage(self.user_settings),
             BasicPage(self.user_settings),
             MergePage(self.user_settings),
             MarginPage(self.user_settings),
             FramePage(self.user_settings),
-            JeddahBatchPage(self.user_settings),
+            self.jeddah_batch_page,
             HelpPage(),
         ]
+        # Symbol standards are shared state.  Saving/restoring/deleting an ACTIVE
+        # standard must update the already-created Jeddah page immediately instead
+        # of leaving the profile combo with startup-time cached contents.
+        self.site_profile_page.activeProfileChanged.connect(self.jeddah_batch_page.refresh_profiles)
         for page in self.pages:
             self.stack.addWidget(page)
 
@@ -82,6 +89,38 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("NARI 国际业务部 · G 文件处理工具已就绪。鼠标停留在控件上可查看提示，按 F1 打开帮助中心。")
         self._apply_language(self.language_manager.language)
         self._install_help_shortcut()
+
+
+    def _clear_legacy_managed_output_paths(self) -> None:
+        """清除旧版本保存的 workspace 托管输出路径。
+
+        这些输出目录由程序按模块和运行批次统一生成，历史 run 目录可能被
+        定期清理，因此不属于需要用户重新选择的路径。必须在各页面 PathRow
+        构造前清理，避免它们把已经删除的旧 run 目录当成用户路径失效并弹窗。
+        """
+        managed_keys = (
+            "small_elements/output_directory",
+            "recent_paths/small_elements/output_directory",
+            "id_rules/output_directory",
+            "recent_paths/id_rules/output_directory",
+            "site_profile/output_directory",
+            "recent_paths/site_profile/output_directory",
+            "rmu/output_directory",
+            "recent_paths/rmu/output_directory",
+            "basic/output_directory",
+            "recent_paths/basic/output_directory",
+            "merge/output_directory",
+            "recent_paths/merge/output_directory",
+            "margin/output_directory",
+            "recent_paths/margin/output_directory",
+            "frame/output_directory",
+            "recent_paths/frame/output_directory",
+            "jeddah_batch/output_directory",
+            "recent_paths/jeddah_batch/output_directory",
+        )
+        for key in managed_keys:
+            if self.user_settings.get_value(key).strip():
+                self.user_settings.clear(key)
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget()
@@ -217,6 +256,10 @@ class MainWindow(QMainWindow):
     def _change_page(self, index: int) -> None:
         if 0 <= index < self.stack.count():
             self.stack.setCurrentIndex(index)
+            page = self.pages[index]
+            on_page_activated = getattr(page, "on_page_activated", None)
+            if callable(on_page_activated):
+                on_page_activated()
             item = self.nav.item(index)
             if item:
                 self.statusBar().showMessage(item.statusTip() or item.toolTip())

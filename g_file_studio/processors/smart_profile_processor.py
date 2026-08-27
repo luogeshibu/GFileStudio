@@ -7,7 +7,10 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from g_file_studio.engines.smart_profile_engine import apply_smart_profile_to_tree
+from g_file_studio.engines.smart_profile_engine import (
+    apply_smart_profile_to_tree,
+    collect_symbol_catalog_from_tree,
+)
 from g_file_studio.models import InputMode, ProcessingResult
 from g_file_studio.processors.common import LogCallback, ProgressCallback, discover_g_inputs
 from g_file_studio.services.site_profile_service import SiteSmartProfile
@@ -56,7 +59,9 @@ def _check_only(source: Path, *, profile: SiteSmartProfile):
         custom_symbols=profile.custom_symbols,
     )
     tree = ET.parse(source)
-    return apply_smart_profile_to_tree(tree, source, **kwargs)
+    catalog = collect_symbol_catalog_from_tree(tree, source)
+    result = apply_smart_profile_to_tree(tree, source, **kwargs)
+    return result, catalog
 
 
 def _expected_devref(profile: SiteSmartProfile, scope: str, role: str) -> str:
@@ -89,6 +94,26 @@ def _expected_devref(profile: SiteSmartProfile, scope: str, role: str) -> str:
     return ""
 
 
+def _covered_devrefs(profile: SiteSmartProfile) -> set[str]:
+    covered = {
+        value.strip() for value in (
+            profile.smart_lbs_devref, profile.smart_breaker_devref, profile.smart_ground_devref,
+            profile.normal_lbs_devref, profile.normal_breaker_devref, profile.normal_ground_devref,
+        ) if str(value).strip()
+    }
+    for row in profile.custom_symbols:
+        if not bool(row.get("enabled", True)):
+            continue
+        target = str(row.get("standard_devref", "")).strip()
+        if target:
+            covered.add(target)
+        if str(row.get("match_attr", "")).strip() == "devref":
+            current = str(row.get("match_value", "")).strip()
+            if current:
+                covered.add(current)
+    return covered
+
+
 def process_smart_profile_consistency(
     settings: SmartProfileProcessingSettings,
     log: LogCallback = print,
@@ -110,6 +135,7 @@ def process_smart_profile_consistency(
     warnings: list[str] = []
     outputs: list[Path] = []
     mismatch_counter: Counter[str] = Counter()
+    discovered_catalog: dict[str, dict[str, object]] = {}
     totals = {
         "files": len(files),
         "smart_rmus": 0,
@@ -156,8 +182,19 @@ def process_smart_profile_consistency(
             )
 
     for index, source in enumerate(files, 1):
-        result = _check_only(source, profile=profile)
+        result, file_catalog = _check_only(source, profile=profile)
         warnings.extend(result.warnings)
+        for devref, meta in file_catalog.items():
+            existing = dict(discovered_catalog.get(devref, {}))
+            count = int(existing.get("count", 0) or 0) + int(meta.get("count", 0) or 0)
+            for key, value in dict(meta).items():
+                if key == "count":
+                    continue
+                if value not in ("", None, [], 0, 0.0) or key not in existing:
+                    existing[key] = value
+            existing["devref"] = devref
+            existing["count"] = count
+            discovered_catalog[devref] = existing
         mismatch_counter.update(result.mismatch_counts)
         totals["smart_rmus"] += result.smart_rmu_count
         totals["normal_rmus"] += result.normal_rmu_count
@@ -467,6 +504,25 @@ def process_smart_profile_consistency(
     )
     outputs.extend([csv_path, detail_csv_path, html_path])
     nonstandard_total = len(detail_rows)
+    covered_devrefs = _covered_devrefs(profile)
+    ignored_devrefs = {
+        devref for devref, state in profile.discovery_decisions.items()
+        if str(state).strip().lower() == "ignored"
+    }
+    mismatch_current_devrefs = {
+        str(row.get("CurrentDevref", "")).strip() for row in detail_rows
+        if str(row.get("CurrentDevref", "")).strip()
+    }
+    unmapped_candidates = [
+        dict(meta) for devref, meta in sorted(discovered_catalog.items(), key=lambda row: row[0].casefold())
+        if devref not in covered_devrefs
+        and devref not in ignored_devrefs
+        and devref not in mismatch_current_devrefs
+    ]
+    new_candidates = [
+        row for row in unmapped_candidates
+        if str(profile.discovery_decisions.get(str(row.get("devref", "")), "")).strip().lower() != "pending"
+    ]
     return ProcessingResult(
         success=True,
         output_files=outputs,
@@ -490,5 +546,8 @@ def process_smart_profile_consistency(
             "Geometry Adjusted": totals["geometry_adjusted"],
             "Nonstandard Symbols": nonstandard_total,
             "Profile Drift Candidates": len(drift),
+            "_UnmappedSymbolCandidates": unmapped_candidates,
+            "New Unmapped Symbols": len(new_candidates),
+            "Pending Unmapped Symbols": len(unmapped_candidates) - len(new_candidates),
         },
     )

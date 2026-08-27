@@ -57,8 +57,8 @@ def test_build_and_requirements_include_paramiko():
 
 
 def test_version_21745():
-    assert '__version__ = "2.18.47"' in Path('g_file_studio/__init__.py').read_text(encoding='utf-8')
-    assert 'version = "2.18.47"' in Path('pyproject.toml').read_text(encoding='utf-8')
+    assert '__version__ = "2.18.52"' in Path('g_file_studio/__init__.py').read_text(encoding='utf-8')
+    assert 'version = "2.18.52"' in Path('pyproject.toml').read_text(encoding='utf-8')
 
 def test_manual_download_does_not_clear_destination_and_settings_are_global():
     ui = Path('g_file_studio/ui/widgets/remote_g_source.py').read_text(encoding='utf-8')

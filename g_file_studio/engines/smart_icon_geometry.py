@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
 from g_file_studio.engines.id_engine import local_name
+from g_file_studio.engines.icon_upgrade_engine import rotated
 
 
 @dataclass(frozen=True)
@@ -156,21 +157,34 @@ def build_geometry_templates(
             continue
         x = _number(element.get("x"))
         y = _number(element.get("y"))
-        offsets = tuple((px - x, py - y) for px, py in anchors)
-        rotation = _rotation(element)
-        signature = (devref, rotation, width, height, offsets)
-        if signature in seen:
-            continue
-        seen.add(signature)
-        templates.setdefault((devref, rotation), []).append(
-            SmartIconGeometryTemplate(
-                devref=devref,
-                rotation=rotation,
-                width=width,
-                height=height,
-                anchor_offsets=offsets,
-            )
+        observed_offsets = tuple((px - x, py - y) for px, py in anchors)
+        observed_rotation = _rotation(element)
+
+        # A correct target symbol may exist only in one orientation in the current
+        # drawing (the real Jeddah 30815 case has NO-SMART CB samples at 270° while
+        # the wrong legacy Q1 that needs correction is at 0°).  Recover the raw
+        # rotation-0 pin offsets from the observed instance, then synthesize all four
+        # orthogonal orientations.  This lets one confirmed target instance safely
+        # correct another orientation without moving any ConnectLine endpoint.
+        raw_offsets = tuple(
+            rotated(offset, width, height, (-observed_rotation) % 360)
+            for offset in observed_offsets
         )
+        for rotation in (0, 90, 180, 270):
+            offsets = tuple(rotated(offset, width, height, rotation) for offset in raw_offsets)
+            signature = (devref, rotation, width, height, offsets)
+            if signature in seen:
+                continue
+            seen.add(signature)
+            templates.setdefault((devref, rotation), []).append(
+                SmartIconGeometryTemplate(
+                    devref=devref,
+                    rotation=rotation,
+                    width=width,
+                    height=height,
+                    anchor_offsets=offsets,
+                )
+            )
     return templates
 
 

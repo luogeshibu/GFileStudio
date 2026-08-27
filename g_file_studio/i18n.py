@@ -1846,3 +1846,32 @@ EN.update({
     "图元标准检查完成": "Symbol Standard Check Complete",
     "标准检查": "Standard Check",
 })
+
+# v2.18.48 Simplified symbol-standard inspection UX and one-time discovery queue.
+EN.update({
+    "待检查 G 文件": "G Files to Check",
+    "图元标准检查": "Symbol Standard Check",
+    "检查图元标准": "Check Symbol Standard",
+    "查看检查报告": "View Check Report",
+    "打开结果目录": "Open Results Folder",
+    "编辑标准": "Edit Standard",
+    "收起标准编辑": "Collapse Standard Editor",
+    "显示日志": "Show Log",
+    "隐藏日志": "Hide Log",
+    "查看待确认图元": "Review Pending Symbols",
+    "重新显示已忽略图元": "Restore Ignored Symbols",
+    "发现新的图元类型": "New Symbol Types Found",
+    "请选择当前标准": "Select Current Standard",
+    "没有待确认图元": "No Pending Symbols",
+    "当前标准没有需要确认的新图元。": "The current standard has no new symbols awaiting confirmation.",
+    "加入当前标准": "Add to Current Standard",
+    "不纳入此标准": "Exclude from This Standard",
+    "剩余稍后处理": "Review Remaining Later",
+    "加入标准失败": "Failed to Add Standard",
+    "新图元已处理": "New Symbols Processed",
+    "没有已忽略图元": "No Ignored Symbols",
+    "当前标准没有已忽略的新图元。": "The current standard has no ignored new symbols.",
+    "已恢复提示": "Notifications Restored",
+    "正在检查图元标准……源 G 文件不会修改。": "Checking symbol standards... Source G files will not be modified.",
+    "当前还没有检查报告，请先点击“检查图元标准”。": "No check report is available yet. Click Check Symbol Standard first.",
+})

@@ -17,5 +17,5 @@ def test_dense_table_layout_is_presentation_only_and_reused():
 
 
 def test_release_version_21837():
-    assert '__version__ = "2.18.47"' in Path('g_file_studio/__init__.py').read_text(encoding='utf-8')
-    assert 'version = "2.18.47"' in Path('pyproject.toml').read_text(encoding='utf-8')
+    assert '__version__ = "2.18.52"' in Path('g_file_studio/__init__.py').read_text(encoding='utf-8')
+    assert 'version = "2.18.52"' in Path('pyproject.toml').read_text(encoding='utf-8')

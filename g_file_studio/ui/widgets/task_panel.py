@@ -152,6 +152,8 @@ class TaskPanel(QFrame):
         if result.statistics:
             self.append_log("统计：")
             for key, value in result.statistics.items():
+                if str(key).startswith("_"):
+                    continue
                 self.append_log(f"  {key}: {value}")
         self.open_button.setEnabled(True)
         if self._output_dir:

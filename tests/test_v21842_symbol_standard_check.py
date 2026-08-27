@@ -117,7 +117,7 @@ def test_generic_module_is_check_only_and_moved_below_id_check():
     help_text = Path("g_file_studio/ui/help_content.py").read_text(encoding="utf-8")
     assert '("图元标准检查", "通用图元标准检查' in main
     assert 'super().__init__(\n            "图元标准检查"' in page
-    assert 'self.check_button = QPushButton("只检查标准")' in page
+    assert 'self.check_button = QPushButton("检查图元标准")' in page
     assert 'self.execute_button' not in page
     assert 'apply_changes' not in page
     nav_id = main.index('("ID 检查与修复"')

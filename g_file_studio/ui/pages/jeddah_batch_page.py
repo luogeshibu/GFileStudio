@@ -100,7 +100,7 @@ class JeddahBatchPage(BasePage):
             "✓ 6. SMR 环网柜外框统一刷成红色",
             "✓ 7. SMR 条件转换 SMART：已有 SMART 时删除外部 SMR并保持原 SMART；没有 SMART 时生成顶部居中 SMART（字号 20）；外框强制红色",
             "✓ 8. SMR 转换后再次执行 SMART 图元检查，确保 LBS / Circuit Breaker devref 正确",
-            "✓ 9. 使用“图元标准检查”中的当前 ACTIVE 标准执行 SMART/NORMAL 图元类型/变体纠正：LBS、Circuit Breaker、<ZhaiWaiJieDiDaoZha> 接地刀闸按 Profile 纠正错误变体，并保持电气连接锚点位置不变",
+            "✓ 9. 使用“图元标准检查”中的当前 ACTIVE 标准执行 SMART/NORMAL 图元标准化：纠正 LBS、Circuit Breaker、<ZhaiWaiJieDiDaoZha> 接地刀闸的错误变体/devref，并按标准 pin 修正与 ConnectLine 的连接锚点位置偏移（连接线保持不动）",
             "✓ 10. 删除 RMU 红色状态点（channel_status），沿用现有状态点识别/归属规则",
             "✓ 11. 删除带 Bus 的环网柜矩形框，并将对应标题移动到母线上方",
             "✓ 12. 将馈线名称移动到母线上方",
@@ -127,27 +127,15 @@ class JeddahBatchPage(BasePage):
         settings_layout.setSpacing(10)
 
         profile_form = QFormLayout()
+        self.profile_service = SiteProfileService()
         self.rmu_profile = WheelSafeComboBox()
         self.rmu_profile.setMinimumContentsLength(50)
-        saved_profile = self.user_settings.get_value("jeddah_batch/rmu_profile_name", "")
-        profiles = SiteProfileService().load_profiles()
-        for name, profile in sorted(profiles.items(), key=lambda row: row[0].casefold()):
-            site_key = profile.site_name.strip().upper()
-            if not (site_key.startswith("JED") or "JEDDAH" in site_key):
-                continue
-            label = (
-                f"{profile.site_name} / {profile.profile_name} / V{profile.profile_version} ACTIVE · "
-                f"SMART/NORMAL LBS+Q+接地"
-            )
-            self.rmu_profile.addItem(label, name)
-        if saved_profile:
-            index = self.rmu_profile.findData(saved_profile)
-            if index >= 0:
-                self.rmu_profile.setCurrentIndex(index)
         self.rmu_profile.setToolTip(
-            "吉达批处理使用“图元标准检查”中的此 ACTIVE 标准执行 SMART/NORMAL 图元类型/变体一致性纠正；这属于标准替换/纠正，不属于图元版本升级。"
+            "与“图元标准检查”联动：每次进入本页、标准保存/恢复/删除后以及执行批处理前，都会重新读取最新 Jeddah ACTIVE 标准。"
+            "吉达批处理使用所选 ACTIVE 标准执行 SMART/NORMAL 图元变体、devref 与连接锚点位置纠正；这不属于同类图元版本升级。"
         )
-        profile_form.addRow("吉达 RMU 图元 Profile", self.rmu_profile)
+        self.refresh_profiles(self.user_settings.get_value("jeddah_batch/rmu_profile_name", ""))
+        profile_form.addRow("当前 ACTIVE 图元标准", self.rmu_profile)
         settings_layout.addLayout(profile_form)
 
         threshold_form = QFormLayout()
@@ -250,6 +238,68 @@ class JeddahBatchPage(BasePage):
         self.task.run_button.clicked.connect(self.run)
         self.layout.addWidget(self.task, 1)
 
+    @staticmethod
+    def _is_jeddah_profile(profile) -> bool:
+        site_key = str(getattr(profile, "site_name", "") or "").strip().upper()
+        return site_key.startswith("JED") or "JEDDAH" in site_key
+
+    def refresh_profiles(self, preferred_name: str = "") -> None:
+        """Reload Jeddah ACTIVE standards from the shared profile store.
+
+        The symbol-standard page and Jeddah batch page intentionally use the same
+        persistent profile file.  Never cache the combo contents for the lifetime of
+        the page: a standard can be renamed, replaced, restored, or versioned while
+        this page already exists.
+        """
+        current_name = str(self.rmu_profile.currentData() or "").strip()
+        saved_name = self.user_settings.get_value("jeddah_batch/rmu_profile_name", "").strip()
+        profiles = self.profile_service.load_profiles()
+        rows = [
+            (name, profile)
+            for name, profile in profiles.items()
+            if self._is_jeddah_profile(profile)
+        ]
+        rows.sort(key=lambda row: (str(row[1].site_name).casefold(), str(row[1].profile_name).casefold()))
+        available = {name for name, _profile in rows}
+
+        requested = str(preferred_name or "").strip()
+        if requested not in available:
+            requested = current_name if current_name in available else ""
+        if requested not in available:
+            requested = saved_name if saved_name in available else ""
+        if not requested and rows:
+            # A stale selection must not keep an obsolete profile visible.  When no
+            # previous choice survives, prefer the most recently updated Jeddah
+            # ACTIVE standard (the common one-standard-per-site workflow).
+            newest = max(rows, key=lambda row: str(getattr(row[1], "updated_at", "") or ""))
+            requested = newest[0]
+
+        self.rmu_profile.blockSignals(True)
+        self.rmu_profile.clear()
+        if not rows:
+            self.rmu_profile.addItem("尚无 Jeddah ACTIVE 图元标准，请先到“图元标准检查”创建", "")
+        else:
+            for name, profile in rows:
+                readiness = "SMART/NORMAL LBS+Q+接地" if (profile.smart_ready and profile.normal_ready and profile.ground_ready) else "标准学习未完整"
+                label = (
+                    f"{profile.site_name} / {profile.profile_name} / V{profile.profile_version} ACTIVE · "
+                    f"{readiness}"
+                )
+                self.rmu_profile.addItem(label, name)
+            index = self.rmu_profile.findData(requested)
+            self.rmu_profile.setCurrentIndex(index if index >= 0 else 0)
+        self.rmu_profile.blockSignals(False)
+
+        selected = str(self.rmu_profile.currentData() or "").strip()
+        if selected and selected != saved_name:
+            # Persist the repaired selection so a removed/renamed old standard does
+            # not return on the next launch.
+            self.user_settings.set_value("jeddah_batch/rmu_profile_name", selected)
+
+    def on_page_activated(self) -> None:
+        """Page-navigation hook: always show the latest shared ACTIVE standard."""
+        self.refresh_profiles()
+
     def _persist(self) -> None:
         self.source.persist_all_text()
         self.user_settings.set_value("jeddah_batch/rmu_profile_name", str(self.rmu_profile.currentData() or ""))
@@ -266,6 +316,9 @@ class JeddahBatchPage(BasePage):
         self.template_selector.persist_current()
 
     def run(self) -> None:
+        # Standard definitions may have changed while this page was open. Reload
+        # before validation so execution can never use a stale combo entry.
+        self.refresh_profiles()
         if not validate_input_source(
             self,
             self.source,
@@ -293,7 +346,7 @@ class JeddahBatchPage(BasePage):
                 "吉达批处理现在会全面校验 SMART/NORMAL 的 LBS、Circuit Breaker 与接地刀闸。请先在“图元标准检查”中扫描标准 G 文件并保存 Jeddah ACTIVE 标准，然后在此选择。",
             )
             return
-        active_profile = SiteProfileService().load_profiles().get(profile_name)
+        active_profile = self.profile_service.load_profiles().get(profile_name)
         if active_profile is None:
             QMessageBox.warning(self, "Profile 不存在", f"未找到当前 ACTIVE Profile：{profile_name}")
             return

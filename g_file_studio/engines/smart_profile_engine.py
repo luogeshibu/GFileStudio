@@ -372,6 +372,24 @@ def _collect_main_g_symbol_catalog(
         )
 
 
+def collect_symbol_catalog_from_tree(tree: ET.ElementTree, file_path: Path) -> dict[str, dict[str, object]]:
+    """Collect user-visible GIcon/devref candidates from one main G tree.
+
+    This is used by the read-only standard checker to discover symbols that are not
+    yet covered by the selected standard.  Discovery is informational only and does
+    not make the business G file a standard sample.
+    """
+    catalog: dict[str, dict[str, object]] = {}
+    elements = direct_layer_elements(tree.getroot())
+    visible_candidates = [
+        element for element in elements
+        if (element.get("devref") or "").strip()
+        and (element.get("composeType") or "").strip() == "GIcon"
+    ]
+    _collect_main_g_symbol_catalog(catalog, visible_candidates, Path(file_path))
+    return catalog
+
+
 def _collect_icon_definition_catalog(
     catalog: dict[str, dict[str, object]],
     file_path: Path,

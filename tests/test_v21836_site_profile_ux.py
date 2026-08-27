@@ -5,7 +5,7 @@ def test_site_profile_core_actions_are_consolidated_and_standard_rows_are_table_
     source = Path("g_file_studio/ui/pages/site_profile_page.py").read_text(encoding="utf-8")
     assert 'QGroupBox("主操作")' not in source
     assert 'self.scan_action = self.profile_menu.addAction("扫描标准样本 / 创建标准")' in source
-    assert 'QPushButton("只检查标准")' in source
+    assert 'QPushButton("检查图元标准")' in source
     assert 'QPushButton("检查并升级")' not in source
     assert 'QPushButton("标准管理")' in source
     assert 'QTableWidget(6, 12)' in source
@@ -16,7 +16,7 @@ def test_site_profile_core_actions_are_consolidated_and_standard_rows_are_table_
 
 def test_site_profile_results_keep_report_and_anchor_safe_upgrade_language():
     source = Path("g_file_studio/ui/pages/site_profile_page.py").read_text(encoding="utf-8")
-    assert 'QGroupBox("检查结果与日志")' in source
-    assert 'QPushButton("打开报告")' in source
-    assert "不修改、覆盖或复制源 G" in source
+    assert 'QGroupBox("图元标准检查")' in source
+    assert 'QPushButton("查看检查报告")' in source
+    assert "只检查和告警，不修改 G" in source
     assert "图元标准不一致" in source
