@@ -11,8 +11,8 @@ def test_build_script_uses_runtime_version():
 def test_project_versions_are_synced():
     init_text = Path("g_file_studio/__init__.py").read_text(encoding="utf-8")
     pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
-    assert '__version__ = "2.18.16"' in init_text
-    assert 'version = "2.18.16"' in pyproject
+    assert '__version__ = "2.18.47"' in init_text
+    assert 'version = "2.18.47"' in pyproject
 
 
 def test_compact_branding():

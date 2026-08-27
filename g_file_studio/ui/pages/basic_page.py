@@ -58,7 +58,7 @@ class BasicPage(BasePage):
         self.layout.addWidget(
             InfoBanner(
                 "输入可以是单个 G 文件，也可以是 G 文件目录。属性替换、元素删除、"
-                "馈线名称定位、连接点修复、图元版本升级以及线路与母线样式修改，"
+                "馈线名称定位、连接点修复、同类图元版本升级以及线路与母线样式修改，"
                 "都在点击“开始基础处理”后统一执行。ID 检查/修复已移到全局“ID 检查与修复”模块。连接点修复仅在勾选时处理 node_area/link；"
                 "未勾选时完全跳过。目录模式下每个文件独立处理。"
             )
@@ -391,26 +391,27 @@ class BasicPage(BasePage):
 
 
     def _build_icon_upgrade_options(self) -> None:
-        box = QGroupBox("图元版本升级适配")
+        box = QGroupBox("同类图元版本升级")
         layout = QVBoxLayout(box)
         layout.setContentsMargins(16, 18, 16, 14)
         layout.setSpacing(10)
 
         description = QLabel(
-            "用于将仍使用旧图元几何参数的主 G 文件适配到新图元库。请分别添加本次涉及的旧图元 G 和新图元 G，"
-            "程序按完全相同的文件名强制一一配对，并直接从图元文件读取 w/h、AlignCenter 和 pin(cx,cy)。"
-            "任何图元只存在旧版或只存在新版、主体类型/ID 不一致、端口数量变化时都会禁止执行。"
-            "处理时保持旧电气对齐中心的绝对位置不变，并把对应连接线端点移动到新图元真实 pin；不需要正常参考主 G。"
+            "这里只处理同一设备语义/同一 XML 类型的图元版本升级，例如旧版 LBS → 新版 LBS、旧版 Circuit Breaker → 新版 Circuit Breaker。"
+            "可一次批量添加多份 OLD 图元，再批量添加 NEW 图元；文件名不要求一致，自动无法确认时可使用‘手动配对…’明确指定 OLD → NEW。"
+            "程序读取双方 w/h、AlignCenter 和 pin(cx,cy)，并在升级时更新 devref 与几何；XML 类型或端口结构不兼容时禁止执行。"
+            "处理时保持电气对齐锚点绝对位置不变，并按 zenon 中心旋转坐标计算真实 pin，不修改设备 ID、keyid、node_area 或拓扑关系。"
+            "注意：SMART 图元用到 NORMAL、NORMAL 图元用到 SMART 这类情况属于‘图元类型/变体使用错误’，不是版本升级；应先在‘图元标准检查’中发现并告警，由对应纠正流程处理。"
         )
         description.setWordWrap(True)
         description.setObjectName("mutedText")
         layout.addWidget(description)
 
-        self.upgrade_icon_geometry = QCheckBox("启用图元版本升级适配")
+        self.upgrade_icon_geometry = QCheckBox("启用同类图元版本升级")
         self.upgrade_icon_geometry.setProperty("optionChoice", True)
         self.upgrade_icon_geometry.setToolTip(
-            "只处理主 G 中 devref 命中已配对图元、且当前 w/h 与旧图元尺寸完全一致的实例；"
-            "已经是新尺寸的实例会跳过，未知自定义尺寸会告警并跳过。"
+            "只处理主 G 中 devref 命中 OLD 映射且当前几何可确认属于旧标准的实例；"
+            "已经符合新标准的实例会跳过，无法安全判定的自定义尺寸/几何会告警并跳过。"
         )
         layout.addWidget(self.upgrade_icon_geometry)
 
@@ -546,6 +547,7 @@ class BasicPage(BasePage):
                 "upgrade_icon_geometry": self.upgrade_icon_geometry.isChecked(),
                 "old_icon_files": self.icon_upgrade_editor.old_paths(),
                 "new_icon_files": self.icon_upgrade_editor.new_paths(),
+                "icon_upgrade_pairs": self.icon_upgrade_editor.pairs(),
                 "repair_connection_points": self.repair_connection_points.isChecked(),
                 "move_feeder_titles_above_bus": self.move_feeder_titles_above_bus.isChecked(),
                 "remove_all_graphic_merges": self.remove_all_graphic_merges.isChecked(),
@@ -572,7 +574,7 @@ class BasicPage(BasePage):
         if self.upgrade_icon_geometry.isChecked():
             ok, message = self.icon_upgrade_editor.validate_for_run()
             if not ok:
-                QMessageBox.warning(self, "图元版本升级适配检查未通过", message)
+                QMessageBox.warning(self, "同类图元版本升级检查未通过", message)
                 return
         try:
             policy = self._resolve_output_policy()

@@ -1,6 +1,51 @@
 from __future__ import annotations
 
 APP_HELP: dict[str, tuple[str, str]] = {
+    "jeddah_batch": (
+        "吉达馈线批处理说明",
+        """
+<h3>用途</h3>
+<p>仅用于吉达现场的批量单馈线标准化。每张输入 G 文件独立处理并独立输出，不执行馈线合并。</p>
+<h3>固定流程</h3>
+<ol>
+<li>首先复用“基础处理 → 图形组合处理”的“彻底取消图形组合”能力：删除全部 &lt;Merge&gt;，并将识别到的 RMU 外框置于设备底层；</li>
+<li>删除异常小尺寸 ConnectLine / FeedLine / Bus / BusDis；</li>
+<li>将已识别的 RMU 柜名文字统一改为白色、字号固定为 50，并移动到所属环网柜上边框正中间上方，文字下边缘与上边框保持 10 个图形单位净间距；</li>
+<li>将 SMART 与 SMR 环网柜外框统一改为红色；</li>
+<li>SMART 图元检查覆盖整个 RMU 框内：只要 SMART Text 中心位于柜框内，就校正 Y 类 Load_Breaker_Switch 与 Q 类 Circuit_Breaker 的 SMART devref；Q 图元兼容 Circuit_Breaker_NO-SMART 和 Circuit_Breaker_NON-SMART 两种源引用。</li>
+<li>对精确 SMR 标识做吉达专用智能处理：若对应柜内已经存在 SMART，只删除外部 SMR 并将外框保持红色；若柜内没有 SMART，则将 SMR 转为顶部居中的 SMART（字号固定 20）；之后再次执行 SMART 图元检查。</li>
+<li>删除带 Bus 的环网柜矩形框，并将对应标题移动到母线上方；</li>
+<li>将馈线名称移动到母线上方；</li>
+<li>将所有 &lt;FeedLine&gt; 馈线线型统一设为实线（ls=1），不修改颜色、线宽、坐标、ID 或引用；</li>
+<li>删除带 BusDis 的 RMU 所属 channel_status 红色 Status 点；归属判断直接复用现有“移动环网柜红色状态点”规则，只把最终动作从移动改为删除；</li>
+<li>删除精确匹配的 H.T 文字标识（忽略大小写和首尾空白，不做子串删除）；</li>
+<li>对现有 RMU 识别引擎识别出的全部配网环网柜检查 SMART 标识；同一柜内有多个 SMART 时保留 XML 中原有第一个，删除后续重复项，不移动或重写保留项；</li>
+<li>仅当两个独立 Text 分别精确为 2000.00 与 UPDATED_MEASURMENT，且位于同一视觉行并水平相邻（间距不超过 10）时才成对删除；距离不相邻时不处理；</li>
+<li>使用全局已确认 ID 模板执行 ID 检查与修复；</li>
+<li>调用现有图形边距调整能力，默认将主体图形左、上、右、下边距设为 500；</li>
+<li>最后调用现有图框添加能力，为每张处理后的单馈线图添加所选图框模板。</li>
+</ol>
+<h3>设计原则</h3>
+<p>本页面仅编排已有处理能力，不替换或改写现有异常元素、RMU、馈线名称或 ID 模块的算法。吉达专用参数使用独立配置，不覆盖其他模块设置。</p>
+""",
+    ),
+    "site_profile": (
+        "图元标准检查帮助",
+        """
+<h3>用途</h3>
+<p>这是独立的通用图元标准检查模块，不依赖吉达或其他现场批处理。用户用确认过的标准 G 文件建立并版本化图元标准，然后对任意业务 G 文件执行只读一致性检查。前 6 行保留 SMART / NORMAL RMU 的 LBS、Circuit Breaker、接地刀闸系统规则；用户还可以继续添加任意设备图元标准。本模块只告警和生成报告，绝不修改、覆盖或复制源 G。</p>
+<h3>标准学习与图元属性</h3>
+<p>适用范围由用户明确填写，可写现场名，也可写 General 等通用范围；程序不通过文件名前缀强制判断。扫描主 G 时会建立 devref 图元目录并显示 XML 元素类型、主体 ID、w/h、旋转样本、p_NameString/key_name 示例；若同一目录中还包含原始图元定义 G，则继续读取 AlignCenter、pin(cx,cy) 与 pin id，并形成可复用的旋转几何标准。</p>
+<h3>自定义设备图元</h3>
+<p>点击“添加设备图元”可手工增加任意规则；点击“添加扫描到的未映射图元”可把扫描目录中的其他 devref 批量加入标准。每条自定义规则可设置范围 ANY/SMART/NORMAL、设备角色、XML 元素、标准 devref，以及用于定位业务 G 中当前图元的匹配属性：devref、XML 元素、p_NameString 或 key_name。检查时会比较图元类型/变体、devref 与已学习的几何参数；任何差异只记录为告警，不执行替换。</p>
+<h3>标准检查</h3>
+<p>“只检查标准”是完全只读模式：源 G 文件不会被修改、覆盖或复制到 final 目录。程序比较图元类型/变体、devref、w/h、AlignCenter 与 pin 锚点等标准信息，并生成 CSV/HTML 图元标准检查报告；发现差异时界面会明确告警。</p>
+<h3>与图元版本升级的边界</h3>
+<p>同一设备语义的 OLD → NEW 图元版本升级统一放在“基础处理 → 同类图元版本升级”。例如旧版 LBS → 新版 LBS 属于版本升级；SMART 图元误用到 NORMAL、NORMAL 图元误用到 SMART 属于图元类型/变体使用错误，是标准一致性问题，不应归类为图元版本升级。</p>
+<h3>版本与安全</h3>
+<p>标准变化时重新扫描会产生新的 ACTIVE 版本，旧版本保留为 ARCHIVED，可追溯和恢复。待检查文件绝不会被自动学习进标准，避免错误图元反向污染标准。</p>
+""",
+    ),
     "small_elements": (
         "异常小尺寸图元检测帮助",
         """
@@ -18,7 +63,8 @@ APP_HELP: dict[str, tuple[str, str]] = {
         """
 <h3>环网柜图元处理</h3>
 <p>环网柜页面可选择“不处理”或“组合所有环网柜”。彻底取消图形组合已移动到“基础处理 → 图形组合处理”：该操作删除整个 G 文件 Layer 中全部 &lt;Merge&gt;，并将识别到的 RMU 外框置于设备底层；除 XML 顺序外不修改设备属性、坐标、ID 或引用。</p>
-<p>SMART 外框改色、channel_status 状态点位置以及带 Bus 外框处理均沿用原基础处理中的既有算法。</p>
+<p>SMART/SMR 外框改色、channel_status 状态点位置以及带 Bus 外框处理均沿用原基础处理中的既有算法；另外可单独启用“将已识别的环网柜名称统一改成白色”，该功能复用既有柜名识别结果，只修改最终选中的柜名 Text 颜色。</p>
+<p>“图元标准检查”是独立通用只读工具：由用户用确认过的标准 G 文件学习 SMART / NORMAL 的 LBS、Circuit Breaker、接地刀闸与图元几何，只负责发现图元类型/变体、devref 或几何不一致并告警，不执行升级。SMR 等现场特殊柜不参与通用 NORMAL 学习；该工具不改变原“开始环网柜处理”流程。</p>
 <h3>RMU 信息汇总</h3>
 <p>直接解析 G 文件，不使用 OCR。柜名可多选“上方/下方/左侧/右侧”搜索；所选方向为硬约束，未勾选方向绝不参与兜底。单候选直接使用，最近组存在多个候选时才优先绿色文字。柜型优先按 Y/Q 名称统计，必要时回退设备 devref；SMART 与 SMR 统一归类为智能环网柜，并保留识别来源。识别结果导出 .rmu.csv 与 .rmu.html。</p>
 """,
@@ -39,6 +85,8 @@ APP_HELP: dict[str, tuple[str, str]] = {
 <p><b>ID 功能：</b>已从基础处理抽离到独立“ID 检查与修复”页面。</p>
 <h3>馈线名称定位（复选框）</h3>
 <p>勾选“将馈线名称移动到母线上方”后，程序只根据有效水平 &lt;Bus&gt; 的几何、&lt;Text&gt; 的内容、字号和局部位置识别馈线名称；不读取 key_name 或 keyid。上下平行且范围重叠的双母线按一组处理。纯数字、括号数字、Y1/Q1/SMART 等设备标签、单位和说明文字会被排除；候选不唯一时跳过。识别成功后只修改目标 Text 的 x、y，使其位于最上方母线正上方并水平居中。</p>
+<h3>同类图元版本升级</h3>
+<p>用于同一设备语义、同一主体 XML 类型的旧版图元 → 新版图元升级。OLD/NEW 文件名可以不同，可自动配对或手工指定；程序读取 w/h、AlignCenter、pin 并保持电气锚点绝对位置。SMART/NORMAL 用错等“图元类型/变体使用错误”不属于版本升级，应先由“图元标准检查”发现并告警，再走对应纠正流程。</p>
 <h3>连接点修复（复选框）</h3>
 <p>勾选“修复连接点（补齐 node_area / link）”后，再点击“开始基础处理”，程序采用保守增量方式：冻结原有端口编号与连接引用，只对验证通过的正半像素设备沿 X 方向吸附，并补齐缺失的 node_area/link；不修改连接线坐标。候选不唯一或验证失败时跳过。不勾选时完全跳过。</p>
 <h3>线路与母线样式</h3>
@@ -153,8 +201,37 @@ FIELD_HELP: dict[str, str] = {
 
 
 APP_HELP_EN: dict[str, tuple[str, str]] = {
+    "jeddah_batch": (
+        "Jeddah Feeder Batch Processing Help",
+        """
+<h3>Purpose</h3>
+<p>For Jeddah-only batch standardization of single-feeder diagrams. Each input G file is processed and output independently; feeder diagrams are not merged.</p>
+<h3>Fixed workflow</h3>
+<ol>
+<li>First reuse Basic Processing &gt; Graphic Group Processing &gt; Fully Ungroup Graphics: remove every &lt;Merge&gt; and send recognized RMU frames behind devices.</li>
+<li>Remove abnormal small ConnectLine / FeedLine / Bus / BusDis elements.</li>
+<li>Set recognized RMU name text to white at font size 50, centered above its RMU top frame with a 10-unit clear gap between the text bottom and the frame.</li>
+<li>Set SMART and SMR RMU frames to red.</li>
+<li>SMART device validation covers the whole RMU frame: whenever a SMART Text center lies inside the frame, normalize Y Load_Breaker_Switch and Q Circuit_Breaker devrefs to SMART. Q devices support both Circuit_Breaker_NO-SMART and Circuit_Breaker_NON-SMART source references.</li>
+<li>Apply conditional SMR handling: when SMART already exists inside the matched RMU, remove only the external SMR and keep the existing SMART label unchanged; otherwise convert SMR to a top-centered SMART label at font size 20, then run the SMART device validation again.</li>
+<li>Remove RMU rectangles containing Bus and move the corresponding title above the bus.</li>
+<li>Move feeder names above buses.</li>
+<li>Set every &lt;FeedLine&gt; to solid line style (ls=1) without changing color, line width, coordinates, IDs, or references.</li>
+<li>Remove RMU channel_status red Status points. Association reuses the existing RMU red-status positioning rule; only the final action changes from repositioning to deletion.</li>
+<li>Remove exact H.T Text markers (case-insensitive after trimming; no substring matching).</li>
+<li>Check every distribution RMU recognized by the existing RMU engine for duplicate SMART labels. If one cabinet contains multiple SMART Texts, preserve the first/original XML label and remove only later duplicates without moving or restyling the preserved label.</li>
+<li>Remove the exact Text pair 2000.00 + UPDATED_MEASURMENT only when the two separate Text elements are on the same visual line and horizontally adjacent (gap no greater than 10). Distant matches are preserved.</li>
+<li>Run ID check and repair using the globally confirmed ID templates.</li>
+<li>Reuse Drawing Margin Adjustment with default body margins of 500 on all four sides.</li>
+<li>Finally reuse Drawing Frame to add the selected frame template to every processed feeder diagram.</li>
+</ol>
+<h3>Design principle</h3>
+<p>This page only orchestrates existing processing capabilities. It does not replace or rewrite the algorithms of the existing Small Element, RMU, feeder-title, or ID modules. Jeddah-specific parameters use a separate settings namespace and do not overwrite other module settings.</p>
+""",
+    ),
+    "site_profile": ("Symbol Standard Check Help", """<h3>Purpose</h3><p>This is a generic, versioned symbol-standard workspace. The first six rows preserve the existing SMART/NORMAL RMU LBS, Circuit Breaker and grounding-switch rules, and users may add any other device symbol as a custom standard.</p><h3>Scanning and properties</h3><p>Scanning a main G builds a devref catalog with XML element type, body ID, width/height, observed rotations and p_NameString/key_name examples. When raw symbol-definition G files are included, the scanner also reads AlignCenter, pin(cx,cy) and pin IDs and stores rotation-specific geometry templates.</p><h3>Custom device symbols</h3><p>Add a row manually or bulk-add scanned but unmapped devrefs. Each custom rule defines scope (ANY/SMART/NORMAL), device role, XML element, standard devref, and a matcher for the current/old business element using devref, XML element, p_NameString or key_name. Matching custom elements use the same anchor-preserving upgrade engine; when geometry cannot be learned safely, only devref is replaced.</p><h3>Check and upgrade</h3><p>Check Only is read-only. Check & Upgrade preserves IDs, keyids, names, node_area, rotation and topology, and keeps ConnectLine electrical anchors fixed whenever a geometry template is available. Target files are never auto-learned into the standard.</p><h3>Design principle</h3><p>This feature does not change the existing RMU, Jeddah Batch, Basic Processing, or ID algorithms and defaults.</p>"""),
     "small_elements": ("Abnormal Small Element Detection Help", """<h3>Purpose</h3><p>Scans &lt;ConnectLine&gt;, &lt;FeedLine&gt;, &lt;Bus&gt; and &lt;BusDis&gt; independently. An element is reported when both w and h are below the user threshold (default 10). Bus orientation is not restricted.</p><h3>Reports and deletion</h3><p>Each scan exports CSV and HTML details including file, element type, XML ID, x/y/w/h and keyid. Select one or more findings using the first-column checkboxes, then process them together. If a selected element has a non-empty keyid, deletion requires explicit confirmation.</p><h3>Relation to feeder merge</h3><p>Main-bus merge no longer applies a special w&lt;10 filter. Suspicious short Bus elements are handled in this module.</p>"""),
-    "rmu": ("RMU Processing Help", """<h3>RMU graphic processing</h3><p>The RMU page can leave grouping unchanged or group all recognized RMUs. Whole-file ungrouping is available under Basic Processing → Graphic Group Processing; it removes every &lt;Merge&gt; and sends recognized RMU frames behind devices without changing device attributes, coordinates, IDs or references.</p><h3>RMU summary</h3><p>G files are parsed directly without OCR. Name search directions are strict constraints. Cabinet type is primarily derived from Y/Q names with devref as fallback when required. SMART and SMR are classified as intelligent RMUs while preserving the recognition source.</p>"""),
+    "rmu": ("RMU Processing Help", """<h3>RMU graphic processing</h3><p>The RMU page can leave grouping unchanged or group all recognized RMUs. Whole-file ungrouping is available under Basic Processing → Graphic Group Processing; it removes every &lt;Merge&gt; and sends recognized RMU frames behind devices without changing device attributes, coordinates, IDs or references.</p><p>Site RMU Device Profile is an independent tool: the user assigns standard samples to a site, scans them to learn SMART LBS / Circuit Breaker devrefs, saves the profile, and can then run a standalone SMART-device consistency check. It does not participate in the existing Start RMU Processing flow.</p><h3>RMU summary</h3><p>G files are parsed directly without OCR. Name search directions are strict constraints. Cabinet type is primarily derived from Y/Q names with devref as fallback when required. SMART and SMR are classified as intelligent RMUs while preserving the recognition source.</p>"""),
     "basic": ("Basic Processing Help", """<h3>Input</h3><p>Basic Processing supports one G file or a directory of G files.</p><h3>Rule-based processing</h3><p>General attribute replacement and element deletion operate only on direct children of the root Layer. They do not recursively modify internal symbol children.</p><h3>Feeder title positioning</h3><p>When enabled, feeder titles are identified from valid horizontal &lt;Bus&gt; geometry and nearby &lt;Text&gt; content. key_name and keyid are not used. Only the target Text x/y position is changed.</p><h3>Connection repair</h3><p>Uses conservative incremental repair. Existing port numbers and references are preserved; ambiguous or invalid candidates are skipped.</p><h3>Line and bus styles</h3><p>Color changes only lc/lcc. Line style changes only ls: solid=1 and dashed=2. Fill, lw, coordinates, IDs and references are not modified.</p><h3>Output conflicts</h3><p>Safe overwrite writes to a temporary file and validates it before replacing the destination.</p>"""),
     "id_rules": ("Element ID Rule Template Help", """<h3>Single source of rules</h3><p>This module manages XML element ID rules. Each element type uses a manually confirmed fixed numeric prefix and fixed total length.</p><h3>Scan current G</h3><p>New element types require explicit user confirmation before a candidate rule is added. Existing types with nonconforming IDs produce warnings and do not silently change templates.</p><h3>Duplicate ID repair</h3><p>The first duplicate ID is preserved. Later duplicates receive IDs from the confirmed template, starting after the current maximum valid ID of the same type. Historical gaps are not filled. Unknown, disabled or unconfirmed types cannot generate new IDs.</p>"""),
     "merge": ("Feeder Diagram Merge Help", """<h3>Files and order</h3><p>Input files must end with .sln.pic.g. The user-defined list order is the merge order; the first row is the baseline. Built-in G File Studio frames are removed from in-memory copies before merge, while unknown/customer frames are blocked.</p><h3>Vertical alignment</h3><p>Only non-zero horizontal &lt;Bus&gt; elements are used. &lt;BusDis&gt; does not participate. The topmost Bus is selected; if no Bus exists, the highest graphic element is used.</p><h3>Main-bus processing</h3><p>Supports single- and double-bus processing with manual bus groups. Files in one group must be contiguous. Upper and lower buses remain separate in double-bus mode. Output IDs are validated against confirmed global ID templates.</p>"""),

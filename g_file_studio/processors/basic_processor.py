@@ -9,9 +9,10 @@ from typing import Iterable
 from g_file_studio.engines.color_engine import ColorRule, apply_line_colors
 from g_file_studio.engines.connection_engine import repair_tree_connections
 from g_file_studio.engines.feeder_title_engine import move_feeder_titles_above_buses
-from g_file_studio.engines.icon_upgrade_engine import analyze_icon_pairs, apply_icon_upgrade
+from g_file_studio.engines.icon_upgrade_engine import analyze_icon_mappings, analyze_icon_pairs, apply_icon_upgrade
 from g_file_studio.engines.rmu_group_engine import enhance_rmu_tree, group_rmu_tree, remove_all_graphic_merges, ungroup_rmu_tree
 from g_file_studio.engines.rmu_identification_engine import identify_rmus, parse_name_exclusions
+from g_file_studio.engines.rmu_name_style_engine import apply_rmu_name_white_to_tree
 from g_file_studio.models import (
     BasicOutputConflictAction,
     BasicSettings,
@@ -49,6 +50,7 @@ def _write_rmu_processing_report(output_dir: Path, rows: list[dict[str, object]]
     headers = [
         "File", "Action", "RMURectCount", "GroupedCount", "UngroupedCount",
         "SmartMatched", "SmartChanged", "SmrTextCount", "SmrMatched", "SmrChanged",
+        "RMUNameWhiteMatched", "RMUNameWhiteChanged",
         "ChannelStatusFound", "ChannelStatusMoved", "BusFrameRemoved", "TitleMoved", "Warnings",
     ]
     with csv_path.open("w", encoding="utf-8-sig", newline="") as stream:
@@ -261,6 +263,10 @@ def _validate_rules(settings: BasicSettings) -> None:
         settings.rmu_name_top, settings.rmu_name_bottom, settings.rmu_name_left, settings.rmu_name_right
     )):
         raise ValueError("启用环网柜名称与柜型识别后，柜名位置至少选择一个方向。")
+    if settings.set_rmu_name_text_white and not any((
+        settings.rmu_name_top, settings.rmu_name_bottom, settings.rmu_name_left, settings.rmu_name_right
+    )):
+        raise ValueError("启用环网柜名称改白后，柜名位置至少选择一个方向。")
 
     if settings.compare_rmu_ledger and not settings.identify_rmu_name_and_type:
         raise ValueError("启用 RMU 台账对比前，必须先启用 RMU 信息汇总。")
@@ -272,7 +278,11 @@ def _validate_rules(settings: BasicSettings) -> None:
             raise ValueError("RMU 台账输入内容不能为空。")
 
     if settings.upgrade_icon_geometry:
-        analysis = analyze_icon_pairs(settings.old_icon_files, settings.new_icon_files)
+        analysis = (
+            analyze_icon_mappings(settings.icon_upgrade_pairs)
+            if settings.icon_upgrade_pairs
+            else analyze_icon_pairs(settings.old_icon_files, settings.new_icon_files)
+        )
         problems: list[str] = []
         if analysis.missing_old:
             problems.append("缺少旧图元：" + ", ".join(analysis.missing_old))
@@ -283,7 +293,7 @@ def _validate_rules(settings: BasicSettings) -> None:
         if not analysis.rules:
             problems.append("没有可用的旧/新图元配对。")
         if problems:
-            raise ValueError("图元版本升级适配检查未通过：" + "；".join(problems))
+            raise ValueError("同类图元版本升级检查未通过：" + "；".join(problems))
 
 
 def _write_smr_frame_reports(output_dir: Path, rows: list[dict[str, object]]) -> tuple[Path, Path]:
@@ -583,17 +593,21 @@ def process_basic(
     rmu_action = _effective_rmu_action(settings)
     color_rules = _color_rules(settings)
     icon_analysis = (
-        analyze_icon_pairs(settings.old_icon_files, settings.new_icon_files)
+        (
+            analyze_icon_mappings(settings.icon_upgrade_pairs)
+            if settings.icon_upgrade_pairs
+            else analyze_icon_pairs(settings.old_icon_files, settings.new_icon_files)
+        )
         if settings.upgrade_icon_geometry
         else None
     )
     icon_rules = icon_analysis.rules if icon_analysis is not None else {}
     if settings.upgrade_icon_geometry:
-        log(f"[图元版本升级] 已加载并验证 {len(icon_rules)} 种旧/新图元配对。")
+        log(f"[同类图元版本升级] 已加载并验证 {len(icon_rules)} 种旧/新图元配对。")
         for name, rule in sorted(icon_rules.items()):
             log(
-                f"  - {name}：{rule.old.width:g}×{rule.old.height:g} → "
-                f"{rule.new.width:g}×{rule.new.height:g}；AlignCenter "
+                f"  - {rule.old.file_name} → {rule.new.file_name}："
+                f"{rule.old.width:g}×{rule.old.height:g} → {rule.new.width:g}×{rule.new.height:g}；AlignCenter "
                 f"{rule.old.align_center} → {rule.new.align_center}；Pins "
                 f"{len(rule.old.pins)} → {len(rule.new.pins)}。"
             )
@@ -621,6 +635,8 @@ def process_basic(
     total_smr_texts = 0
     total_smr_matched_rects = 0
     total_smr_frames_changed = 0
+    total_rmu_name_white_matched = 0
+    total_rmu_name_white_changed = 0
     smr_report_rows: list[dict[str, object]] = []
     total_channel_status_rects = 0
     total_channel_status_found = 0
@@ -760,7 +776,7 @@ def process_basic(
                 total_icon_already_new += icon_result.already_new_instances
                 total_icon_skipped_unknown_size += icon_result.skipped_unknown_size
                 log(
-                    f"[图元版本升级] {input_path.name}：升级实例 "
+                    f"[同类图元版本升级] {input_path.name}：升级实例 "
                     f"{icon_result.upgraded_instances} 个，调整连接线 "
                     f"{icon_result.adjusted_lines} 条；已是新尺寸 "
                     f"{icon_result.already_new_instances} 个，未知尺寸跳过 "
@@ -769,7 +785,7 @@ def process_basic(
                 if icon_result.changed_instance_ids:
                     log("  - 升级图元 ID：" + ", ".join(icon_result.changed_instance_ids))
                 for warning in icon_result.warnings:
-                    log(f"[图元版本升级告警] {input_path.name}：{warning}")
+                    log(f"[同类图元版本升级告警] {input_path.name}：{warning}")
 
             if settings.remove_all_graphic_merges:
                 cleanup = remove_all_graphic_merges(
@@ -799,6 +815,8 @@ def process_basic(
                 "SmrTextCount": 0,
                 "SmrMatched": 0,
                 "SmrChanged": 0,
+                "RMUNameWhiteMatched": 0,
+                "RMUNameWhiteChanged": 0,
                 "ChannelStatusFound": 0,
                 "ChannelStatusMoved": 0,
                 "BusFrameRemoved": 0,
@@ -927,10 +945,39 @@ def process_basic(
                 for warning in enhancement.warnings:
                     log(f"[环网柜增强告警] {warning}")
 
+            if settings.set_rmu_name_text_white:
+                name_positions = tuple(
+                    key for key, enabled in (
+                        ("top", settings.rmu_name_top),
+                        ("bottom", settings.rmu_name_bottom),
+                        ("left", settings.rmu_name_left),
+                        ("right", settings.rmu_name_right),
+                    ) if enabled
+                )
+                name_color = apply_rmu_name_white_to_tree(
+                    tree,
+                    input_path,
+                    name_positions=name_positions,
+                    name_exclusions=settings.rmu_name_exclusions,
+                )
+                total_rmu_name_white_matched += name_color.matched_name_text_count
+                total_rmu_name_white_changed += name_color.changed_name_text_count
+                rmu_processing_row["RMUNameWhiteMatched"] = name_color.matched_name_text_count
+                rmu_processing_row["RMUNameWhiteChanged"] = name_color.changed_name_text_count
+                rmu_processing_warnings.extend(name_color.warnings)
+                log(
+                    f"[RMU柜名白色] {input_path.name}：识别柜名 {name_color.named_rmu_count} 个，"
+                    f"匹配名称 Text {name_color.matched_name_text_count} 个，改为白色 "
+                    f"{name_color.changed_name_text_count} 个。"
+                )
+                for warning in name_color.warnings:
+                    log(f"[RMU柜名白色告警] {warning}")
+
             if (
                 rmu_action != RmuAction.NONE
                 or settings.change_smart_rmu_frame_color
                 or settings.change_smr_rmu_frame_color
+                or settings.set_rmu_name_text_white
                 or settings.reposition_channel_status
                 or settings.remove_bus_rmu_frame_and_reposition_title
             ):
@@ -1092,7 +1139,8 @@ def process_basic(
         f"环网柜 rect {total_rects} 个，重建组合 "
         f"{total_rmu_groups} 个，取消组合 {total_rmu_ungrouped} 个，外框下移 "
         f"{total_rmu_lowered_rects} 个；识别含 SMART 环网柜 {total_smart_rmu_rects} 个，"
-        f"SMART 环网柜外框改色 {total_smart_rmu_frames_changed} 个；SMR Text {total_smr_texts} 个，匹配环网柜 {total_smr_matched_rects} 个，SMR 外框改色 {total_smr_frames_changed} 个；channel_status 状态点"
+        f"SMART 环网柜外框改色 {total_smart_rmu_frames_changed} 个；SMR Text {total_smr_texts} 个，匹配环网柜 {total_smr_matched_rects} 个，SMR 外框改色 {total_smr_frames_changed} 个；"
+        f"RMU 柜名匹配 {total_rmu_name_white_matched} 个、改白 {total_rmu_name_white_changed} 个；channel_status 状态点"
         f"找到 {total_channel_status_found} 个、移动 {total_channel_status_moved} 个、"
         f"未找到 {total_channel_status_missing} 个，带 Bus 外框删除 "
         f"{total_bus_rect_removed} 个，标题上移 {total_bus_title_moved} 个；"
@@ -1116,7 +1164,7 @@ def process_basic(
         )
     if settings.upgrade_icon_geometry:
         summary += (
-            f"；图元版本升级实例 {total_icon_upgraded_instances} 个、连接线端点适配 "
+            f"；同类图元版本升级实例 {total_icon_upgraded_instances} 个、连接线端点适配 "
             f"{total_icon_adjusted_lines} 条、已是新尺寸 {total_icon_already_new} 个、"
             f"未知尺寸跳过 {total_icon_skipped_unknown_size} 个"
         )
@@ -1168,6 +1216,9 @@ def process_basic(
             "smr_text_count": total_smr_texts,
             "smr_matched_rmu_rect_count": total_smr_matched_rects,
             "smr_rmu_frame_color_changed_count": total_smr_frames_changed,
+            "rmu_name_text_white_enabled": settings.set_rmu_name_text_white,
+            "rmu_name_text_white_matched_count": total_rmu_name_white_matched,
+            "rmu_name_text_white_changed_count": total_rmu_name_white_changed,
             "channel_status_rmu_rect_count": total_channel_status_rects,
             "channel_status_found_count": total_channel_status_found,
             "channel_status_moved_count": total_channel_status_moved,

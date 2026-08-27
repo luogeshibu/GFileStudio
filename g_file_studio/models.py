@@ -120,10 +120,11 @@ class BasicSettings(BaseModel):
     delete_target_attribute: str = ""
     delete_target_value: str = ""
 
-    # 图元版本升级适配：旧、新图元 G 必须按同名文件一一配对。
+    # 通用图元升级：支持显式 OLD -> NEW 图元映射；旧字段保留兼容旧配置。
     upgrade_icon_geometry: bool = False
     old_icon_files: list[Path] = Field(default_factory=list)
     new_icon_files: list[Path] = Field(default_factory=list)
+    icon_upgrade_pairs: list[tuple[Path, Path]] = Field(default_factory=list)
 
     # 勾选后仅做保守的设备半像素吸附，并补齐缺失的 node_area/link。
     repair_connection_points: bool = False
@@ -158,6 +159,8 @@ class BasicSettings(BaseModel):
     # 根据直属 Text[ts=SMR] 与最近有效环网柜 rect 的几何关系修改外框颜色；不修改 SMR Text。
     change_smr_rmu_frame_color: bool = False
     smr_rmu_frame_color: str = "#FF0000"
+    # 将现有 RMU 名称识别算法最终选中的柜名 Text 统一改为白色；不影响其他 Text。
+    set_rmu_name_text_white: bool = False
     # 将 BusDis 环网柜内 devref 指向 channel_status 的红色状态点移动到框内指定锚点。
     reposition_channel_status: bool = False
     channel_status_position: RmuStatusPosition = RmuStatusPosition.BOTTOM_LEFT

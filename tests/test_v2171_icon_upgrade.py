@@ -63,3 +63,54 @@ def test_upgrade_keeps_align_center_and_moves_line_endpoints_to_new_pins(tmp_pat
     assert device.get("h") == "38"
     assert lines["L1"].get("d") == "118,201 118,180"
     assert lines["L2"].get("d") == "118,231 118,250"
+
+
+def test_explicit_mapping_supports_different_symbol_file_names_and_rewrites_devref(tmp_path: Path):
+    old = tmp_path / "old" / "OldCB.zwk.icn.g"
+    new = tmp_path / "new" / "NewCB.zwk.icn.g"
+    old.parent.mkdir(); new.parent.mkdir()
+    _write_icon(old, 30, 30, (18, 16), [("p1", 18, 6), ("p2", 18, 26)])
+    _write_icon(new, 34, 38, (17, 19), [("p1", 17, 4), ("p2", 17, 34)])
+
+    from g_file_studio.engines.icon_upgrade_engine import analyze_icon_mappings
+    analysis = analyze_icon_mappings([(old, new)])
+    assert analysis.valid
+    assert analysis.rules["OldCB.zwk.icn.g"].new.file_name == "NewCB.zwk.icn.g"
+
+    root = ET.fromstring('''<G><Layer>
+      <CBreakerDis id="D1" x="100" y="200" w="30" h="30" rotate="0" devref="#OldCB.zwk.icn.g:OldCB" node_area="0,0,L1;1,0,L2" />
+      <ConnectLine id="L1" d="118,206 118,180" x="115" y="177" w="6" h="32" />
+      <ConnectLine id="L2" d="118,226 118,250" x="115" y="223" w="6" h="30" />
+    </Layer></G>''')
+    result = apply_icon_upgrade(ET.ElementTree(root), analysis.rules)
+    device = root.find("./Layer/CBreakerDis")
+    assert result.upgraded_instances == 1
+    assert device.get("devref") == "#NewCB.zwk.icn.g:NewCB"
+    assert device.get("x") == "101"
+    assert device.get("y") == "197"
+
+
+def test_same_size_pin_geometry_upgrade_is_idempotent(tmp_path: Path):
+    old = tmp_path / "old" / "CB.zwk.icn.g"
+    new = tmp_path / "new" / "CB.zwk.icn.g"
+    old.parent.mkdir(); new.parent.mkdir()
+    _write_icon(old, 30, 30, (15, 15), [("p1", 15, 5), ("p2", 15, 25)])
+    _write_icon(new, 30, 30, (15, 15), [("p1", 15, 3), ("p2", 15, 27)])
+    analysis = analyze_icon_pairs([old], [new])
+
+    root = ET.fromstring('''<G><Layer>
+      <CBreakerDis id="D1" x="100" y="200" w="30" h="30" rotate="0" devref="#CB.zwk.icn.g:CB" node_area="0,0,L1;1,0,L2" />
+      <ConnectLine id="L1" d="115,205 115,180" x="112" y="177" w="6" h="31" />
+      <ConnectLine id="L2" d="115,225 115,250" x="112" y="222" w="6" h="31" />
+    </Layer></G>''')
+    tree = ET.ElementTree(root)
+    first = apply_icon_upgrade(tree, analysis.rules)
+    assert first.upgraded_instances == 1
+    assert root.find("./Layer/ConnectLine[@id='L1']").get("d") == "115,203 115,180"
+    assert root.find("./Layer/ConnectLine[@id='L2']").get("d") == "115,227 115,250"
+
+    second = apply_icon_upgrade(tree, analysis.rules)
+    assert second.upgraded_instances == 0
+    assert second.already_new_instances == 1
+    assert root.find("./Layer/ConnectLine[@id='L1']").get("d") == "115,203 115,180"
+    assert root.find("./Layer/ConnectLine[@id='L2']").get("d") == "115,227 115,250"

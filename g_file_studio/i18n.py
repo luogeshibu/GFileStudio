@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from g_file_studio.services.user_settings_service import UserSettingsService
+from g_file_studio.ui.table_layout import configure_known_dense_table, schedule_fit_known_dense_table
 
 LANG_ZH = "zh_CN"
 LANG_EN = "en_US"
@@ -72,6 +73,57 @@ EN: dict[str, str] = {
     "馈线图合并": "Feeder Diagram Merge",
     "图形边距调整": "Drawing Margin Adjustment",
     "图框添加": "Drawing Frame",
+    "吉达馈线批处理": "Jeddah Feeder Batch Processing",
+    "Jeddah 专用：第一步彻底取消图形组合（删除全部 <Merge>、RMU 外框置底），再批量删除异常小元素、SMART/SMR 红框、SMART 图元校正 + SMR 智能清理/转换 + 转换后图元复检、RMU 柜名白色 + 字号50 + 上边框上方10居中、删除 RMU channel_status 红色状态点、Bus 外框清理、馈线名称上移、FeedLine 统一实线、删除 H.T、清理同柜重复 SMART、相邻 2000.00 + UPDATED_MEASURMENT 成对删除、ID 检查与修复、图形边距调整并添加图框": "Jeddah only: first fully ungroup graphics (remove all <Merge> elements and send RMU frames to back), then batch-remove abnormal small elements, highlight SMART/SMR frames in red, validate SMART RMU device icons, apply conditional SMR cleanup/conversion, and validate SMART device icons again after conversion, set RMU names to white at font size 50 and center them 10 units above the top frame, remove RMU channel_status red status points, remove Bus frames, move feeder names above buses, set all FeedLine elements to solid, remove exact H.T text markers, remove duplicate SMART labels within each recognized RMU, remove adjacent 2000.00 + UPDATED_MEASURMENT pairs, run ID check & repair, adjust drawing margins, and add drawing frames.",
+    "面向吉达现场的单馈线图一键标准化：批量输入多个 G 文件，逐张完成固定处理并输出最终单馈线图。": "One-click standardization for Jeddah single-feeder diagrams: batch-process multiple G files with a fixed workflow and output each final feeder diagram separately.",
+    "吉达馈线批处理说明": "Jeddah Feeder Batch Processing Help",
+    "本模块是 Jeddah 专用批处理入口，不修改现有异常元素、RMU、基础处理或 ID 模块的业务逻辑。程序按固定顺序调用已有处理能力；原始输入文件不会覆盖，最终结果写入本次 workspace 运行目录。": "This is a Jeddah-only batch entry point. It does not change the business logic of the existing Small Element, RMU, Basic Processing, or ID modules. Existing capabilities are invoked in a fixed sequence; source files are never overwritten and final results are written to this workspace run directory.",
+    "Jeddah 固定处理流程": "Jeddah Fixed Processing Workflow",
+    "✓ 1. 彻底取消图形组合（删除全部 <Merge>，并将 RMU 外框置底）": "✓ 1. Fully ungroup graphics (remove all <Merge> and send RMU frames to back)",
+    "✓ 2. 删除异常小尺寸元素": "✓ 2. Remove abnormal small elements",
+    "✓ 3. 已识别 RMU 名称统一改白、字号 50，并在环网柜上边框上方 10 距离处水平居中": "✓ 3. Set recognized RMU names to white, font size 50, centered 10 units above the RMU top frame",
+    "✓ 4. SMART 环网柜外框统一刷成红色": "✓ 4. Set SMART RMU frames to red",
+    "✓ 5. SMART 图元检查：凡柜内已有 SMART，Y1/Y2/Y3 的 LBS 与 Q1 Circuit Breaker 必须使用 SMART devref": "✓ 5. SMART device check: any RMU already containing SMART must use SMART devrefs for Y1/Y2/Y3 LBS and Q1 Circuit Breaker",
+    "✓ 6. SMR 环网柜外框统一刷成红色": "✓ 6. Set SMR RMU frames to red",
+    "✓ 7. SMR 条件转换 SMART：已有 SMART 时删除外部 SMR并保持原 SMART；没有 SMART 时生成顶部居中 SMART（字号 20）；外框强制红色": "✓ 7. Conditional SMR-to-SMART conversion: if SMART already exists, remove the external SMR and preserve the existing SMART; otherwise create a top-centered SMART label (font size 20); force the frame red",
+    "✓ 8. SMR 转换后再次执行 SMART 图元检查，确保 LBS / Circuit Breaker devref 正确": "✓ 8. Re-check SMART devices after SMR conversion to ensure LBS / Circuit Breaker devrefs are correct",
+    "✓ 9. 删除 RMU 红色状态点（channel_status），沿用现有状态点识别/归属规则": "✓ 9. Remove RMU red status points (channel_status) using the existing status-point association rules",
+    "✓ 10. 删除带 Bus 的环网柜矩形框，并将对应标题移动到母线上方": "✓ 10. Remove RMU rectangles containing Bus and move the corresponding title above the bus",
+    "✓ 11. 将馈线名称移动到母线上方": "✓ 11. Move feeder names above the bus",
+    "✓ 12. 将所有 FeedLine 馈线统一改成实线（ls=1）": "✓ 12. Set all FeedLine feeders to solid (ls=1)",
+    "✓ 13. 删除精确 H.T 文字标识": "✓ 13. Remove exact H.T text markers",
+    "✓ 14. 检查所有已识别配网 RMU；同一柜内存在多个 SMART 时仅保留原有第一个，删除重复项": "✓ 14. Check every recognized distribution RMU; if multiple SMART labels exist in one cabinet, keep the original first label and remove duplicates",
+    "✓ 15. 仅当 2000.00 与 UPDATED_MEASURMENT 两个 Text 同行且相邻时成对删除": "✓ 15. Remove 2000.00 and UPDATED_MEASURMENT only when the two Text elements are on the same line and adjacent",
+    "✓ 16. 使用全局 ID 模板执行 ID 检查与修复": "✓ 16. Run ID Check & Repair using global ID templates",
+    "✓ 17. 调整主体图形四边距（默认 500）": "✓ 17. Adjust drawing margins (default 500)",
+    "✓ 18. 添加图框": "✓ 18. Add drawing frame",
+    "吉达图形边距": "Jeddah Drawing Margins",
+    "吉达图框": "Jeddah Drawing Frame",
+    "图形边距调整完成后，直接调用现有“图框添加”处理能力。默认使用程序内置模板；内置模板标题留空时自动使用输入文件名。": "After drawing-margin adjustment, the existing Drawing Frame processor is used directly. The built-in template is selected by default; when the built-in title is left blank, the input file name is used automatically.",
+    "以上步骤为吉达固定流程，本页不复制或重写现有模块算法。": "These are the fixed Jeddah steps. This page does not copy or rewrite existing module algorithms.",
+    "吉达参数": "Jeddah Parameters",
+    "异常小尺寸阈值": "Abnormal Small Element Threshold",
+    "RMU 柜名可能位置：": "Possible RMU Name Positions:",
+    "RMU 柜名排除字符串：": "RMU Name Exclusions:",
+    "吉达固定样式：SMART/SMR 外框 = 红色 #FF0000；只要 SMART Text 的中心位于 RMU 框内，就检查并校正 Y1/Y2/Y3 的 Load_Breaker_Switch 与 Q1 Circuit_Breaker 的 CBreakerDis devref（兼容 Circuit_Breaker_NO-SMART 与 Circuit_Breaker_NON-SMART 两种源图元）；若 SMR 柜内已有 SMART，只删除外部 SMR并保留原 SMART；若柜内没有 SMART，则生成顶部居中 SMART（字号 20）；SMR 处理后再次执行 SMART 图元复检；已识别 RMU 柜名 Text = 白色 #FFFFFF、字号 50，并与环网柜上边框保持 10 距离且水平居中；RMU channel_status 红色状态点直接删除；所有 FeedLine 馈线 = 实线 ls=1；精确 H.T Text = 删除；所有已识别配网 RMU 都检查重复 SMART，同柜多个时保留 XML 中原有第一个并删除后续重复；2000.00 与 UPDATED_MEASURMENT 只有在同行且相邻（水平间距不超过 10）时才成对删除。": "Jeddah fixed styles: SMART/SMR frames = red #FF0000; whenever the center of a SMART Text lies inside an RMU frame, its Y1/Y2/Y3 Load_Breaker_Switch and Q1 Circuit_Breaker CBreakerDis devrefs are validated/corrected to SMART (supporting both Circuit_Breaker_NO-SMART and Circuit_Breaker_NON-SMART source variants); if an SMR cabinet already contains SMART, remove only the external SMR and preserve the existing SMART label; if it has no SMART, create a top-centered SMART label at font size 20; after SMR handling, validate SMART device devrefs again; recognized RMU name Text = white #FFFFFF, font size 50, centered with a 10-unit gap above the RMU top frame; RMU channel_status red status points are removed; all FeedLine feeders = solid ls=1; exact H.T Text markers are removed; every recognized distribution RMU is checked for duplicate SMART labels, preserving the first/original XML label and removing later duplicates; 2000.00 and UPDATED_MEASURMENT are removed only when they are on the same visual line and adjacent with a horizontal gap no greater than 10.",
+    "开始吉达批处理": "Start Jeddah Batch Processing",
+    "按上方固定 Jeddah 流程批量处理所选单馈线 G 文件。": "Batch-process the selected single-feeder G files using the fixed Jeddah workflow above.",
+    "选择包含需要执行吉达批处理的单馈线 G 文件目录。": "Select a directory containing single-feeder G files for Jeddah batch processing.",
+    "也可只选择一张单馈线 G 文件进行吉达标准处理。": "You may also select a single feeder G file for Jeddah standard processing.",
+    "吉达批处理输出目录": "Jeddah Batch Output Directory",
+    "当目标元素的 w 和 h 同时小于该值时，吉达批处理自动删除该异常小尺寸元素。": "When both w and h of a target element are below this value, Jeddah batch processing automatically deletes that abnormal small element.",
+    "使用逗号、分号或换行分隔；按完整字符串匹配并忽略大小写，不使用包含匹配。": "Separate values with commas, semicolons, or new lines. Matching is exact and case-insensitive; substring matching is not used.",
+    "吉达批处理输入": "Jeddah Batch Input",
+    "吉达 RMU 柜名设置": "Jeddah RMU Name Settings",
+    "RMU 柜名位置至少选择上方、下方、左侧或右侧中的一个。": "Select at least one RMU name position: Top, Bottom, Left, or Right.",
+    "吉达图面处理阶段没有生成可继续执行 ID 检查的 G 文件。": "The Jeddah visual-processing stage did not produce any G files for the ID check stage.",
+    "异常小尺寸阈值必须大于 0。": "The abnormal small-element threshold must be greater than 0.",
+    "吉达批处理的 RMU 柜名位置至少选择一个方向。": "Select at least one RMU name direction for Jeddah batch processing.",
+    "没有找到可处理的 G 文件。": "No G files were found for processing.",
+    "全局 ID 模板未配置": "Global ID Templates Not Configured",
+    "吉达批处理的 ID 处理阶段必须使用全局 ID 模板。请先在“ID 检查与修复”模块中确认 ID 规则。": "The Jeddah batch ID-processing stage requires the global ID templates. Confirm the ID rules in ID Check & Repair first.",
+    "吉达批处理的图形边距不能小于 0。": "Jeddah batch drawing margins cannot be less than 0.",
+    "吉达批处理图框模板不存在：": "Jeddah batch drawing-frame template does not exist: ",
     "帮助中心": "Help Center",
     "页面帮助": "Page Help",
     "帮助": "Help",
@@ -154,6 +206,8 @@ EN: dict[str, str] = {
     "通用处理规则": "General Processing Rules",
     "图元版本升级适配": "Symbol Version Upgrade",
     "启用图元版本升级适配": "Enable Symbol Version Upgrade",
+    "通用图元升级": "Universal Symbol Upgrade",
+    "启用通用图元升级": "Enable Universal Symbol Upgrade",
     "连接点修复": "Connection Repair",
     "修复连接点（补齐 node_area / link）": "Repair Connections (complete node_area / link)",
     "母线馈线名称定位": "Bus/Feeder Title Positioning",
@@ -178,6 +232,9 @@ EN: dict[str, str] = {
     "环网柜增强操作（可多选）": "RMU Enhancements (multiple selection)",
     "修改含 SMART 的环网柜外框颜色": "Change Frame Color of RMUs Containing SMART",
     "修改含 SMR 的环网柜外框颜色": "Change Frame Color of RMUs Containing SMR",
+    "将已识别的环网柜名称统一改成白色": "Set recognized RMU name text to white",
+    "复用现有 RMU 柜名识别规则，只把最终识别到的柜名 Text 改为白色 #FFFFFF；其他 Text、设备、连接线和柜型识别逻辑均不改变。": "Reuse the existing RMU name-recognition rules and change only the final recognized RMU name Text to white #FFFFFF. Other Text, devices, connections, and cabinet-type recognition remain unchanged.",
+    "RMU 柜名设置": "RMU Name Settings",
     "移动环网柜红色状态点（channel_status）": "Move RMU Red Status Point (channel_status)",
     "删除带 Bus 的环网柜外框，并将最近标题放到母线上方": "Remove RMU Frame Containing Bus and Move Nearest Title Above Bus",
     "环网柜名称与柜型识别": "RMU Name & Type Recognition",
@@ -332,6 +389,39 @@ EN: dict[str, str] = {
     "新图元": "New Symbol",
     "添加旧图元 G…": "Add Old Symbol G…",
     "添加新图元 G…": "Add New Symbol G…",
+    "批量添加旧图元 G…": "Batch Add Old Symbol G…",
+    "批量添加新图元 G…": "Batch Add New Symbol G…",
+    "智能自动配对": "Smart Auto Pair",
+    "解除配对": "Unpair",
+    "配对方式": "Pairing Method",
+    "完全同名": "Exact Name",
+    "图元类型 + 主体 ID": "Symbol Type + Body ID",
+    "手动确认": "Manual",
+    "自动同名配对": "Auto-pair Same Names",
+    "配对选中": "Pair Selected",
+    "手动配对…": "Manual Pair…",
+    "手动 OLD → NEW 图元配对": "Manual OLD → NEW Symbol Pairing",
+    "旧图元 OLD": "Old Symbol OLD",
+    "新图元 NEW": "New Symbol NEW",
+    "旧图元属性": "Old Symbol Properties",
+    "新图元属性": "New Symbol Properties",
+    "确认配对": "Confirm Pair",
+    "手动配对完成": "Manual Pairing Completed",
+    "手动配对不兼容": "Manual Pairing Incompatible",
+    "文件名不要求一致。请选择要升级的旧图元和它对应的新图元；手动配对优先级最高。程序仍会检查 XML 类型与端口结构，避免错误映射。": "Filenames do not need to match. Choose the OLD symbol and its corresponding NEW symbol; manual pairing has the highest priority. XML type and pin topology are still validated to prevent unsafe mappings.",
+    "文件名不需要一致。选择任意旧图元行后点击这里，或不选行直接打开配对窗口，再从已上传的新图元列表中明确指定 OLD → NEW。": "Filenames do not need to match. Select any OLD row and click here, or open the pairing dialog without a selection, then explicitly choose OLD → NEW from the uploaded symbols.",
+    "文件名可以完全不同：自动无法确认时，点击“手动配对…”明确指定 OLD → NEW。": "Filenames may be completely different. If automatic pairing cannot confirm a match, use Manual Pair… to explicitly choose OLD → NEW.",
+    "检查全部映射": "Check All Mappings",
+    "升级规则": "Upgrade Rule",
+    "旧图元文件": "Old Symbol File",
+    "新图元文件": "New Symbol File",
+    "几何变化": "Geometry Change",
+    "devref": "devref",
+    "缺少新图元": "Missing New Symbol",
+    "缺少旧图元": "Missing Old Symbol",
+    "未配对新图元": "Unpaired New Symbol",
+    "通用图元升级检查": "Universal Symbol Upgrade Check",
+    "通用图元升级检查未通过": "Universal Symbol Upgrade Check Failed",
     "移除选中": "Remove Selected",
     "清空": "Clear",
     "检查配对与参数": "Check Pairing & Parameters",
@@ -383,6 +473,78 @@ EN: dict[str, str] = {
     "下载完成": "Download Completed",
     "保存 SSH 设置失败": "Failed to Save SSH Settings",
     "SSH 设置已保存；所有使用 SSH 文件源的模块将复用这组最后输入。": "SSH settings saved. All modules using the SSH file source will reuse these latest values.",
+    "现场 SMART Profile": "Site SMART Profile",
+    "独立的现场 SMART 图元模板工具。由用户明确指定标准样本属于哪个现场，扫描样本学习该现场 SMART LBS / Circuit Breaker 的 CBreakerDis devref；保存 Profile 后可单独执行 SMART 图元一致性处理。该工具不参与当前“开始环网柜处理”的原有流程，也不修改现有 RMU 识别算法。": "Independent site SMART symbol profile tool. The user explicitly assigns standard samples to a site, scans them to learn that site's SMART LBS / Circuit Breaker CBreakerDis devrefs, then saves the profile for standalone SMART device consistency processing. This tool does not participate in the existing Start RMU Processing flow and does not modify the existing RMU recognition algorithm.",
+    "打开现场 SMART Profile 管理器": "Open Site SMART Profile Manager",
+    "扫描用户指定现场的标准 G 样本，确认并保存 SMART LBS / Circuit Breaker devref Profile；也可使用已保存 Profile 单独检查 SMART 环网柜图元。": "Scan standard G samples for a user-designated site, confirm and save the SMART LBS / Circuit Breaker devref profile, and optionally use a saved profile to check SMART RMU devices independently.",
+    "现场 SMART Profile 管理": "Site SMART Profile Manager",
+    "由用户明确指定样本所属现场，再扫描标准 G 文件学习 SMART LBS / Circuit Breaker 图元。程序不依赖 JED/MD/MAK 文件名前缀猜现场；保存 Profile 后可对任意 G 执行 SMART 图元一致性检查。": "Explicitly assign sample files to a site, then scan standard G files to learn SMART LBS / Circuit Breaker symbols. The program does not guess the site from JED/MD/MAK filename prefixes. After saving a profile, SMART symbol consistency can be checked on any G file.",
+    "已保存 Profile": "Saved Profile",
+    "请选择已保存 Profile": "Select a saved profile",
+    "新建": "New",
+    "Site Name": "Site Name",
+    "Profile Name": "Profile Name",
+    "标准样本 G 文件": "Standard Sample G Files",
+    "扫描样本": "Scan Samples",
+    "尚未扫描。": "Not scanned yet.",
+    "SMART LBS devref": "SMART LBS devref",
+    "SMART Circuit Breaker devref": "SMART Circuit Breaker devref",
+    "保存 Profile": "Save Profile",
+    "SMART 图元一致性处理": "SMART Device Consistency",
+    "使用当前已保存 Profile 检查所有已识别 SMART 环网柜：Y 类 CBreakerDis 强制使用 Profile 的 SMART LBS devref，Q 类 CBreakerDis 强制使用 Profile 的 SMART Circuit Breaker devref。ID、keyid、node_area、名称、旋转和拓扑关系保持不变；若目标 SMART 图元内部几何不同，程序会依据同旋转的正确 SMART 样本反算 x/y/w/h，确保原 ConnectLine 连接点绝对坐标不变；非 SMART 环网柜不处理。": "Check every recognized SMART RMU using the currently saved profile: Y-type CBreakerDis devices must use the profile SMART LBS devref and Q-type devices must use the profile SMART Circuit Breaker devref. IDs, keyids, node_area, names, rotations and topology are preserved. If target SMART icon geometry differs, x/y/w/h are recalculated from a correct same-rotation SMART sample so the original ConnectLine attachment coordinates stay exactly fixed. Non-SMART RMUs are skipped.",
+    "SMART Profile 输出目录": "SMART Profile Output Directory",
+    "开始 SMART 图元一致性处理": "Start SMART Device Consistency",
+    "请选择 Profile": "Select Profile",
+    "请先选择并保存一个 Site Profile。": "Select and save a Site Profile first.",
+    "Site Profile 样本": "Site Profile Samples",
+    "SMART Profile 处理输入": "SMART Profile Processing Input",
+    "Profile 未完成": "Profile Incomplete",
+    "Site Name、Profile Name、SMART LBS 和 SMART Circuit Breaker 都必须确认。": "Site Name, Profile Name, SMART LBS and SMART Circuit Breaker must all be confirmed.",
+    "Profile 已保存": "Profile Saved",
+    "删除 Profile": "Delete Profile",
+    "扫描失败": "Scan Failed",
+
+    "指定标准 G 文件属于哪个现场，扫描并保存该现场的 SMART LBS / Circuit Breaker 图元模板，再按 Profile 做通用 SMART 图元一致性检查。": "Assign standard G files to a site, scan and save that site's SMART LBS / Circuit Breaker symbol profile, then run generic SMART device consistency checks with the profile.",
+    "这是独立工具，不修改原来的 RMU、吉达批处理、基础处理或 ID 模块逻辑。现场由用户明确指定；文件名 JED / MD / MAK 仅作为文件名，不用于强制判断 Site。": "This is a standalone tool. It does not change the existing RMU, Jeddah Batch, Basic Processing, or ID module logic. The site is explicitly selected by the user; JED / MD / MAK are treated only as filename text and are not used to force a site decision.",
+    "现场 Profile 管理": "Site Profile Management",
+    "尚未保存 Site Profile。建议先选择同一现场的标准 G 样本并扫描。": "No Site Profile has been saved. Select and scan standard G samples from the same site first.",
+    "由用户指定现场并扫描标准 G 样本，保存 SMART LBS / Circuit Breaker devref Profile，再执行通用 SMART 图元一致性检查": "Assign a site and scan standard G samples, save the SMART LBS / Circuit Breaker devref profile, then run generic SMART device consistency checks",
+    "请先输入 Site Name，再扫描属于该现场的标准样本。": "Enter the Site Name before scanning standard samples for that site.",
+    "请先输入 Profile Name。": "Enter the Profile Name first.",
+    "候选一致率低于 80%，请人工检查下拉候选后再保存。": "Candidate consistency is below 80%. Review the dropdown candidates before saving.",
+    "扫描完成。请确认两个 devref 后保存 Profile。": "Scan completed. Confirm both devrefs before saving the profile.",
+    "由用户指定标准 G 样本所属现场，扫描并保存 SMART LBS / Circuit Breaker 图元模板，再按 Profile 做通用 SMART 图元一致性检查。": "Assign standard G samples to a site, scan and save the SMART LBS / Circuit Breaker symbol profile, then run generic SMART device consistency checks with the profile.",
+    "现场由用户明确指定，程序不依赖 JED/MD/MAK 文件名前缀强制判断。Profile 管理、样本扫描和 SMART 图元一致性处理都在本页完成；使用右侧滚动条向下继续操作。": "The site is explicitly selected by the user; the program does not force a site from JED/MD/MAK filename prefixes. Profile management, sample scanning and SMART device consistency processing are all completed on this page; use the right-side scroll bar to continue downward.",
+    "Site Profile 列表": "Site Profile List",
+    "像 ID 规则模板一样维护现场 SMART Profile。先新建/选择一行，再在下方指定 Site、扫描标准样本并确认 SMART LBS / Circuit Breaker devref。": "Maintain Site SMART Profiles like ID rule templates. Create or select a row, then specify the site below, scan standard samples, and confirm the SMART LBS / Circuit Breaker devrefs.",
+    "新建 Profile": "New Profile",
+    "删除 Profile": "Delete Profile",
+    "SMART LBS": "SMART LBS",
+    "SMART Circuit Breaker": "SMART Circuit Breaker",
+    "Samples": "Samples",
+    "Confidence": "Confidence",
+    "Status": "Status",
+    "Profile 设置与样本扫描": "Profile Settings and Sample Scan",
+    "当前处理 Profile：未选择": "Current Processing Profile: Not selected",
+    "使用列表中当前选中的已保存 Profile 检查所有已识别 SMART 环网柜：Y 类 CBreakerDis 强制使用 Profile 的 SMART LBS devref，Q 类 CBreakerDis 强制使用 Profile 的 SMART Circuit Breaker devref。ID、keyid、node_area、名称、旋转和拓扑关系保持不变；若目标 SMART 图元内部几何不同，程序会依据同旋转的正确 SMART 样本反算 x/y/w/h，确保原 ConnectLine 连接点绝对坐标不变；非 SMART 环网柜不处理。": "Use the currently selected saved profile in the list to check all recognized SMART RMUs: Y-type CBreakerDis devices must use the profile SMART LBS devref and Q-type devices must use the profile SMART Circuit Breaker devref. IDs, keyids, node_area, names, rotations and topology are preserved. If target SMART icon geometry differs, x/y/w/h are recalculated from a correct same-rotation SMART sample so the original ConnectLine attachment coordinates remain exactly fixed. Non-SMART RMUs are skipped.",
+    "请先在上方列表选择并保存一个 Site Profile。": "Select and save a Site Profile from the list above first.",
+    "新建 Profile：填写 Site / Profile Name 后扫描标准样本。": "New Profile: enter Site / Profile Name, then scan standard samples.",
+    "第一次用标准 G 文件学习并保存现场 SMART 图元 Profile；以后复用同一套 G 文件输入直接执行 SMART 图元一致性处理。": "Learn and save a site SMART symbol profile from standard G files the first time, then reuse the same G-file input area for SMART device consistency processing.",
+    "同一套 G 文件输入同时用于 Profile 学习和后续一致性处理：第一次选择标准样本后扫描并保存 Profile；以后选择待处理文件，直接使用已保存 Profile 执行。现场由用户明确指定，不依赖文件名前缀强制判断；使用右侧滚动条向下继续操作。": "The same G-file input is used for profile learning and later consistency processing: scan standard samples and save the profile the first time, then select target files and run with the saved profile. The site is explicitly assigned by the user and is not forced from filename prefixes; use the right-side scroll bar to continue downward.",
+    "像 ID 规则模板一样维护现场 SMART Profile。第一次新建 Profile 并扫描标准样本；Profile Ready 后可长期复用。": "Maintain site SMART profiles like ID rule templates. Create a profile and scan standard samples once; reuse it after the profile is Ready.",
+    "Profile 设置": "Profile Settings",
+    "G 文件输入（学习与处理共用）": "G File Input (Shared for Learning and Processing)",
+    "第一次：选择该现场的标准 G 文件 → 扫描 Profile → 确认 devref → 保存。以后：选择待处理 G 文件 → 直接执行一致性处理。无需第二套输入。": "First use: select standard G files for the site → scan the profile → confirm devrefs → save. Later: select target G files → run consistency processing directly. No second input is required.",
+    "扫描并创建 Profile": "Scan and Create Profile",
+    "重新扫描 Profile": "Rescan Profile",
+    "执行 SMART 图元一致性处理": "Run SMART Device Consistency",
+    "输出目录（workspace）": "Output Directory (workspace)",
+    "尚未执行一致性处理。": "SMART consistency has not been run yet.",
+    "打开报告": "Open Report",
+    "报告不存在": "Report Not Found",
+    "当前还没有可打开的 SMART Profile HTML 报告，请先执行处理。": "There is no SMART Profile HTML report to open yet. Run processing first.",
+    "正在执行 SMART 图元一致性处理……": "Running SMART device consistency processing...",
+
 }
 
 # Long but frequently visible descriptions/tooltips. Exact mapping keeps the UI clean.
@@ -714,6 +876,10 @@ RUNTIME_REPLACEMENTS: tuple[tuple[str, str], ...] = tuple(
             "[取消环网柜组合告警]": "[Ungroup RMU Warning]",
             "[图元版本升级]": "[Symbol Version Upgrade]",
             "[图元版本升级告警]": "[Symbol Version Upgrade Warning]",
+            "[通用图元升级]": "[Universal Symbol Upgrade]",
+            "[通用图元升级告警]": "[Universal Symbol Upgrade Warning]",
+            "[同类图元版本升级]": "[Same-Class Symbol Version Upgrade]",
+            "[同类图元版本升级告警]": "[Same-Class Symbol Version Upgrade Warning]",
             "[图形组合清理]": "[Graphic Group Cleanup]",
             "[馈线名称定位]": "[Feeder Name Positioning]",
             "[馈线名称定位告警]": "[Feeder Name Positioning Warning]",
@@ -724,6 +890,8 @@ RUNTIME_REPLACEMENTS: tuple[tuple[str, str], ...] = tuple(
             "[连接点修复汇总]": "[Connection Repair Summary]",
             "[SMART环网柜外框颜色]": "[SMART RMU Frame Color]",
             "[SMR环网柜外框颜色]": "[SMR RMU Frame Color]",
+            "[RMU柜名白色]": "[RMU Name White]",
+            "[RMU柜名白色告警]": "[RMU Name White Warning]",
             "[环网柜红色状态点]": "[RMU Red Status Point]",
             "[Bus环网柜处理]": "[Bus RMU Processing]",
             "[环网柜增强告警]": "[RMU Enhancement Warning]",
@@ -917,6 +1085,75 @@ def contains_cjk(text: str) -> bool:
 def tr_runtime(text: str, language: str = LANG_ZH) -> str:
     if language != LANG_EN or not text:
         return text
+
+    # Jeddah batch runtime messages are translated as complete structures so the
+    # English path never changes the underlying site-specific processing data.
+    match = re.fullmatch(r"\[吉达批处理\] 开始处理 (\d+) 个单馈线 G 文件。", text)
+    if match:
+        return f"[Jeddah Batch] Starting processing of {match.group(1)} single-feeder G files."
+    if text == "[吉达批处理] 固定流程：彻底取消图形组合（删除全部 <Merge>，RMU 外框置底） → 删除异常小尺寸元素 → RMU 名称改白 → SMART/SMR 外框刷红 + 已有 SMART 柜图元检查（LBS / Circuit Breaker） + SMR 智能处理（已有 SMART 时删 SMR；否则生成 SMART） + SMR 转换后再次检查 SMART 图元 + 删除带 Bus 外框并上移标题 + 馈线名称上移 + 馈线改实线 + 删除 H.T 文字 + 删除 RMU channel_status 红色状态点 + 清理 RMU 内重复 SMART + 删除相邻 2000.00 / UPDATED_MEASURMENT 字符对 → ID 检查与修复 → 图形边距调整 → 图框添加。":
+        return "[Jeddah Batch] Fixed workflow: fully ungroup graphics (remove all <Merge> and send RMU frames to back) → remove abnormal small elements → set RMU names to white → set SMART/SMR frames to red + validate existing SMART RMU LBS/Circuit Breaker icons + conditional SMR handling + validate SMART RMU icons again after SMR conversion + remove Bus frames and move titles above buses + move feeder names above buses + set all FeedLine elements to solid + remove exact H.T text markers + remove RMU channel_status red status points + remove duplicate SMART labels within each RMU + remove adjacent 2000.00 / UPDATED_MEASURMENT Text pairs → ID Check & Repair → Drawing Margin Adjustment → Drawing Frame."
+    match = re.fullmatch(r"\[吉达批处理\] RMU 名称排除字符串：(.*)", text)
+    if match:
+        return f"[Jeddah Batch] RMU name exclusions: {match.group(1)}"
+    match = re.fullmatch(r"\[吉达批处理/图形组合清理\] (.+)：原 Merge (\d+) 个，删除 (\d+) 个，剩余 (\d+) 个；识别 RMU 外框 (\d+) 个，置底 (\d+) 个。", text)
+    if match:
+        a = match.groups()
+        return f"[Jeddah Batch/Graphic Group Cleanup] {a[0]}: original Merge {a[1]}, removed {a[2]}, remaining {a[3]}; recognized RMU frames {a[4]}, sent to back {a[5]}."
+    match = re.fullmatch(r"\[吉达批处理\] 图形组合清理阶段完成：删除 Merge (\d+) 个，RMU 外框置底 (\d+) 个。", text)
+    if match:
+        return f"[Jeddah Batch] Graphic-group cleanup completed: Merge removed {match.group(1)}; RMU frames sent to back {match.group(2)}."
+    match = re.fullmatch(r"\[吉达批处理/异常小元素\] (.+)：发现并删除 (\d+) 个，其中带 keyid (\d+) 个。", text)
+    if match:
+        return f"[Jeddah Batch/Abnormal Small Elements] {match.group(1)}: found and deleted {match.group(2)}; with keyid: {match.group(3)}."
+    match = re.fullmatch(r"\[吉达批处理\] 异常元素阶段完成：删除 (\d+) 个，其中带 keyid (\d+) 个。", text)
+    if match:
+        return f"[Jeddah Batch] Abnormal-element stage completed: deleted {match.group(1)}; with keyid: {match.group(2)}."
+    match = re.fullmatch(r"\[吉达批处理/RMU名称白色\] (.+)：识别柜名 (\d+) 个，匹配名称 Text (\d+) 个，改为白色 (\d+) 个。", text)
+    if match:
+        return f"[Jeddah Batch/RMU Name White] {match.group(1)}: recognized RMU names {match.group(2)}; matched name Text {match.group(3)}; changed to white {match.group(4)}."
+    match = re.fullmatch(r"\[吉达批处理/图面处理\] (.+)：SMART 匹配 (\d+)、刷红 (\d+)；SMR Text (\d+)、匹配 (\d+)、刷红 (\d+)；已有 SMART 柜图元预检查：SMART 柜 (\d+)、校正 devref (\d+)；SMR→SMART 新生成 (\d+)；已有 SMART 清理 SMR (\d+)；删除 SMR Text (\d+)；SMR 转换阶段切 SMART 图元 (\d+)；SMR 后复检：SMART 柜 (\d+)、校正 devref (\d+)；删除带 Bus 外框 (\d+)、对应标题上移 (\d+)；馈线名称上移 (\d+)；馈线改实线 (\d+)；删除 H.T 文字 (\d+)；删除 RMU 红色状态点 (\d+)/(\d+) 个；扫描 RMU (\d+) 个、重复 SMART 柜 (\d+) 个、删除重复 SMART (\d+) 个；删除相邻 2000\.00 \+ UPDATED_MEASURMENT (\d+) 对（(\d+) 个 Text）。", text)
+    if match:
+        a = match.groups()
+        return (f"[Jeddah Batch/Visual Processing] {a[0]}: SMART matched {a[1]}, changed to red {a[2]}; "
+                f"SMR Text {a[3]}, matched {a[4]}, changed to red {a[5]}; existing-SMART RMUs checked {a[6]}, device devrefs corrected {a[7]}; "
+                f"new SMART labels created {a[8]}; existing-SMART SMR cleanup {a[9]}; SMR Text removed {a[10]}; "
+                f"SMR conversion-stage device changes {a[11]}; post-SMR SMART RMUs checked {a[12]}, device devrefs corrected {a[13]}; "
+                f"Bus frames removed {a[14]}, corresponding titles moved {a[15]}; feeder names moved {a[16]}; FeedLine elements set to solid {a[17]}; "
+                f"H.T texts removed {a[18]}; RMU channel_status red points removed {a[19]}/{a[20]}; RMUs scanned for duplicate SMART {a[21]}, RMUs with duplicate SMART {a[22]}, duplicate SMART texts removed {a[23]}; "
+                f"adjacent 2000.00 + UPDATED_MEASURMENT pairs removed {a[24]} ({a[25]} Text elements).")
+    match = re.fullmatch(r"\[吉达批处理/图面处理失败\] (.+)", text)
+    if match:
+        return f"[Jeddah Batch/Visual Processing Failed] {match.group(1)}"
+    match = re.fullmatch(r"\[吉达批处理/图形边距\] 完成 (\d+) 个 G 文件；左=(\d+)、上=(\d+)、右=(\d+)、下=(\d+)。", text)
+    if match:
+        a = match.groups()
+        return f"[Jeddah Batch/Drawing Margin] Completed {a[0]} G files; left={a[1]}, top={a[2]}, right={a[3]}, bottom={a[4]}."
+    match = re.fullmatch(r"\[吉达批处理/图框添加\] 完成 (\d+) 个 G 文件；模板=(.+)。", text)
+    if match:
+        return f"[Jeddah Batch/Drawing Frame] Completed {match.group(1)} G files; template={match.group(2)}."
+    match = re.fullmatch(r"\[吉达批处理\] 完成：最终 G 文件 (\d+)/(\d+) 个；删除 Merge (\d+)；RMU 外框置底 (\d+)；异常元素删除 (\d+)；SMART 外框刷红 (\d+)；SMR 外框刷红 (\d+)；SMR 新生成 SMART (\d+)；已有 SMART 仅删 SMR (\d+)；删除 SMR Text (\d+)；已有 SMART 柜图元校正 (\d+)；SMR 转换阶段图元切换 (\d+)；SMR 后复检图元校正 (\d+)；RMU 名称改白 (\d+)；带 Bus 外框删除 (\d+)；对应标题上移 (\d+)；馈线名称上移 (\d+)；馈线改实线 (\d+)；删除 H.T 文字 (\d+)；删除 RMU 红色状态点 (\d+)/(\d+) 个（扫描 BusDis RMU (\d+) 个）；扫描 RMU (\d+) 个、重复 SMART 柜 (\d+) 个、删除重复 SMART (\d+) 个；删除相邻测量字符对 (\d+) 对（(\d+) 个 Text）；ID 修复 (\d+)；边距调整 (\d+)；图框添加 (\d+)。", text)
+    if match:
+        a = match.groups()
+        return (f"[Jeddah Batch] Completed: final G files {a[0]}/{a[1]}; Merge removed {a[2]}; RMU frames sent to back {a[3]}; "
+                f"abnormal elements removed {a[4]}; SMART frames changed to red {a[5]}; SMR frames changed to red {a[6]}; new SMART labels created {a[7]}; "
+                f"existing-SMART cabinets with SMR removed {a[8]}; SMR Text removed {a[9]}; existing-SMART device corrections {a[10]}; "
+                f"SMR conversion-stage device changes {a[11]}; post-SMR SMART device corrections {a[12]}; RMU names changed to white {a[13]}; "
+                f"Bus frames removed {a[14]}; corresponding titles moved {a[15]}; feeder names moved {a[16]}; FeedLine elements set to solid {a[17]}; "
+                f"H.T texts removed {a[18]}; RMU channel_status red points removed {a[19]}/{a[20]} (BusDis RMUs scanned {a[21]}); RMUs scanned for duplicate SMART {a[22]}, RMUs with duplicate SMART {a[23]}, duplicate SMART texts removed {a[24]}; "
+                f"adjacent measurement pairs removed {a[25]} ({a[26]} Text elements); IDs repaired {a[27]}; margins adjusted {a[28]}; frames added {a[29]}.")
+    match = re.fullmatch(r"ID 检查发现 (\d+) 个元素类型尚未配置已确认模板；这些类型未擅自生成或改写 ID，请在 ID 检查与修复模块确认规则。", text)
+    if match:
+        return f"ID check found {match.group(1)} element types without confirmed templates. Their IDs were not generated or changed automatically; confirm the rules in ID Check & Repair."
+    match = re.fullmatch(r"\[吉达批处理\] 最终输出目录：(.*)", text)
+    if match:
+        return f"[Jeddah Batch] Final output directory: {match.group(1)}"
+    match = re.fullmatch(r"\[吉达批处理\] 汇总报告：(.*)", text)
+    if match:
+        return f"[Jeddah Batch] Summary report: {match.group(1)}"
+    match = re.fullmatch(r"(.+): RMU (.+) 已识别，但未定位到可安全改色的同名 Text。", text)
+    if match:
+        return f"{match.group(1)}: RMU {match.group(2)} was recognized, but no exact matching Text could be safely located for color styling."
 
     # Dynamic merge-group strings are produced by the immutable Chinese feature code.
     # Translate their rendered form here instead of changing merge_page.py.
@@ -1211,6 +1448,7 @@ class LanguageManager(QObject):
                             _manager._translate_table_item(_table, item)
             finally:
                 _table.setProperty("_i18n_runtime_item_guard", False)
+            schedule_fit_known_dense_table(_table)
 
         model = table.model()
         if model is not None:
@@ -1308,6 +1546,7 @@ class LanguageManager(QObject):
                         source = item.text()
                         item.setData(0x0100, source)
                     item.setText(self.text(str(source)) if self.is_english else str(source))
+                configure_known_dense_table(widget)
 
             if isinstance(widget, QTreeWidget):
                 header = widget.headerItem()
@@ -1407,3 +1646,203 @@ class LanguageManager(QObject):
             finally:
                 self._event_translate_guard = False
         return False
+
+# v2.18.33 Site RMU Device Profile additions.  Kept as a late update so older
+# translation keys remain backward-compatible with persisted UI text/state.
+EN.update({
+    "现场 RMU 图元 Profile": "Site RMU Device Profile",
+    "第一次用标准 G 文件同时学习 SMART / 普通 RMU 图元 Profile；以后复用同一套 G 文件输入直接执行 RMU 图元一致性处理。": "Learn SMART and NORMAL RMU device profiles from standard G files the first time, then reuse the same G-file input for RMU device consistency processing.",
+    "Site Profile 列表": "Site Profile List",
+    "Version": "Version",
+    "SMART CB": "SMART CB",
+    "NORMAL LBS": "NORMAL LBS",
+    "NORMAL CB": "NORMAL CB",
+    "NORMAL LBS devref": "NORMAL LBS devref",
+    "NORMAL Circuit Breaker devref": "NORMAL Circuit Breaker devref",
+    "RMU 图元一致性处理": "RMU Device Consistency",
+    "执行 RMU 图元一致性处理": "Run RMU Device Consistency",
+    "正在执行 RMU 图元一致性处理……": "Running RMU device consistency processing...",
+    "RMU Profile 处理输入": "RMU Profile Processing Input",
+    "扫描并创建 Profile": "Scan and Create Profile",
+    "重新扫描 Profile": "Rescan Profile",
+    "打开报告": "Open Report",
+    "Profile 已保存": "Profile Saved",
+    "Profile 未完成": "Profile Incomplete",
+    "扫描失败": "Scan Failed",
+    "新建 Profile": "New Profile",
+    "删除 Profile": "Delete Profile",
+    "Profile 设置": "Profile Settings",
+    "G 文件输入（学习与处理共用）": "G File Input (Shared for Learning and Processing)",
+    "输出目录（workspace）": "Output Directory (workspace)",
+    "尚未执行一致性处理。": "Consistency processing has not been run yet.",
+    "报告不存在": "Report Not Found",
+})
+
+# v2.18.33 Site RMU Device Profile additions.
+EN.update({
+    "现场 RMU 图元 Profile": "Site RMU Device Profile",
+    "第一次用标准 G 文件同时学习 SMART / 普通 RMU 图元 Profile；以后复用同一套 G 文件输入直接执行 RMU 图元一致性处理。": "Learn SMART and NORMAL RMU device profiles from standard G files the first time, then reuse the same G-file input for RMU device consistency processing.",
+    "Version": "Version",
+    "SMART CB": "SMART CB",
+    "NORMAL LBS": "NORMAL LBS",
+    "NORMAL CB": "NORMAL CB",
+    "NORMAL LBS devref": "NORMAL LBS devref",
+    "NORMAL Circuit Breaker devref": "NORMAL Circuit Breaker devref",
+    "RMU 图元一致性处理": "RMU Device Consistency",
+    "执行 RMU 图元一致性处理": "Run RMU Device Consistency",
+    "正在执行 RMU 图元一致性处理……": "Running RMU device consistency processing...",
+    "RMU Profile 处理输入": "RMU Profile Processing Input",
+})
+
+# v2.18.34 Site RMU Device Profile version/update workflow additions.
+EN.update({
+    "State": "State",
+    "Profile Status": "Profile Status",
+    "ACTIVE": "ACTIVE",
+    "ARCHIVED": "ARCHIVED",
+    "恢复此版本": "Restore This Version",
+    "扫描进度 %p%": "Scan Progress %p%",
+    "更新当前 Profile": "Update Current Profile",
+    "Profile 已有图元标准": "Profile Already Has a Device Standard",
+    "Profile Name 已存在": "Profile Name Already Exists",
+    "历史版本只读": "Archived Version Is Read-only",
+    "已经是当前版本": "Already the Active Version",
+    "恢复历史版本": "Restore Archived Version",
+    "恢复失败": "Restore Failed",
+    "已恢复": "Restored",
+    "请选择 ACTIVE 版本": "Select the ACTIVE Version",
+    "历史版本不能单独删除": "Archived Versions Cannot Be Deleted Individually",
+    "更新 Profile 标准": "Update Profile Standard",
+    "正在准备标准样本……": "Preparing standard samples...",
+    "扫描标准样本并学习 SMART / NORMAL 图元与图元几何的进度。": "Progress for scanning standard samples and learning SMART/NORMAL device symbols and geometry.",
+})
+
+# v2.18.35 RMU grounding-switch profile and Jeddah profile-driven consistency.
+EN.update({
+    "SMART 接地刀闸": "SMART Grounding Switch",
+    "NORMAL 接地刀闸": "NORMAL Grounding Switch",
+    "SMART 接地刀闸 devref（ZhaiWaiJieDiDaoZha）": "SMART Grounding Switch devref (ZhaiWaiJieDiDaoZha)",
+    "NORMAL 接地刀闸 devref（ZhaiWaiJieDiDaoZha）": "NORMAL Grounding Switch devref (ZhaiWaiJieDiDaoZha)",
+    "Needs Ground": "Needs Ground",
+    "吉达 RMU 图元 Profile": "Jeddah RMU Device Profile",
+    "吉达 RMU 图元 Profile 未选择": "Jeddah RMU Device Profile Not Selected",
+    "Profile 学习不完整": "Profile Learning Incomplete",
+})
+
+# v2.18.36 Site RMU symbol-standard UX consolidation.
+EN.update({
+    "现场 RMU 图元标准与升级": "Site RMU Symbol Standard & Upgrade",
+    "用标准 G 文件学习 SMART / 普通 RMU 的 LBS、断路器、接地刀闸及图元几何；以后用当前 ACTIVE 版本检查并升级旧 G 文件。": "Learn LBS, circuit breaker, grounding-switch and symbol geometry standards for SMART/NORMAL RMUs from standard G files, then use the current ACTIVE version to check and upgrade older G files.",
+    "当前 RMU 图元标准": "Current RMU Symbol Standard",
+    "Profile 管理": "Profile Management",
+    "现场": "Site",
+    "Profile 名称": "Profile Name",
+    "版本": "Version",
+    "样本": "Samples",
+    "置信度": "Confidence",
+    "Profile 状态": "Profile Status",
+    "图元标准": "Symbol Standards",
+    "现场名称": "Site Name",
+    "RMU 类型": "RMU Type",
+    "设备角色": "Device Role",
+    "标准图元": "Standard Symbol",
+    "保存当前标准": "Save Current Standard",
+    "G 文件输入（学习 / 升级共用）": "G File Input (Shared for Learning / Upgrade)",
+    "主操作": "Main Actions",
+    "扫描标准样本 / 创建 Profile": "Scan Standard Samples / Create Profile",
+    "扫描标准样本 / 更新 Profile": "Scan Standard Samples / Update Profile",
+    "检查并升级所选 G 文件": "Check & Upgrade Selected G Files",
+    "处理结果与日志": "Results & Logs",
+    "日常处理直接使用当前 ACTIVE Profile 检查并升级所选 G 文件；图元标准变化时，再从“Profile 管理”中执行标准样本扫描/更新。升级过程中保持电气连接锚点绝对位置不变。": "For routine work, use the current ACTIVE Profile to check and upgrade the selected G files. When the symbol standard changes, scan/update standard samples from Profile Management. Electrical connection anchor positions are kept unchanged during upgrades.",
+    "尚未执行检查与升级。": "Check and upgrade has not been run yet.",
+    "正在检查并升级 RMU 图元……": "Checking and upgrading RMU symbols...",
+    "就绪": "Ready",
+    "需确认": "Needs Confirmation",
+    "未学习": "Not Learned",
+    "已保存": "Saved",
+})
+
+# v2.18.42 Generic Symbol Standard Check module.
+EN.update({
+    "图元标准检查": "Symbol Standard Check",
+    "用标准 G 文件建立可复用图元标准；可先只检查所选 G 文件是否符合标准，也可在确认后执行检查并升级。": "Build reusable symbol standards from confirmed G files. Check selected G files in read-only mode first, then optionally check and upgrade them.",
+    "当前图元标准": "Current Symbol Standard",
+    "当前执行标准：尚未创建标准": "Current Standard: No standard created",
+    "标准管理": "Standard Management",
+    "新建标准": "New Standard",
+    "扫描标准样本 / 创建标准": "Scan Standard Samples / Create Standard",
+    "扫描标准样本 / 更新标准": "Scan Standard Samples / Update Standard",
+    "删除标准": "Delete Standard",
+    "适用范围": "Scope",
+    "标准名称": "Standard Name",
+    "标准状态": "Standard Status",
+    "标准定义": "Standard Definition",
+    "G 文件输入（标准学习 / 检查 / 升级共用）": "G File Input (Shared for Learning / Check / Upgrade)",
+    "只检查标准": "Check Only",
+    "检查并升级": "Check & Upgrade",
+    "图元标准检查输出目录": "Symbol Standard Output Directory",
+    "尚未执行图元标准检查。": "No symbol standard check has been run yet.",
+    "请选择标准": "Select Standard",
+    "标准未完成": "Standard Incomplete",
+    "标准已保存": "Standard Saved",
+    "标准名称已存在": "Standard Name Already Exists",
+    "更新图元标准": "Update Symbol Standard",
+    "图元标准检查输入": "Symbol Standard Check Input",
+    "图元标准样本": "Symbol Standard Samples",
+    "图元标准检查帮助": "Symbol Standard Check Help",
+    "正在只读检查图元标准……源 G 文件不会修改。": "Checking symbol standards in read-only mode... Source G files will not be modified.",
+    "正在按当前标准检查并升级图元……": "Checking and upgrading symbols against the current standard...",
+})
+
+
+# v2.18.44 User-defined generic symbol standards.
+EN.update({
+    "内置 RMU 标准": "Built-in RMU Standards",
+    "自定义设备图元": "Custom Device Symbols",
+    "前 6 行是现有 RMU 系统标准；下面可以继续添加任意设备图元。扫描标准 G 后，表格会直接显示 XML 元素类型、主体 ID、w/h、AlignCenter、pin 坐标等属性，便于确认“业务元素 → 标准图元”的对应关系。": "The first six rows are the existing RMU system standards. Add any other device symbols below them. After scanning standard G files, the table shows XML element type, body ID, w/h, AlignCenter and pin coordinates so the business-element-to-standard-symbol mapping is explicit.",
+    "添加设备图元": "Add Device Symbol",
+    "添加扫描到的未映射图元": "Add Scanned Unmapped Symbols",
+    "删除选中自定义项": "Delete Selected Custom Rule",
+    "范围": "Scope",
+    "设备角色": "Device Role",
+    "XML 元素": "XML Element",
+    "标准图元 devref": "Standard Symbol devref",
+    "主体 ID": "Body ID",
+    "w×h": "w×h",
+    "AlignCenter": "AlignCenter",
+    "Pins": "Pins",
+    "匹配属性": "Match Attribute",
+    "当前/旧图元匹配值": "Current/Old Symbol Match Value",
+    "系统规则": "System Rule",
+    "RMU 内接地刀闸": "Grounding Switch in RMU",
+    "自定义设备": "Custom Device",
+    "待确认": "Pending Confirmation",
+    "缺少标准图元": "Missing Standard Symbol",
+    "缺少 XML 元素": "Missing XML Element",
+    "系统标准不能删除": "System Standard Cannot Be Deleted",
+    "前 6 行是现有 RMU 系统标准。你可以修改标准图元，但不能删除这些系统规则。": "The first six rows are existing RMU system rules. You may change their standard symbols, but these system rules cannot be deleted.",
+    "没有扫描结果": "No Scan Result",
+    "请先扫描标准 G 文件。程序会把 G 中识别到的 devref 与元素属性列出来。": "Scan standard G files first. The program will list the detected devrefs and element properties.",
+    "没有未映射图元": "No Unmapped Symbols",
+    "扫描到的图元都已经存在于当前标准表中。": "All scanned symbols are already present in the current standard table.",
+    "批量添加未映射图元": "Add Unmapped Symbols in Bulk",
+    "自定义图元未完成": "Custom Symbol Incomplete",
+    "自定义设备图元必须至少填写“XML 元素”和“标准图元 devref”。请补充后再保存。": "Each custom device symbol must include at least an XML Element and Standard Symbol devref before saving.",
+    "图元属性目录": "Symbol Property Catalog",
+    "扫描完成。请确认内置 RMU 标准；还可以点击“添加设备图元”或“添加扫描到的未映射图元”，继续维护其他设备图元标准。": "Scan complete. Confirm the built-in RMU standards, then use Add Device Symbol or Add Scanned Unmapped Symbols to maintain additional device standards.",
+})
+
+# v2.18.46 Read-only Symbol Standard Check + same-class version upgrade terminology.
+EN.update({
+    "用标准 G 文件建立可复用图元标准，并只读检查所选 G 文件是否符合当前 ACTIVE 标准；发现差异只告警和生成报告，不修改 G。": "Build reusable symbol standards from confirmed G files and inspect selected G files against the current ACTIVE standard in read-only mode. Differences only raise warnings and reports; G files are never modified.",
+    "G 文件输入与输出（标准学习 / 检查共用）": "G File Input & Output (Shared for Standard Learning / Check)",
+    "检查结果与日志": "Check Results & Logs",
+    "同类图元版本升级": "Same-Class Symbol Version Upgrade",
+    "启用同类图元版本升级": "Enable Same-Class Symbol Version Upgrade",
+    "同类图元版本升级检查": "Same-Class Symbol Version Upgrade Check",
+    "同类图元版本升级检查未通过": "Same-Class Symbol Version Upgrade Check Failed",
+    "同类图元版本升级映射检查通过": "Same-Class Symbol Version Upgrade Mapping Check Passed",
+    "图元标准不一致": "Symbol Standard Mismatch",
+    "图元标准检查完成": "Symbol Standard Check Complete",
+    "标准检查": "Standard Check",
+})

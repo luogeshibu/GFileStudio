@@ -62,8 +62,8 @@ class RmuPage(BasePage):
         )
         self.layout.addWidget(
             InfoBanner(
-                "本页面负责环网柜组合、SMART 外框改色、"
-                "channel_status 状态点、带 Bus 外框处理，以及柜名/柜型识别算法均保持原逻辑不变；SMART 与 SMR 仅在信息汇总统计层统一归类为智能环网柜。"
+                "本页面负责环网柜组合、SMART/SMR 外框改色、RMU 柜名改白、"
+                "channel_status 状态点、带 Bus 外框处理，以及柜名/柜型识别；新增样式操作复用既有识别结果，不改变原识别算法。"
             )
         )
 
@@ -173,6 +173,14 @@ class RmuPage(BasePage):
         self.rmu_smr_frame_color.enabled_box.setText("修改含 SMR 的环网柜外框颜色")
         layout.addWidget(self.rmu_smr_frame_color)
 
+        self.rmu_name_white = QCheckBox("将已识别的环网柜名称统一改成白色")
+        self.rmu_name_white.setProperty("optionChoice", True)
+        self.rmu_name_white.setToolTip(
+            "复用现有 RMU 柜名识别规则，只把最终识别到的柜名 Text 改为白色 #FFFFFF；"
+            "其他 Text、设备、连接线和柜型识别逻辑均不改变。"
+        )
+        layout.addWidget(self.rmu_name_white)
+
         status_row = QHBoxLayout()
         status_row.setSpacing(10)
         self.rmu_reposition_channel_status = QCheckBox("移动环网柜红色状态点（channel_status）")
@@ -256,9 +264,18 @@ class RmuPage(BasePage):
         classify_note.setWordWrap(True)
         classify_note.setObjectName("mutedText")
         layout.addWidget(classify_note)
-        for item in (self.rmu_name_top, self.rmu_name_bottom, self.rmu_name_left, self.rmu_name_right, self.rmu_name_exclusions, self.rmu_smart_in_type):
-            self.identify_rmu.toggled.connect(item.setEnabled)
+        self.identify_rmu.toggled.connect(self._refresh_rmu_name_controls)
+        self.rmu_name_white.toggled.connect(self._refresh_rmu_name_controls)
         self.layout.addWidget(box)
+
+    def _refresh_rmu_name_controls(self) -> None:
+        name_enabled = self.identify_rmu.isChecked() or self.rmu_name_white.isChecked()
+        for item in (
+            self.rmu_name_top, self.rmu_name_bottom, self.rmu_name_left,
+            self.rmu_name_right, self.rmu_name_exclusions,
+        ):
+            item.setEnabled(name_enabled)
+        self.rmu_smart_in_type.setEnabled(self.identify_rmu.isChecked())
 
     def _build_rmu_ledger_options(self) -> None:
         box = QGroupBox("现有 RMU 台账对比（可选）")
@@ -404,6 +421,7 @@ class RmuPage(BasePage):
         self.rmu_channel_status_position.setEnabled(self.rmu_reposition_channel_status.isChecked())
         self.rmu_channel_status_margin.setEnabled(self.rmu_reposition_channel_status.isChecked())
         self.rmu_remove_bus_frame.setChecked(self.user_settings.get_bool("basic/rmu/remove_bus_frame", False))
+        self.rmu_name_white.setChecked(self.user_settings.get_bool("basic/rmu/name_text_white", False))
         self.identify_rmu.setChecked(self.user_settings.get_bool("basic/rmu/identify_name_type", False))
         self.rmu_name_top.setChecked(self.user_settings.get_bool("basic/rmu/name_top", True))
         self.rmu_name_bottom.setChecked(self.user_settings.get_bool("basic/rmu/name_bottom", False))
@@ -420,9 +438,7 @@ class RmuPage(BasePage):
         }.get(ledger_mode, self.rmu_ledger_file_mode).setChecked(True)
         self.rmu_ledger_text.setPlainText(self.user_settings.get_value("rmu/ledger/text", ""))
         self._refresh_ledger_controls()
-        enabled = self.identify_rmu.isChecked()
-        for item in (self.rmu_name_top, self.rmu_name_bottom, self.rmu_name_left, self.rmu_name_right, self.rmu_name_exclusions, self.rmu_smart_in_type):
-            item.setEnabled(enabled)
+        self._refresh_rmu_name_controls()
 
     def _persist_options(self) -> None:
         self.user_settings.set_value("basic/rmu_action", self._selected_rmu_action().value)
@@ -434,6 +450,7 @@ class RmuPage(BasePage):
         self.user_settings.set_value("basic/rmu/channel_status_position", self.rmu_channel_status_position.currentData())
         self.user_settings.set_value("basic/rmu/channel_status_inner_margin", self.rmu_channel_status_margin.value())
         self.user_settings.set_value("basic/rmu/remove_bus_frame", self.rmu_remove_bus_frame.isChecked())
+        self.user_settings.set_value("basic/rmu/name_text_white", self.rmu_name_white.isChecked())
         self.user_settings.set_value("basic/rmu/identify_name_type", self.identify_rmu.isChecked())
         self.user_settings.set_value("basic/rmu/name_top", self.rmu_name_top.isChecked())
         self.user_settings.set_value("basic/rmu/name_bottom", self.rmu_name_bottom.isChecked())
@@ -456,8 +473,8 @@ class RmuPage(BasePage):
         output_dir = self.output_path.path()
         if not validate_existing_directory(self, output_dir, "环网柜处理输出目录"):
             return
-        if self.identify_rmu.isChecked() and not any((self.rmu_name_top.isChecked(), self.rmu_name_bottom.isChecked(), self.rmu_name_left.isChecked(), self.rmu_name_right.isChecked())):
-            QMessageBox.warning(self, "RMU 信息汇总设置", "柜名位置至少选择上方、下方、左侧或右侧中的一个。")
+        if (self.identify_rmu.isChecked() or self.rmu_name_white.isChecked()) and not any((self.rmu_name_top.isChecked(), self.rmu_name_bottom.isChecked(), self.rmu_name_left.isChecked(), self.rmu_name_right.isChecked())):
+            QMessageBox.warning(self, "RMU 柜名设置", "柜名位置至少选择上方、下方、左侧或右侧中的一个。")
             return
         if self.compare_rmu_ledger.isChecked():
             if not self.identify_rmu.isChecked():
@@ -491,6 +508,7 @@ class RmuPage(BasePage):
             channel_status_position=RmuStatusPosition(self.rmu_channel_status_position.currentData()),
             channel_status_inner_margin=self.rmu_channel_status_margin.value(),
             remove_bus_rmu_frame_and_reposition_title=self.rmu_remove_bus_frame.isChecked(),
+            set_rmu_name_text_white=self.rmu_name_white.isChecked(),
             identify_rmu_name_and_type=self.identify_rmu.isChecked(),
             rmu_name_top=self.rmu_name_top.isChecked(),
             rmu_name_bottom=self.rmu_name_bottom.isChecked(),

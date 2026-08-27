@@ -36,9 +36,12 @@ def test_user_approved_rmu_feature_exceptions_are_exactly_locked():
     exceptions = data.get("approved_feature_exceptions", {})
     expected = {
         "g_file_studio/engines/rmu_identification_engine.py",
+        "g_file_studio/engines/icon_upgrade_engine.py",
         "g_file_studio/models.py",
         "g_file_studio/processors/basic_processor.py",
+        "g_file_studio/ui/pages/basic_page.py",
         "g_file_studio/ui/pages/rmu_page.py",
+        "g_file_studio/ui/widgets/icon_upgrade_editor.py",
     }
     assert set(exceptions) == expected
     for relative, meta in exceptions.items():

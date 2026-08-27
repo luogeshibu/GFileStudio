@@ -31,5 +31,5 @@ def test_rmu_ui_uses_optional_intelligent_classification_wording():
 
 
 def test_version_21740():
-    assert '__version__ = "2.18.16"' in Path('g_file_studio/__init__.py').read_text(encoding='utf-8')
-    assert 'version = "2.18.16"' in Path('pyproject.toml').read_text(encoding='utf-8')
+    assert '__version__ = "2.18.47"' in Path('g_file_studio/__init__.py').read_text(encoding='utf-8')
+    assert 'version = "2.18.47"' in Path('pyproject.toml').read_text(encoding='utf-8')

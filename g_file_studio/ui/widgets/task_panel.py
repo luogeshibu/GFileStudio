@@ -32,6 +32,7 @@ class TaskPanel(QFrame):
         self.thread_pool = QThreadPool.globalInstance()
         self._output_dir: Path | None = None
         self._raw_log_lines: list[str] = []
+        self._show_result_dialogs = True
 
         self.run_button = QPushButton("开始执行")
         self.run_button.setToolTip("按照当前页面参数开始处理。处理会在后台线程中运行。")
@@ -87,6 +88,10 @@ class TaskPanel(QFrame):
         layout.addLayout(buttons)
         layout.addWidget(self.progress)
         layout.addWidget(self.log_view, 1)
+
+    def set_result_dialogs_enabled(self, enabled: bool) -> None:
+        """Allow pages with domain-specific completion dialogs to suppress the generic popup."""
+        self._show_result_dialogs = bool(enabled)
 
     def log_view_clear(self) -> None:
         self._raw_log_lines.clear()
@@ -151,14 +156,15 @@ class TaskPanel(QFrame):
         self.open_button.setEnabled(True)
         if self._output_dir:
             update_run_status(self._output_dir, "SUCCESS" if result.success else "WARNING")
-        if result.success:
-            QMessageBox.information(self, "处理完成", "任务已成功完成，详细结果请查看日志。")
-        else:
-            QMessageBox.warning(
-                self,
-                "处理完成（有告警）",
-                "任务已完成，但部分文件处理失败或存在告警，请查看日志和报告。",
-            )
+        if self._show_result_dialogs:
+            if result.success:
+                QMessageBox.information(self, "处理完成", "任务已成功完成，详细结果请查看日志。")
+            else:
+                QMessageBox.warning(
+                    self,
+                    "处理完成（有告警）",
+                    "任务已完成，但部分文件处理失败或存在告警，请查看日志和报告。",
+                )
 
     def on_error(self, traceback_text: str) -> None:
         if self._output_dir:

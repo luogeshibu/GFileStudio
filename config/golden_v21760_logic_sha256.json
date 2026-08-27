@@ -42,7 +42,6 @@
     "g_file_studio/engines/connection_engine.py": "34f553f866faa541bd04e5078aaaea9c9a43c2c5bfd29d4455165fcbf601efc8",
     "g_file_studio/engines/feeder_title_engine.py": "8275dc02736155f1229962c0a929e78dccb5bc8bb1a2540daa6b0ddd60a96fd1",
     "g_file_studio/engines/frame_engine.py": "18eb4d7b655ceb3a6e93b51e48f46574c868441e76b955597c90f664e49ae48f",
-    "g_file_studio/engines/icon_upgrade_engine.py": "80da72021af920c86a4c00ce42848bf1fd31d9ce7e59a08f2c5c18011200bc5e",
     "g_file_studio/engines/id_engine.py": "fed66e6995539506eeef72130b689cb3e208fbae2b53b91fd8fbe438e0142c7f",
     "g_file_studio/engines/id_rule_engine.py": "595d26963580be79d35bdcd50d4e3f18f1db33a54c455a765acd203266dad380",
     "g_file_studio/engines/margin_engine.py": "ee036efd8d5ab64296d0f59d24957867c053ccf24dccd2c3529145282b492789",
@@ -69,7 +68,6 @@
     "g_file_studio/ui/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "g_file_studio/ui/pages/__init__.py": "9c9de00d711a941fd33a12759573a4747de5080e9fad538019a155a6937be532",
     "g_file_studio/ui/pages/base_page.py": "d4ba828419bebbdea350d229d5662f33666b50d874670e89e742de4f93c5ee22",
-    "g_file_studio/ui/pages/basic_page.py": "981a774c672c57597452e7a879a5c08161b5d45ad632a10fd74c9bfdb50d0743",
     "g_file_studio/ui/pages/frame_page.py": "c266336e38b8012b50695ecb03e1b210813ad229be54e2f3a1ba0c1f584f2c6b",
     "g_file_studio/ui/pages/id_page.py": "81a83751dbf172403ab7549ea04bd9b42c15b1af813da0378b95be058c83f030",
     "g_file_studio/ui/pages/margin_page.py": "b0c11e145ae7790ed9dadd09fd140a24188fde4704a646bfcdccfe1ef049450d",
@@ -81,7 +79,6 @@
     "g_file_studio/ui/widgets/basic_rules_editor.py": "20c8ab7c3d94174f6de13e7da4b1224968f2347ccb6ccc0319e199ef87a3d887",
     "g_file_studio/ui/widgets/color_rule_row.py": "885525c8b12841ee07fb88a25e67c699c6abfd9328ec749e924e51581a804611",
     "g_file_studio/ui/widgets/file_order_editor.py": "057b22601e3014e0b1449d57bcc2f7b91f428c0c075a209321ce207f9727e417",
-    "g_file_studio/ui/widgets/icon_upgrade_editor.py": "9aa7703f714f45d752e236ad83f031ba24ee60d5d19155f06f0e42b27d894f82",
     "g_file_studio/ui/widgets/input_source_selector.py": "74a5da293be7b1040c71568554b7c9a3bf7f2548d3c9fd8589efa9c054ea2f41",
     "g_file_studio/ui/widgets/integer_input.py": "0463607c9b41e46a7524c3c02dfa5ee8ccf9facaeb8807abfe7b924c84f8c0ec",
     "g_file_studio/ui/widgets/path_row.py": "a9599e46724da50310d3d304e7c55817bed8abb6038ef7700d0c02cec8424292",
@@ -114,16 +111,28 @@
       "reason": "User-approved RMU name fallback and exact exclusion filtering only."
     },
     "g_file_studio/models.py": {
-      "release_sha256": "21d426cc77cde8650355978e4ed16040e94221be8ce93de3c65b943634f303f5",
-      "reason": "Adds RMU name exclusion setting field only."
+      "release_sha256": "e85c099d28ba2e1d49d62abf94ab16d46eca6f9a455748aa5571db4973eef924",
+      "reason": "Preserves earlier approved RMU fields and adds only the user-approved explicit OLD→NEW symbol mapping field for Universal Symbol Upgrade."
     },
     "g_file_studio/processors/basic_processor.py": {
-      "release_sha256": "34a50638bd1a198d225d620e0d5c0fa62b613487db061a006f5d14ccc1fc7298",
-      "reason": "Passes RMU name exclusions to the shared RMU identification engine and adds bilingual report rendering only; processing decisions are unchanged."
+      "release_sha256": "5eaf3fbb75bc13159707c14b1b4a717d9e2851fecb13bf82c2766ad06b03fdde",
+      "reason": "User-approved v2.18.46 terminology boundary; processing algorithm unchanged, only same-class symbol version-upgrade labels/logs updated."
     },
     "g_file_studio/ui/pages/rmu_page.py": {
-      "release_sha256": "1031fa77e764f935eb7ef0431c4d332e6ffc76e65d07bdf2e7096215b795463c",
-      "reason": "Adds persisted bilingual RMU name exclusion input to RMU Processing UI only."
+      "release_sha256": "5455a823f80feae81729b359d2ae0a88da0f8962084dc939b50bdfa6ce03e872",
+      "reason": "Adds the user-approved standalone RMU-name-white checkbox and reuses the existing RMU name direction/exclusion controls."
+    },
+    "g_file_studio/engines/icon_upgrade_engine.py": {
+      "release_sha256": "26c095df189f171e64b6f3557242b2c55806ddc2c7ce0f6f5890e7a2dbe084cc",
+      "reason": "User-approved Universal Symbol Upgrade update: batch-safe smart OLD→NEW pairing plus centre-based 90/270-degree rectangular-symbol rotation, preserving real pin/ConnectLine alignment including the supplied external ground disconnector case."
+    },
+    "g_file_studio/ui/pages/basic_page.py": {
+      "release_sha256": "873e620174658f51b5275f1281925149085e996052d4a1ea69dbf73b4e85102e",
+      "reason": "User-approved v2.18.46 UI/terminology boundary: same-class OLD->NEW symbol version upgrade stays in Basic Processing; SMART/NORMAL type/variant mismatch is not called a version upgrade."
+    },
+    "g_file_studio/ui/widgets/icon_upgrade_editor.py": {
+      "release_sha256": "f44f8f8ab41635d78061c34a60b4f7626c122fc6f2a7fb07681ba6d53ad7c667",
+      "reason": "User-approved v2.18.46 UI/terminology boundary: same-class OLD->NEW symbol version upgrade stays in Basic Processing; SMART/NORMAL type/variant mismatch is not called a version upgrade."
     }
   },
   "approved_report_exceptions": {

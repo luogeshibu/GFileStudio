@@ -22,6 +22,8 @@ from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.services.run_history import cleanup_expired_runs
 from g_file_studio.i18n import LANG_EN, LANG_ZH, LanguageManager
 from g_file_studio.ui.pages import BasicPage, FramePage, HelpPage, IdPage, MarginPage, MergePage, RmuPage, SmallElementPage
+from g_file_studio.ui.pages.site_profile_page import SiteProfilePage
+from g_file_studio.ui.pages.jeddah_batch_page import JeddahBatchPage
 from g_file_studio.ui.theme import build_app_style
 
 
@@ -50,11 +52,13 @@ class MainWindow(QMainWindow):
         self.pages = [
             SmallElementPage(self.user_settings),
             IdPage(self.user_settings),
+            SiteProfilePage(self.user_settings),
             RmuPage(self.user_settings),
             BasicPage(self.user_settings),
             MergePage(self.user_settings),
             MarginPage(self.user_settings),
             FramePage(self.user_settings),
+            JeddahBatchPage(self.user_settings),
             HelpPage(),
         ]
         for page in self.pages:
@@ -132,11 +136,13 @@ class MainWindow(QMainWindow):
         navigation = [
             ("异常小尺寸图元检测", "检测 ConnectLine、FeedLine、Bus、BusDis 中 w/h 同时过小的疑似残留短线图元；通过首列勾选单选/多选/全选后统一执行处理"),
             ("ID 检查与修复", "全局 ID 规则中心：维护模板、扫描覆盖并强制修复格式异常或重复 ID"),
+            ("图元标准检查", "通用图元标准检查：按 ACTIVE 标准只读检查图元类型/变体、devref 与几何是否一致；发现差异只告警和出报告，不修改 G"),
             ("环网柜处理", "独立处理环网柜组合/取消组合、增强操作，以及柜名与柜型识别"),
-            ("基础处理", "执行通用属性、图元升级、馈线标题、连接点和线路/母线颜色处理；涉及 ID 时强制使用全局模板"),
+            ("基础处理", "执行通用属性、同类图元版本升级、馈线标题、连接点和线路/母线颜色处理；涉及 ID 时强制使用全局模板"),
             ("馈线图合并", "按用户选择顺序合并多个馈线 G 图"),
             ("图形边距调整", "调整主体四边距，并同步适配内置图框"),
             ("图框添加", "添加 SLD 外框、标题和签字栏"),
+            ("吉达馈线批处理", "Jeddah 专用：第一步彻底取消图形组合（删除全部 <Merge>、RMU 外框置底），再批量删除异常小元素、SMART/SMR 红框、SMART 图元校正 + SMR 智能清理/转换 + 转换后图元复检、RMU 柜名白色 + 字号50 + 上边框上方10居中、删除 RMU channel_status 红色状态点、Bus 外框清理、馈线名称上移、FeedLine 统一实线、删除 H.T、清理同柜重复 SMART、相邻 2000.00 + UPDATED_MEASURMENT 成对删除、ID 检查与修复、图形边距调整并添加图框"),
             ("帮助中心", "查看使用说明和目录建议"),
         ]
         for name, tip in navigation:
@@ -226,5 +232,6 @@ class MainWindow(QMainWindow):
     def _install_help_shortcut(self) -> None:
         action = QAction(self)
         action.setShortcut(QKeySequence.StandardKey.HelpContents)
-        action.triggered.connect(lambda: self.nav.setCurrentRow(7))
+        help_index = next((i for i, page in enumerate(self.pages) if isinstance(page, HelpPage)), 0)
+        action.triggered.connect(lambda: self.nav.setCurrentRow(help_index))
         self.addAction(action)
