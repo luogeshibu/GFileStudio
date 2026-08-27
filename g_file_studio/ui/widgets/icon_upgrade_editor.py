@@ -210,9 +210,17 @@ class IconUpgradeEditor(QWidget):
             return "—"
         try:
             definition = parse_icon_definition(path)
-            pin_text = ", ".join(
-                f"({x:g},{y:g})" for x, y in definition.pins
-            ) or "无"
+            pin_parts = []
+            for idx, ((x, y), pin_id) in enumerate(zip(definition.pins, definition.pin_ids)):
+                logical = definition.pin_indices[idx] if idx < len(definition.pin_indices) else ""
+                label = []
+                if logical:
+                    label.append(f"index={logical}")
+                if pin_id:
+                    label.append(f"id={pin_id}")
+                meta = (" " + "/".join(label)) if label else ""
+                pin_parts.append(f"({x:g},{y:g}){meta}")
+            pin_text = ", ".join(pin_parts) or "无"
             return (
                 f"XML={definition.element_tag}  |  Body ID={definition.element_id or '—'}  |  "
                 f"Size={definition.width:g}×{definition.height:g}  |  "

@@ -29,5 +29,5 @@ def test_all_managed_output_setting_keys_are_cleared():
 
 
 def test_release_version_is_v21849():
-    assert '__version__ = "2.18.52"' in Path('g_file_studio/__init__.py').read_text(encoding='utf-8')
-    assert 'version = "2.18.52"' in Path('pyproject.toml').read_text(encoding='utf-8')
+    assert '__version__ = "2.18.55"' in Path('g_file_studio/__init__.py').read_text(encoding='utf-8')
+    assert 'version = "2.18.55"' in Path('pyproject.toml').read_text(encoding='utf-8')

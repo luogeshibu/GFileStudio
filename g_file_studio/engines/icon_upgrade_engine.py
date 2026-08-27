@@ -23,6 +23,10 @@ class IconDefinition:
     align_center: tuple[float, float]
     pins: tuple[tuple[float, float], ...]
     pin_ids: tuple[str, ...]
+    # zenon pin ``id`` is a drawing-element identifier and may legitimately
+    # change between symbol-library versions. ``index`` is the stronger logical
+    # port identity when it is present and unique on both OLD and NEW symbols.
+    pin_indices: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -141,6 +145,7 @@ def parse_icon_definition(path: Path) -> IconDefinition:
     align = (float(match.group(1)), float(match.group(2)))
     pins = tuple((_float(pin.get("cx")), _float(pin.get("cy"))) for pin in pin_elements)
     pin_ids = tuple((pin.get("id") or "").strip() for pin in pin_elements)
+    pin_indices = tuple((pin.get("index") or "").strip() for pin in pin_elements)
     return IconDefinition(
         path=path,
         file_name=path.name,
@@ -151,6 +156,7 @@ def parse_icon_definition(path: Path) -> IconDefinition:
         align_center=align,
         pins=pins,
         pin_ids=pin_ids,
+        pin_indices=pin_indices,
     )
 
 
@@ -184,6 +190,67 @@ def _reference_name_from_file_name(file_name: str) -> str:
     return Path(file_name).stem
 
 
+def _pin_direction_signature(
+    pin: tuple[float, float],
+    align_center: tuple[float, float],
+    *,
+    epsilon: float = 1e-6,
+) -> str | None:
+    """Classify a pin by its direction from AlignCenter."""
+    dx = pin[0] - align_center[0]
+    dy = pin[1] - align_center[1]
+    if abs(dx) <= epsilon and abs(dy) <= epsilon:
+        return None
+    if abs(dx) <= epsilon:
+        return "S" if dy > 0 else "N"
+    if abs(dy) <= epsilon:
+        return "E" if dx > 0 else "W"
+    ratio = abs(dx / dy)
+    if ratio <= 0.41421356237:
+        return "S" if dy > 0 else "N"
+    if ratio >= 2.41421356237:
+        return "E" if dx > 0 else "W"
+    if dx > 0 and dy > 0:
+        return "SE"
+    if dx > 0 and dy < 0:
+        return "NE"
+    if dx < 0 and dy > 0:
+        return "SW"
+    return "NW"
+
+
+def _normalize_new_by_geometry(
+    old: IconDefinition,
+    new: IconDefinition,
+) -> IconDefinition | None:
+    """Reorder NEW pins to OLD order only when direction mapping is unique."""
+    if not old.pins or len(old.pins) != len(new.pins):
+        return None
+    old_signatures = tuple(_pin_direction_signature(pin, old.align_center) for pin in old.pins)
+    new_signatures = tuple(_pin_direction_signature(pin, new.align_center) for pin in new.pins)
+    if (
+        any(signature is None for signature in old_signatures)
+        or any(signature is None for signature in new_signatures)
+        or len(set(old_signatures)) != len(old_signatures)
+        or len(set(new_signatures)) != len(new_signatures)
+        or set(old_signatures) != set(new_signatures)
+    ):
+        return None
+    new_by_signature = {signature: pin for signature, pin in zip(new_signatures, new.pins)}
+    return IconDefinition(
+        path=new.path,
+        file_name=new.file_name,
+        element_tag=new.element_tag,
+        element_id=new.element_id,
+        width=new.width,
+        height=new.height,
+        align_center=new.align_center,
+        pins=tuple(new_by_signature[signature] for signature in old_signatures),
+        pin_ids=old.pin_ids,
+        pin_indices=old.pin_indices,
+    )
+
+
 def _normalize_pair(old: IconDefinition, new: IconDefinition) -> tuple[IconDefinition, list[str]]:
     reasons: list[str] = []
     if old.element_tag != new.element_tag:
@@ -199,15 +266,46 @@ def _normalize_pair(old: IconDefinition, new: IconDefinition) -> tuple[IconDefin
             path=new.path, file_name=new.file_name, element_tag=new.element_tag,
             element_id=new.element_id, width=new.width, height=new.height,
             align_center=new.align_center, pins=new.pins, pin_ids=old.pin_ids,
+            pin_indices=old.pin_indices,
         )
     elif old.pins:
-        if not all(old.pin_ids) or not all(new.pin_ids):
-            reasons.append("存在缺少 id 的 pin，无法可靠建立新旧端口对应")
-        elif len(set(old.pin_ids)) != len(old.pin_ids) or len(set(new.pin_ids)) != len(new.pin_ids):
-            reasons.append("pin id 存在重复，无法可靠建立端口对应")
-        elif set(old.pin_ids) != set(new.pin_ids):
-            reasons.append("新旧 pin id 集合不同，无法确认端口对应")
-        else:
+        # IMPORTANT: a pin's XML ``id`` is not necessarily its logical/electrical
+        # identity. Real zenon library revisions often renumber drawing element
+        # ids while keeping the electrical pin ``index`` stable. Prefer a complete,
+        # unique index mapping; only fall back to id when indices are unavailable.
+        old_indices_ok = (
+            len(old.pin_indices) == len(old.pins)
+            and all(old.pin_indices)
+            and len(set(old.pin_indices)) == len(old.pin_indices)
+        )
+        new_indices_ok = (
+            len(new.pin_indices) == len(new.pins)
+            and all(new.pin_indices)
+            and len(set(new.pin_indices)) == len(new.pin_indices)
+        )
+        if old_indices_ok and new_indices_ok and set(old.pin_indices) == set(new.pin_indices):
+            new_by_index = {
+                pin_index: pin for pin_index, pin in zip(new.pin_indices, new.pins)
+            }
+            normalized_new = IconDefinition(
+                path=new.path,
+                file_name=new.file_name,
+                element_tag=new.element_tag,
+                element_id=new.element_id,
+                width=new.width,
+                height=new.height,
+                align_center=new.align_center,
+                pins=tuple(new_by_index[pin_index] for pin_index in old.pin_indices),
+                pin_ids=old.pin_ids,
+                pin_indices=old.pin_indices,
+            )
+        elif (
+            all(old.pin_ids)
+            and all(new.pin_ids)
+            and len(set(old.pin_ids)) == len(old.pin_ids)
+            and len(set(new.pin_ids)) == len(new.pin_ids)
+            and set(old.pin_ids) == set(new.pin_ids)
+        ):
             new_by_id = {pin_id: pin for pin_id, pin in zip(new.pin_ids, new.pins)}
             normalized_new = IconDefinition(
                 path=new.path,
@@ -219,7 +317,28 @@ def _normalize_pair(old: IconDefinition, new: IconDefinition) -> tuple[IconDefin
                 align_center=new.align_center,
                 pins=tuple(new_by_id[pin_id] for pin_id in old.pin_ids),
                 pin_ids=old.pin_ids,
+                pin_indices=old.pin_indices,
             )
+        else:
+            geometry_normalized = _normalize_new_by_geometry(old, new)
+            if geometry_normalized is not None:
+                normalized_new = geometry_normalized
+            elif old_indices_ok and new_indices_ok:
+                reasons.append(
+                    "新旧 pin index 集合不同、pin id 也不能建立唯一对应，且按 AlignCenter 的端口几何方向仍有歧义，无法确认端口关系"
+                )
+            elif not all(old.pin_ids) or not all(new.pin_ids):
+                reasons.append(
+                    "pin index 不完整，且存在缺少 id 的 pin，无法可靠建立新旧端口对应"
+                )
+            elif len(set(old.pin_ids)) != len(old.pin_ids) or len(set(new.pin_ids)) != len(new.pin_ids):
+                reasons.append(
+                    "pin index 不能唯一对应，且 pin id 存在重复，无法可靠建立端口对应"
+                )
+            else:
+                reasons.append(
+                    "新旧 pin index/id 均无法建立唯一对应，无法确认端口关系"
+                )
     return normalized_new, reasons
 
 

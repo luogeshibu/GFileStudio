@@ -123,16 +123,16 @@
       "reason": "Adds the user-approved standalone RMU-name-white checkbox and reuses the existing RMU name direction/exclusion controls."
     },
     "g_file_studio/engines/icon_upgrade_engine.py": {
-      "release_sha256": "26c095df189f171e64b6f3557242b2c55806ddc2c7ce0f6f5890e7a2dbe084cc",
-      "reason": "User-approved Universal Symbol Upgrade update: batch-safe smart OLD→NEW pairing plus centre-based 90/270-degree rectangular-symbol rotation, preserving real pin/ConnectLine alignment including the supplied external ground disconnector case."
+      "release_sha256": "2acd10afa7657f16d57219af555d3df3edd21ea73cf86790fbda611b72830b70",
+      "reason": "User-approved same-class symbol version upgrade fix: keep zenon pin index as primary identity when stable, fall back to full pin id identity, then allow only a strict unique AlignCenter-relative geometry-direction mapping when both index and id were renumbered; ambiguous multi-pin geometry remains blocked."
     },
     "g_file_studio/ui/pages/basic_page.py": {
       "release_sha256": "873e620174658f51b5275f1281925149085e996052d4a1ea69dbf73b4e85102e",
       "reason": "User-approved v2.18.46 UI/terminology boundary: same-class OLD->NEW symbol version upgrade stays in Basic Processing; SMART/NORMAL type/variant mismatch is not called a version upgrade."
     },
     "g_file_studio/ui/widgets/icon_upgrade_editor.py": {
-      "release_sha256": "f44f8f8ab41635d78061c34a60b4f7626c122fc6f2a7fb07681ba6d53ad7c667",
-      "reason": "User-approved v2.18.46 UI/terminology boundary: same-class OLD->NEW symbol version upgrade stays in Basic Processing; SMART/NORMAL type/variant mismatch is not called a version upgrade."
+      "release_sha256": "10d1f518c381951685904861f8275ed3c05941ede3f0a78a39e601c482f76fbe",
+      "reason": "User-approved same-class symbol version upgrade UI fix: manual pairing preview now shows pin index/id so operators can verify logical port correspondence when element ids change across revisions."
     }
   },
   "approved_report_exceptions": {

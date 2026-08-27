@@ -725,6 +725,8 @@ def _mismatch_detail(
         "CurrentPosition": f"({before.get('x') or '?'}, {before.get('y') or '?'})",
         "ExpectedPosition": f"({after.get('x') or '?'}, {after.get('y') or '?'})",
         "ConnectedLines": _connected_line_ids_for_report(element) or "-",
+        "_AppliedDevrefChanged": bool(applied.devref_changed),
+        "_AppliedGeometryChanged": bool(applied.geometry_changed),
     }
 
 
@@ -740,6 +742,7 @@ def apply_smart_profile_to_tree(
     normal_ground_devref: str = "",
     profile_geometry_templates: dict[str, list[dict[str, object]]] | None = None,
     custom_symbols: list[dict[str, object]] | None = None,
+    require_template_for_connected_devref_change: bool = False,
 ) -> SmartProfileApplyResult:
     """Normalize SMART and, when configured, NORMAL RMU device symbols.
 
@@ -866,7 +869,12 @@ def apply_smart_profile_to_tree(
                 target,
                 elements=elements,
                 templates=geometry_templates,
+                require_template_for_connected_devref_change=require_template_for_connected_devref_change,
             )
+            if old_devref != target and require_template_for_connected_devref_change and not applied.devref_changed:
+                result.warnings.append(
+                    f"{file_path.name}: 元素 {element.get('id') or '<无ID>'} 连接到电气线路，但当前 ACTIVE 标准没有可安全拟合的目标 pin/几何模板；为避免图元错位，devref 与位置均保持不变。"
+                )
             detail = _mismatch_detail(
                 file_path=file_path,
                 element=element,
@@ -935,7 +943,12 @@ def apply_smart_profile_to_tree(
             target,
             elements=elements,
             templates=geometry_templates,
+            require_template_for_connected_devref_change=require_template_for_connected_devref_change,
         )
+        if old_devref != target and require_template_for_connected_devref_change and not applied.devref_changed:
+            result.warnings.append(
+                f"{file_path.name}: 自定义元素 {element.get('id') or '<无ID>'} 连接到电气线路，但当前 ACTIVE 标准没有可安全拟合的目标 pin/几何模板；为避免图元错位，devref 与位置均保持不变。"
+            )
         detail = _mismatch_detail(
             file_path=file_path,
             element=element,
@@ -970,6 +983,7 @@ def apply_smart_profile_to_file(
     normal_ground_devref: str = "",
     profile_geometry_templates: dict[str, list[dict[str, object]]] | None = None,
     custom_symbols: list[dict[str, object]] | None = None,
+    require_template_for_connected_devref_change: bool = False,
 ) -> SmartProfileApplyResult:
     source_path = Path(source_path)
     output_path = Path(output_path)
@@ -986,6 +1000,7 @@ def apply_smart_profile_to_file(
         normal_ground_devref=normal_ground_devref,
         profile_geometry_templates=profile_geometry_templates,
         custom_symbols=custom_symbols,
+        require_template_for_connected_devref_change=require_template_for_connected_devref_change,
     )
     if result.changed_count or result.geometry_adjusted_count:
         if hasattr(ET, "indent"):

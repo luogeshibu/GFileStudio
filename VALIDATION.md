@@ -2,6 +2,58 @@
 
 > 发布包统一验证文档。以后每个版本的验证结果都追加到本文件中，不再新增 `VALIDATION_v*.md`。最新版本位于最上方。
 
+
+## v2.18.55
+
+### 修改目标
+
+修复旧 `Circuit_Breaker_NON-SMART` 28×28 升级到新 `Circuit_Breaker_NO-SMART` 34×38 时，因 pin index 与 pin id 同时重编号而被误判“不兼容”的问题。
+
+### 实现
+
+- 端口映射顺序保持：唯一 index → 完整唯一 id → 严格几何方向 fallback。
+- 几何 fallback 以 `AlignCenter` 为原点，将 pin 分类到 8 个方向扇区，只在每个方向唯一且 OLD/NEW 方向集合完全一致时自动对应。
+- 真实 CB 建立 `TOP→TOP / BOTTOM→BOTTOM`，避免把部分重复的 XML id `18000003` 错当成同一电气端口。
+- 多 pin 同侧等几何歧义仍继续阻断。
+- 吉达批处理核心文件哈希保持不变。
+
+### 验证
+
+- 用户真实 OLD/NEW 图元：兼容分析 `valid=True`。
+- 用户真实主 G：25 个旧 NORMAL CB 可处理，50 条连接关系，0 skipped / 0 warnings。
+- 新增几何 fallback 与歧义阻断回归测试。
+- `python -m compileall -q g_file_studio app.py`：通过。
+- `pytest -q`：392 passed，2 skipped。
+
+
+## v2.18.54
+- 验证真实场景：旧 NORMAL CB pin ids 为 18000002/18000003，新 NO-SMART CB 为 18000003/18000004，但 pin index 均为 2/3，允许安全配对。
+- 验证新图元 XML pin 顺序反转时仍按 pin index 恢复逻辑顺序。
+- 验证 pin index 与 pin id 都无法对应时继续阻断。
+
+## v2.18.53
+
+### 修改目标
+
+在通用“图元标准检查”模块增加按 ACTIVE 标准生成安全纠正副本的能力，同时严格保持吉达馈线批处理 v2.18.52 流程不变。
+
+### 实现
+
+- 新增“纠正标准问题”按钮；检查与纠正两个动作明确分离。
+- 纠正结果只写入 workspace 本次运行目录的 `corrected` 子目录，不覆盖源 G。
+- ACTIVE 标准中的内置及自定义图元都复用 pin/ConnectLine 锚点保持算法。
+- 纠正后自动执行一次只读复查，报告剩余无法安全自动处理的问题。
+- 未纳入标准的新图元继续只进入待确认队列，不自动修改。
+- 吉达批处理 `batch_processor.py` 与 `jeddah_batch_page.py` 文件哈希保持与 v2.18.52 一致。
+
+### 验证
+
+- 新增任意自定义 `FuseDevice` 单 pin 图元回归：标准图元尺寸变化时，ConnectLine 端点保持不动，图元 x/y/w/h 正确反算。
+- 校验源 G 字节不变，纠正副本和自动复查报告正确生成。
+- `pytest -q`：386 passed，2 skipped。
+
+---
+
 ## v2.18.52
 
 ### 修改目标

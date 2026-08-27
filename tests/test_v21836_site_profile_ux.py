@@ -18,5 +18,6 @@ def test_site_profile_results_keep_report_and_anchor_safe_upgrade_language():
     source = Path("g_file_studio/ui/pages/site_profile_page.py").read_text(encoding="utf-8")
     assert 'QGroupBox("图元标准检查")' in source
     assert 'QPushButton("查看检查报告")' in source
-    assert "只检查和告警，不修改 G" in source
+    assert "检查图元标准”不修改 G" in source
+    assert 'self.correct_button = QPushButton("纠正标准问题")' in source
     assert "图元标准不一致" in source

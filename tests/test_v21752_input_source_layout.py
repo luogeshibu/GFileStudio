@@ -15,4 +15,4 @@ def test_path_row_expands_horizontally():
 
 
 def test_version_21752():
-    assert '__version__ = "2.18.52"' in Path('g_file_studio/__init__.py').read_text(encoding='utf-8')
+    assert '__version__ = "2.18.55"' in Path('g_file_studio/__init__.py').read_text(encoding='utf-8')

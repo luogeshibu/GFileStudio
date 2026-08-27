@@ -1,0 +1,32 @@
+<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><title>ID 检查与修复报告</title><style>body{font-family:Segoe UI,Microsoft YaHei,sans-serif;margin:24px;color:#1f2937}table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #d1d5db;padding:6px 8px;text-align:left;vertical-align:top}th{background:#e8f3ef;position:sticky;top:0}.ok{background:#edf9f2}.fixed{background:#fff7d6}.issue{background:#ffe1e1}.summary{margin:12px 0;padding:10px;background:#f3f7f5;border-left:4px solid #12815f}.report-select-col{width:46px;min-width:46px;text-align:center!important;position:sticky;left:0;z-index:3;}th.report-select-col{background:#dce9e4!important;}td.report-select-col{background:inherit;}.report-select{width:17px;height:17px;cursor:pointer;vertical-align:middle;}tr.report-row-selected td{outline:2px solid rgba(37,99,235,.35);outline-offset:-2px;}tr.report-row-selected td:not(.report-select-col){box-shadow:inset 0 0 0 9999px rgba(59,130,246,.10);}.report-selection-bar{display:flex;align-items:center;gap:12px;margin:10px 0;color:#475569;font-size:13px;}.report-selection-count{font-weight:600;color:#1d4ed8;}</style></head><body><h2>ID 检查与修复报告</h2><div class='summary'>生成时间：20260827_223550；记录数：1</div><div class="report-selection-bar"><span>查看辅助：可单选/多选行，勾选后整行高亮。</span><span class="report-selection-count" id="reportSelectionCount">已选择 0 行</span></div><table><thead><tr><th class="report-select-col" title="全选/取消全选"><input id="reportSelectAll" class="report-select" type="checkbox" aria-label="全选"></th><th>File</th><th>Category</th><th>ElementType</th><th>OriginalID</th><th>NewID</th><th>Detail</th></tr></thead><tbody><tr class='ok'><td class="report-select-col"><input class="report-select report-row-select" type="checkbox" aria-label="选择此行"></td><td>JED-NTH-ABH-12.sln.pic.g</td><td>正常</td><td></td><td></td><td></td><td>未发现模板格式异常或重复 ID</td></tr></tbody></table><script>
+(function(){
+  function updateCount(){
+    var checked=document.querySelectorAll('.report-row-select:checked').length;
+    var label=document.getElementById('reportSelectionCount');
+    if(label){label.textContent='已选择 '+checked+' 行';}
+    var all=document.getElementById('reportSelectAll');
+    var boxes=Array.from(document.querySelectorAll('.report-row-select'));
+    if(all){
+      all.checked=boxes.length>0 && checked===boxes.length;
+      all.indeterminate=checked>0 && checked<boxes.length;
+    }
+  }
+  function setRowState(box){
+    var row=box.closest('tr');
+    if(row){row.classList.toggle('report-row-selected', box.checked);}
+  }
+  document.querySelectorAll('.report-row-select').forEach(function(box){
+    box.addEventListener('change', function(){setRowState(box);updateCount();});
+  });
+  var all=document.getElementById('reportSelectAll');
+  if(all){
+    all.addEventListener('change', function(){
+      document.querySelectorAll('.report-row-select').forEach(function(box){
+        box.checked=all.checked; setRowState(box);
+      });
+      updateCount();
+    });
+  }
+  updateCount();
+})();
+</script></body></html>

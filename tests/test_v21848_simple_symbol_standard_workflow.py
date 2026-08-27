@@ -17,7 +17,8 @@ def test_symbol_standard_page_is_check_first_and_low_frequency_editor_is_collaps
     assert 'self.check_button = QPushButton("检查图元标准")' in source
     assert 'self.open_report_button = QPushButton("查看检查报告")' in source
     assert 'self.task.buttons_layout.insertWidget(0, self.check_button)' in source
-    assert 'self.task.buttons_layout.insertWidget(1, self.open_report_button)' in source
+    assert 'self.task.buttons_layout.insertWidget(1, self.correct_button)' in source
+    assert 'self.task.buttons_layout.insertWidget(2, self.open_report_button)' in source
     assert 'self.task.open_button.setText("打开结果目录")' in source
     assert 'self.editor_box.setVisible(False)' in source
     assert 'self.task.log_view.setVisible(False)' in source

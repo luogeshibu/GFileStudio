@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from g_file_studio.engines.smart_profile_engine import (
+    apply_smart_profile_to_file,
     apply_smart_profile_to_tree,
     collect_symbol_catalog_from_tree,
 )
@@ -550,4 +551,121 @@ def process_smart_profile_consistency(
             "New Unmapped Symbols": len(new_candidates),
             "Pending Unmapped Symbols": len(unmapped_candidates) - len(new_candidates),
         },
+    )
+
+
+
+def process_smart_profile_correction(
+    settings: SmartProfileProcessingSettings,
+    log: LogCallback = print,
+    progress: ProgressCallback | None = None,
+) -> ProcessingResult:
+    """Create corrected G copies from the current ACTIVE symbol standard.
+
+    This is the write-capable companion of :func:`process_smart_profile_consistency`.
+    It never overwrites the selected source G files.  Only symbols explicitly
+    covered by the ACTIVE standard (the six built-in RMU roles plus enabled custom
+    symbol rows) are normalized.  The shared anchor-preserving engine keeps
+    ConnectLine electrical endpoints fixed whenever a reliable geometry template
+    can be fitted; ambiguous mappings remain unchanged and are surfaced as warnings
+    by the engine/post-check instead of being guessed.
+
+    Jeddah batch processing does not call this function.  Its pipeline remains
+    independent and unchanged.
+    """
+    files = discover_g_inputs(settings.source_path, settings.input_mode)
+    if not files:
+        raise ValueError("没有找到可处理的 G 文件。")
+    profile = settings.profile.normalized()
+    if not profile.smart_lbs_devref or not profile.smart_breaker_devref:
+        raise ValueError("当前图元标准未配置完整的 SMART LBS / Circuit Breaker devref。")
+
+    output_root = Path(settings.output_dir)
+    corrected_dir = output_root / "corrected"
+    corrected_dir.mkdir(parents=True, exist_ok=True)
+
+    kwargs = dict(
+        smart_lbs_devref=profile.smart_lbs_devref,
+        smart_breaker_devref=profile.smart_breaker_devref,
+        normal_lbs_devref=profile.normal_lbs_devref,
+        normal_breaker_devref=profile.normal_breaker_devref,
+        smart_ground_devref=profile.smart_ground_devref,
+        normal_ground_devref=profile.normal_ground_devref,
+        profile_geometry_templates=profile.geometry_templates,
+        custom_symbols=profile.custom_symbols,
+        require_template_for_connected_devref_change=True,
+    )
+
+    log(
+        f"[图元标准纠正] 标准：{profile.profile_name} / 适用范围：{profile.site_name} / "
+        f"V{profile.profile_version}；源 G 只读，纠正副本输出到：{corrected_dir}"
+    )
+    log(
+        "[图元标准纠正] 仅处理 ACTIVE 标准已定义的图元。连接锚点可可靠拟合时，"
+        "保持 ConnectLine 绝对端点不动并反算图元 x/y/w/h；未纳入标准或无法可靠映射的图元不猜测。"
+    )
+
+    outputs: list[Path] = []
+    warnings: list[str] = []
+    changed_files = 0
+    corrected_elements = 0
+    devref_changes = 0
+    geometry_changes = 0
+    for index, source in enumerate(files, 1):
+        target = corrected_dir / source.name
+        applied = apply_smart_profile_to_file(source, target, **kwargs)
+        outputs.append(target)
+        warnings.extend(applied.warnings)
+        file_corrected = sum(
+            1 for row in applied.mismatch_details
+            if bool(row.get("_AppliedDevrefChanged")) or bool(row.get("_AppliedGeometryChanged"))
+        )
+        corrected_elements += file_corrected
+        devref_changes += applied.changed_count
+        geometry_changes += applied.geometry_adjusted_count
+        if applied.changed_count or applied.geometry_adjusted_count:
+            changed_files += 1
+        log(
+            f"[图元标准纠正] {source.name}：发现/处理 {file_corrected} 个标准差异；"
+            f"devref/变体纠正 {applied.changed_count}，连接锚点/几何纠正 {applied.geometry_adjusted_count}。"
+        )
+        if progress:
+            progress(round(index * 70 / max(1, len(files))))
+
+    # Always run a read-only post-check on the corrected copies.  The familiar
+    # detailed HTML/CSV report therefore describes what, if anything, remains after
+    # correction rather than forcing users to run the checker a second time.
+    post_dir = output_root / "post-check"
+    post_settings = SmartProfileProcessingSettings(
+        source_path=corrected_dir,
+        input_mode=InputMode.DIRECTORY,
+        output_dir=post_dir,
+        profile=profile,
+    )
+    post_result = process_smart_profile_consistency(
+        post_settings,
+        log=log,
+        progress=(lambda value: progress(70 + round(value * 0.30))) if progress else None,
+    )
+    outputs.extend(post_result.output_files)
+    warnings.extend(post_result.warnings)
+
+    stats = dict(post_result.statistics or {})
+    stats.update({
+        "Mode": "CORRECT",
+        "Corrected Output Directory": str(corrected_dir),
+        "Corrected Files": changed_files,
+        "Output G Files": len(files),
+        "Corrected Elements": corrected_elements,
+        "Devref Corrections": devref_changes,
+        "Geometry Corrections": geometry_changes,
+        "Remaining Nonstandard Symbols": int(stats.get("Nonstandard Symbols", 0) or 0),
+    })
+    if progress:
+        progress(100)
+    return ProcessingResult(
+        success=True,
+        output_files=outputs,
+        warnings=warnings,
+        statistics=stats,
     )

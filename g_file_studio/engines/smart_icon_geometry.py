@@ -223,6 +223,7 @@ def apply_devref_preserving_anchors(
     elements: list[ET.Element],
     templates: dict[tuple[str, int], list[SmartIconGeometryTemplate]] | None = None,
     max_fit_residual: float = 0.75,
+    require_template_for_connected_devref_change: bool = False,
 ) -> SmartIconApplyResult:
     """Replace a SMART icon while keeping its electrical connection points fixed.
 
@@ -231,9 +232,10 @@ def apply_devref_preserving_anchors(
     Therefore the connected ``ConnectLine`` endpoints stay at exactly the same
     absolute coordinates even when the target icon has different internal geometry.
 
-    When no safe geometry template can be learned, the function falls back to the
-    previous conservative behavior: only ``devref`` is changed and geometry remains
-    untouched.
+    When no safe geometry template can be learned, the default behavior remains
+    backward-compatible: only ``devref`` is changed and geometry stays untouched.
+    Callers that set ``require_template_for_connected_devref_change=True`` instead
+    keep both devref and geometry unchanged for connected electrical symbols.
     """
 
     old_devref = (element.get("devref") or "").strip()
@@ -271,6 +273,17 @@ def apply_devref_preserving_anchors(
         template_used = True
 
     devref_changed = old_devref != new_devref
+    # The generic Symbol Standard Correction action uses strict mode for connected
+    # electrical symbols: changing devref without a fitting target geometry template
+    # can visually detach the new icon from its fixed ConnectLine anchors.  Existing
+    # callers (including Jeddah batch) keep the historical fallback by default.
+    if (
+        devref_changed
+        and require_template_for_connected_devref_change
+        and anchors
+        and not template_used
+    ):
+        devref_changed = False
     if devref_changed:
         element.set("devref", new_devref)
     return SmartIconApplyResult(devref_changed, geometry_changed, template_used, residual_value)

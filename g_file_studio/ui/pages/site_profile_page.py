@@ -27,6 +27,7 @@ from g_file_studio.processors.common import discover_g_inputs
 from g_file_studio.processors.smart_profile_processor import (
     SmartProfileProcessingSettings,
     process_smart_profile_consistency,
+    process_smart_profile_correction,
 )
 from g_file_studio.services.paths import default_workspace
 from g_file_studio.services.run_history import begin_managed_run, configure_managed_output
@@ -42,11 +43,12 @@ from g_file_studio.workers import FunctionWorker
 
 
 class SiteProfilePage(BasePage):
-    """Generic, read-only symbol-standard inspection module.
+    """Generic symbol-standard inspection and safe-correction module.
 
     Existing SiteSmartProfile persistence is retained for backward compatibility.
-    This page only learns/version-controls standards and checks business G files.
-    It never upgrades, replaces, copies, or overwrites a source G file.
+    Checking is read-only. Correction is explicit and writes only managed workspace
+    copies; selected source G files are never overwritten. Same-class OLD→NEW icon
+    version upgrades remain in Basic Processing.
     """
 
     activeProfileChanged = Signal(str)
@@ -66,16 +68,17 @@ class SiteProfilePage(BasePage):
         help_title, help_html = APP_HELP["site_profile"]
         super().__init__(
             "图元标准检查",
-            "用标准 G 文件建立可复用图元标准，并只读检查所选 G 文件是否符合当前 ACTIVE 标准；发现差异只告警和生成报告，不修改 G。",
+            "用标准 G 文件建立可复用图元标准，检查所选 G 是否符合当前 ACTIVE 标准；需要时可生成按标准纠正后的 workspace 副本，源 G 不覆盖。",
             help_title,
             help_html,
             parent,
         )
         self.layout.addWidget(
             InfoBanner(
-                "这是通用图元标准检查模块，不绑定吉达或其他现场批处理。同一套 G 文件输入既可作为标准样本学习，也可作为待检查文件。"
-                "本模块始终只读：发现 SMART/NORMAL 变体、devref、w/h、AlignCenter 或 pin 几何与 ACTIVE 标准不一致时只告警并生成报告，绝不修改源 G。"
-                "同类图元的 OLD → NEW 版本升级统一在“基础处理 → 同类图元版本升级”执行。"
+                "这是通用图元标准检查与纠正模块，不绑定吉达或其他现场批处理。同一套 G 文件输入既可作为标准样本学习，也可作为待检查文件。"
+                "“检查图元标准”始终只读；“纠正标准问题”只对当前 ACTIVE 标准已定义的图元生成 workspace 纠正副本，源 G 永不覆盖。"
+                "带电气 pin 且与 ConnectLine 关系可可靠解析的标准图元，会保持连接线绝对端点不动并反算图元位置/尺寸；无法可靠映射时只告警不猜测。"
+                "同类图元的 OLD → NEW 版本升级仍统一在“基础处理 → 同类图元版本升级”执行；吉达批处理流程不受本模块新增纠正功能影响。"
             )
         )
 
@@ -303,7 +306,9 @@ class SiteProfilePage(BasePage):
         apply_layout.addWidget(self.current_profile_label)
 
         execute_note = QLabel(
-            "按当前 ACTIVE 标准检查图元类型/变体、devref 与几何。只检查和告警，不修改 G；同类 OLD → NEW 版本升级请到“基础处理”。"
+            "按当前 ACTIVE 标准检查图元类型/变体、devref 与连接锚点几何。“检查图元标准”不修改 G；"
+            "“纠正标准问题”会在 workspace/corrected 中生成纠正副本，并自动复查。仅处理标准中已定义的图元；"
+            "同类 OLD → NEW 图元版本升级仍请到“基础处理”。"
         )
         execute_note.setWordWrap(True)
         execute_note.setObjectName("mutedText")
@@ -333,17 +338,21 @@ class SiteProfilePage(BasePage):
         self.check_button = QPushButton("检查图元标准")
         self.check_button.clicked.connect(self._check_profile)
         self.task.buttons_layout.insertWidget(0, self.check_button)
+        self.correct_button = QPushButton("纠正标准问题")
+        set_secondary(self.correct_button)
+        self.correct_button.clicked.connect(self._correct_profile)
+        self.task.buttons_layout.insertWidget(1, self.correct_button)
         self.open_report_button = QPushButton("查看检查报告")
         set_secondary(self.open_report_button)
         self.open_report_button.setEnabled(False)
         self.open_report_button.clicked.connect(self._open_report)
-        self.task.buttons_layout.insertWidget(1, self.open_report_button)
+        self.task.buttons_layout.insertWidget(2, self.open_report_button)
         self.task.open_button.setText("打开结果目录")
         self.toggle_log_button = QPushButton("显示日志")
         set_secondary(self.toggle_log_button)
         self.toggle_log_button.setCheckable(True)
         self.toggle_log_button.toggled.connect(self._toggle_log)
-        self.task.buttons_layout.insertWidget(3, self.toggle_log_button)
+        self.task.buttons_layout.insertWidget(4, self.toggle_log_button)
         self.task.log_view.setVisible(False)
         self.task.clear_button.setVisible(False)
         self.task.resultReceived.connect(self._on_processing_result)
@@ -1487,9 +1496,22 @@ class SiteProfilePage(BasePage):
         self.activeProfileChanged.emit("")
 
     def _check_profile(self) -> None:
-        self._start_profile_run()
+        self._start_profile_run(correct=False)
 
-    def _start_profile_run(self) -> None:
+    def _correct_profile(self) -> None:
+        if QMessageBox.question(
+            self,
+            "确认纠正图元标准问题",
+            "将按当前 ACTIVE 图元标准纠正已定义图元的变体/devref，以及可可靠计算的 pin/ConnectLine 连接锚点位置。\n\n"
+            "源 G 文件不会覆盖；纠正后的 G 会写入本次 workspace 运行目录的 corrected 文件夹，并自动执行一次复查。\n"
+            "未纳入当前标准、连接关系不明确或无法可靠拟合的图元不会猜测修改。\n\n继续吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self._start_profile_run(correct=True)
+
+    def _start_profile_run(self, *, correct: bool = False) -> None:
         name, version, active = self._selected_profile_key()
         profile = self.service.load_profiles().get(name)
         if profile is None:
@@ -1507,15 +1529,20 @@ class SiteProfilePage(BasePage):
         self.source.persist_current()
         self._last_report_path = None
         self.open_report_button.setEnabled(False)
-        self.result_summary.setText("正在检查图元标准……源 G 文件不会修改。")
-        run_dir = begin_managed_run(self.output_path, "symbol-standard", "check")
+        self._last_run_mode = "CORRECT" if correct else "CHECK"
+        if correct:
+            self.result_summary.setText("正在按 ACTIVE 标准生成纠正副本……源 G 文件不会覆盖。")
+        else:
+            self.result_summary.setText("正在检查图元标准……源 G 文件不会修改。")
+        run_dir = begin_managed_run(self.output_path, "symbol-standard", "correct" if correct else "check")
         settings = SmartProfileProcessingSettings(
             source_path=self.source.path(),
             input_mode=self.source.mode(),
             output_dir=run_dir,
             profile=profile,
         )
-        self.task.start(lambda log, progress: process_smart_profile_consistency(settings, log, progress), run_dir)
+        processor = process_smart_profile_correction if correct else process_smart_profile_consistency
+        self.task.start(lambda log, progress: processor(settings, log, progress), run_dir)
 
     def _update_action_state(self) -> None:
         name, version, active = self._selected_profile_key()
@@ -1524,6 +1551,7 @@ class SiteProfilePage(BasePage):
         busy = busy_scan or self._task_busy
         ready = bool(profile and profile.smart_ready and active and version == profile.profile_version)
         self.check_button.setEnabled(ready and not busy)
+        self.correct_button.setEnabled(ready and not busy)
         # New profiles and ACTIVE profiles may be scanned. Archived rows are immutable.
         allow_scan = (not name) or bool(active and profile is not None)
         self.scan_action.setEnabled(allow_scan and not busy)
@@ -1560,32 +1588,62 @@ class SiteProfilePage(BasePage):
         stats = getattr(result, "statistics", {}) or {}
         discovered = stats.get("_UnmappedSymbolCandidates", [])
         discovery_rows = [dict(row) for row in discovered if isinstance(row, dict)] if isinstance(discovered, list) else []
+        mode = str(stats.get("Mode", getattr(self, "_last_run_mode", "CHECK")) or "CHECK").upper()
         bad = int(stats.get("Nonstandard Symbols", 0) or 0)
         if stats:
             new_unmapped = int(stats.get("New Unmapped Symbols", 0) or 0)
             pending_unmapped = int(stats.get("Pending Unmapped Symbols", 0) or 0)
             unmanaged = new_unmapped + pending_unmapped
-            if bad:
-                text = f"检查完成：发现 {bad} 个不符合当前标准的问题。"
+            if mode == "CORRECT":
+                corrected = int(stats.get("Corrected Elements", 0) or 0)
+                changed_files = int(stats.get("Corrected Files", 0) or 0)
+                geometry = int(stats.get("Geometry Corrections", 0) or 0)
+                text = (
+                    f"纠正完成：{changed_files} 个文件发生修改，共处理 {corrected} 个标准差异，"
+                    f"其中连接锚点/几何纠正 {geometry} 个；自动复查后剩余 {bad} 个不符合项。"
+                )
+                if unmanaged:
+                    text += f" 另有 {unmanaged} 种未纳入当前标准的图元未自动处理。"
+                text += " 源 G 未覆盖；纠正副本位于本次结果目录的 corrected 文件夹。"
             else:
-                text = "检查完成：已配置的图元标准全部通过。"
-            if unmanaged:
-                text += f" 另发现 {unmanaged} 种尚未纳入当前标准的图元（不计为错误），可在“待确认图元”中决定是否加入。"
-            text += " 源 G 未修改；详细原因请查看检查报告。"
+                if bad:
+                    text = f"检查完成：发现 {bad} 个不符合当前标准的问题。"
+                else:
+                    text = "检查完成：已配置的图元标准全部通过。"
+                if unmanaged:
+                    text += f" 另发现 {unmanaged} 种尚未纳入当前标准的图元（不计为错误），可在“待确认图元”中决定是否加入。"
+                text += " 源 G 未修改；详细原因请查看检查报告。"
             self.result_summary.setText(text)
-        if bad > 0:
+        if mode == "CORRECT":
+            if bad > 0:
+                QMessageBox.warning(
+                    self,
+                    "图元标准纠正完成（仍有待处理项）",
+                    f"已生成纠正副本，但自动复查后仍有 {bad} 个不符合项。\n\n"
+                    "这些通常属于未纳入标准、连接关系不明确或无法安全拟合的情况，程序不会猜测修改。"
+                    "请点击“查看检查报告”确认。源 G 文件未覆盖。",
+                )
+            else:
+                QMessageBox.information(
+                    self,
+                    "图元标准纠正完成",
+                    "已按当前 ACTIVE 标准生成纠正副本并完成自动复查，未发现剩余标准差异。\n"
+                    "源 G 文件未覆盖；请在本次结果目录的 corrected 文件夹中查看输出。",
+                )
+        elif bad > 0:
             QMessageBox.warning(
                 self,
                 "图元标准不一致",
                 f"检测到 {bad} 个图元/几何与当前 ACTIVE 标准不一致。\n\n"
-                "本模块只检查，不会修改 G。请点击“查看检查报告”确认具体图元、当前值、标准值和不符合原因。\n"
+                "检查模式不会修改 G。可先查看报告；如属于标准中已定义图元的变体/devref或连接锚点位置问题，"
+                "可使用“纠正标准问题”生成安全副本。\n"
                 "如果是同一设备图元的旧版本 → 新版本升级，请到“基础处理 → 同类图元版本升级”处理。",
             )
         else:
             QMessageBox.information(
                 self,
                 "图元标准检查完成",
-                "未发现图元类型/变体、devref 或几何与当前 ACTIVE 标准不一致；源 G 文件未修改。",
+                "未发现图元类型/变体、devref 或连接锚点几何与当前 ACTIVE 标准不一致；源 G 文件未修改。",
             )
         if discovery_rows:
             self._handle_discovered_symbols(discovery_rows)

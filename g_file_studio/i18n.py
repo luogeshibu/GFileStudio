@@ -1875,3 +1875,14 @@ EN.update({
     "正在检查图元标准……源 G 文件不会修改。": "Checking symbol standards... Source G files will not be modified.",
     "当前还没有检查报告，请先点击“检查图元标准”。": "No check report is available yet. Click Check Symbol Standard first.",
 })
+
+
+# v2.18.53 Symbol Standard safe correction (Jeddah batch unchanged).
+EN.update({
+    "纠正标准问题": "Correct Standard Issues",
+    "确认纠正图元标准问题": "Confirm Symbol Standard Correction",
+    "图元标准纠正完成": "Symbol Standard Correction Complete",
+    "图元标准纠正完成（仍有待处理项）": "Symbol Standard Correction Complete (Items Remain)",
+    "正在按 ACTIVE 标准生成纠正副本……源 G 文件不会覆盖。": "Creating corrected copies from the ACTIVE standard... Source G files will not be overwritten.",
+    "用标准 G 文件建立可复用图元标准，检查所选 G 是否符合当前 ACTIVE 标准；需要时可生成按标准纠正后的 workspace 副本，源 G 不覆盖。": "Build reusable symbol standards, check selected G files against the current ACTIVE standard, and optionally create corrected workspace copies without overwriting source G files.",
+})
