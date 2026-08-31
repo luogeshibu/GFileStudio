@@ -36,6 +36,7 @@ def test_user_approved_rmu_feature_exceptions_are_exactly_locked():
     exceptions = data.get("approved_feature_exceptions", {})
     expected = {
         "g_file_studio/engines/rmu_identification_engine.py",
+        "g_file_studio/engines/rmu_group_engine.py",
         "g_file_studio/engines/icon_upgrade_engine.py",
         "g_file_studio/models.py",
         "g_file_studio/processors/basic_processor.py",
@@ -63,3 +64,13 @@ def test_user_approved_report_i18n_exceptions_are_exactly_locked():
     for relative, meta in exceptions.items():
         actual = hashlib.sha256((root / relative).read_bytes()).hexdigest()
         assert actual == meta["release_sha256"], f"Approved report i18n exception changed unexpectedly: {relative}"
+
+def test_user_approved_infrastructure_exceptions_are_exactly_locked():
+    root = Path(__file__).resolve().parents[1]
+    data = json.loads((root / "config/golden_v21760_logic_sha256.json").read_text(encoding="utf-8"))
+    exceptions = data.get("approved_infrastructure_exceptions", {})
+    assert set(exceptions) == {"requirements.txt"}
+    for relative, meta in exceptions.items():
+        actual = hashlib.sha256((root / relative).read_bytes()).hexdigest()
+        assert actual == meta["release_sha256"], f"Approved infrastructure exception changed unexpectedly: {relative}"
+

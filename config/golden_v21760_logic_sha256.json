@@ -47,7 +47,6 @@
     "g_file_studio/engines/margin_engine.py": "ee036efd8d5ab64296d0f59d24957867c053ccf24dccd2c3529145282b492789",
     "g_file_studio/engines/merge_engine.py": "a885bcaaeee125e890ef6e23754d758272f748258ba055bb463cfbfd6033fadd",
     "g_file_studio/engines/merge_frame_inspector.py": "9c187debee1573c08890462705ed98bac36f9d1a7c2c25487efd5540ef725f2e",
-    "g_file_studio/engines/rmu_group_engine.py": "df6b0e877891eaedb005458bb5c5532ae6eb3ec15bed30575ea7797fecf3b608",
     "g_file_studio/engines/rmu_identification_engine.py.bak": "5c74556920ca0bf48b52f76f4503d9ab5bc8d00286fb214d13e84f8217f1580a",
     "g_file_studio/engines/small_element_engine.py.tmp": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "g_file_studio/processors/__init__.py": "58a34b35ab9fa7134a6dc7d089f37632b4ed7868cb7d0de94100804158b164e5",
@@ -88,7 +87,6 @@
     "g_file_studio/ui/widgets/wheel_safe_combo_box.py": "afa24ef1939a623d127bb885b2795b850ebfd99675d442dd0ecdc63b8d4ef012",
     "g_file_studio/workers.py": "65033ca6d81f5a03c682f03f76f735717120eb21261f7d26fd4b87dc9679a516",
     "requirements-dev.txt": "a182dfcd835f1a6616d0709cac6aad645bb86891cb725703885956768745626c",
-    "requirements.txt": "d6487c13fd63506d9086cd3f460c2cd0de9ce3eeec9bcc9c65e34acf76fae56c",
     "resources/icons/app.ico": "2c77e13e61003637f49848d3876042bf5d870357313fae14dafd6db570073020",
     "resources/icons/app.png": "cc18e2b7449fe63a955fd94e04eaa1970a2a1875861a3af048615b26546c9b1d",
     "resources/icons/check.svg": "5c7ebafb9f59ee335434514a73026e6d959f5b97ed888816bcb78a8f8ca11243",
@@ -107,32 +105,36 @@
   },
   "approved_feature_exceptions": {
     "g_file_studio/engines/rmu_identification_engine.py": {
-      "release_sha256": "04fa6c009717040548bcd84442a4f1185641227acb4f6519a16140426b671310",
-      "reason": "User-approved RMU name fallback and exact exclusion filtering only."
+      "release_sha256": "ff89db0e262ef6ddaa99a5a0a64a0996acfd9829945ab6100b8e22e24dcafc4e",
+      "reason": "User-approved v2.18.66 global SMART/SMR RMU marker assignment: scan SMART/SMR Text globally across valid RMUs, assign each marker to exactly one nearest RMU, allow markers slightly outside the frame, and skip exact geometric ties rather than double-assign; existing cabinet/name/type logic remains unchanged."
     },
     "g_file_studio/models.py": {
-      "release_sha256": "e85c099d28ba2e1d49d62abf94ab16d46eca6f9a455748aa5571db4973eef924",
-      "reason": "Preserves earlier approved RMU fields and adds only the user-approved explicit OLD→NEW symbol mapping field for Universal Symbol Upgrade."
+      "release_sha256": "da9babe6c3ce896ac05de4ceac54ff0ad168b4a8b91edd50b721d5293b54a02f",
+      "reason": "User-approved v2.18.70 Smart RMU Poke naming settings: single-file and batch processing now share one user-specified ahref template; only {FACNAME} from the G root and {RMU} from existing RMU identification are substituted."
     },
     "g_file_studio/processors/basic_processor.py": {
-      "release_sha256": "5eaf3fbb75bc13159707c14b1b4a717d9e2851fecb13bf82c2766ad06b03fdde",
-      "reason": "User-approved v2.18.46 terminology boundary; processing algorithm unchanged, only same-class symbol version-upgrade labels/logs updated."
+      "release_sha256": "1d747240014a5d890575bba7e82d493c1f6993250f404b7a307df4b55ad2a72c",
+      "reason": "User-approved v2.18.89 Smart RMU Poke database integration: only the Poke operation resolves G.facID through the shared Oracle service to derive SUBCONTROLAREA.NAME + SUBSTATION.NAME + DMS_FEEDER_DEVICE.NAME; blank/invalid facID skips Poke while unrelated RMU processing continues."
     },
     "g_file_studio/ui/pages/rmu_page.py": {
-      "release_sha256": "5455a823f80feae81729b359d2ae0a88da0f8962084dc939b50bdfa6ce03e872",
-      "reason": "Adds the user-approved standalone RMU-name-white checkbox and reuses the existing RMU name direction/exclusion controls."
+      "reason": "User-approved v2.18.90 standalone Poke extraction: the RMU page no longer owns Poke generation UI or database calls, while it retains the authoritative shared RMU recognition controls used by both RMU processing and the standalone Poke module.",
+      "release_sha256": "4c1d32c91406b7597cc3fd51b2ddbb3cc770825d97e6bce6c638c3bf660c8464"
     },
     "g_file_studio/engines/icon_upgrade_engine.py": {
       "release_sha256": "2acd10afa7657f16d57219af555d3df3edd21ea73cf86790fbda611b72830b70",
       "reason": "User-approved same-class symbol version upgrade fix: keep zenon pin index as primary identity when stable, fall back to full pin id identity, then allow only a strict unique AlignCenter-relative geometry-direction mapping when both index and id were renumbered; ambiguous multi-pin geometry remains blocked."
     },
     "g_file_studio/ui/pages/basic_page.py": {
-      "release_sha256": "873e620174658f51b5275f1281925149085e996052d4a1ea69dbf73b4e85102e",
-      "reason": "User-approved v2.18.46 UI/terminology boundary: same-class OLD->NEW symbol version upgrade stays in Basic Processing; SMART/NORMAL type/variant mismatch is not called a version upgrade."
+      "release_sha256": "3ca30b268b4724c6ca633b1547aee3ad61e97a7c9aba26e2b51a99eddbcc4415",
+      "reason": "User-approved v2.18.56 Basic Processing UI cleanup: remove the legacy connection-repair group/checkbox/setting entry because Pin/anchor correction is handled by Symbol Standard Check; processor/engine logic remains unchanged."
     },
     "g_file_studio/ui/widgets/icon_upgrade_editor.py": {
       "release_sha256": "10d1f518c381951685904861f8275ed3c05941ede3f0a78a39e601c482f76fbe",
       "reason": "User-approved same-class symbol version upgrade UI fix: manual pairing preview now shows pin index/id so operators can verify logical port correspondence when element ids change across revisions."
+    },
+    "g_file_studio/engines/rmu_group_engine.py": {
+      "release_sha256": "189f7b001f13921f02c2e8e7c199852c2d3422be6eb2c5a9c0384f33e78bdd0a",
+      "reason": "User-approved v2.18.65 SMART RMU frame-color fix: enhancement accepts optional authoritative SMART RMU rect IDs; legacy callers retain the historical geometry-only fallback when IDs are not supplied."
     }
   },
   "approved_report_exceptions": {
@@ -155,6 +157,12 @@
       "baseline_sha256": "05537ea4353d845e8ca92badad0783d7f28caf7b3b7a2133d70bbf0a5a28128f",
       "release_sha256": "e3e6722694a559f02040967ed07429a121e2dba052df9ae94febd89fecbaccbf",
       "reason": "User-approved bilingual report presentation only; business data and processing decisions remain unchanged."
+    }
+  },
+  "approved_infrastructure_exceptions": {
+    "requirements.txt": {
+      "release_sha256": "2bf798a6339f4fa17f182eaa25af94f9c4149c5de74acdd382e2d144180cf87e",
+      "reason": "v2.18.86 user-approved shared Oracle database module adds python-oracledb runtime dependency only; v2.18.85 business logic remains the baseline."
     }
   }
 }

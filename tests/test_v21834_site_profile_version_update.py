@@ -108,8 +108,9 @@ def test_site_profile_ui_has_wheel_safe_candidates_progress_and_active_versions(
     source = Path("g_file_studio/ui/pages/site_profile_page.py").read_text(encoding="utf-8")
     assert source.count("WheelSafeComboBox()") >= 4
     assert "self.scan_progress = QProgressBar()" in source
-    assert "scan_smart_profile_samples(files, progress=progress)" in source
+    assert "self.service.prepare_standard_file_records([path])" in source
+    assert "业务单线图不会参与 devref、尺寸、AlignCenter 或 pin 标准的生成" in source
     assert '"ACTIVE" if is_active else "ARCHIVED"' in source
     assert 'self.restore_action = self.profile_menu.addAction("恢复此版本")' in source
-    assert "_confirm_rescan_target" in source
+    assert "_confirm_rescan_target" not in source
     assert "图元几何（大小/端口）" in source

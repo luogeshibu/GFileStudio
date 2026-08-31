@@ -4,6 +4,7 @@ import os
 import shutil
 import xml.etree.ElementTree as ET
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -743,29 +744,39 @@ def apply_smart_profile_to_tree(
     profile_geometry_templates: dict[str, list[dict[str, object]]] | None = None,
     custom_symbols: list[dict[str, object]] | None = None,
     require_template_for_connected_devref_change: bool = False,
+    allow_source_geometry_fallback: bool = True,
+    progress: Callable[[int], None] | None = None,
 ) -> SmartProfileApplyResult:
     """Normalize SMART and, when configured, NORMAL RMU device symbols.
 
     SMART/NORMAL classification is based on explicit cabinet labels, not current
     devrefs.  SMR cabinets are skipped because their conversion is a site-specific
-    business rule (for example Jeddah batch processing).  Replacements reuse geometry
-    learned from both the current G file and the profile's standard sample files so
-    electrical ConnectLine anchor coordinates remain fixed.
+    business rule (for example Jeddah batch processing). When
+    ``allow_source_geometry_fallback`` is False, geometry comes only from the
+    authoritative uploaded standard and the inspected business G can never teach or
+    complete the standard.
     """
 
-    file_path = Path(file_path)
-    if not smart_lbs_devref.strip():
-        raise ValueError("SMART LBS devref 不能为空。")
-    if not smart_breaker_devref.strip():
-        raise ValueError("SMART Circuit Breaker devref 不能为空。")
+    last_progress = -1
 
+    def emit(value: int) -> None:
+        nonlocal last_progress
+        if progress is None:
+            return
+        value = max(0, min(100, int(value)))
+        if value != last_progress:
+            last_progress = value
+            progress(value)
+
+    emit(0)
+    file_path = Path(file_path)
     result = SmartProfileApplyResult(file_path=file_path)
     elements = direct_layer_elements(tree.getroot())
     rects = [element for element in elements if local_name(element.tag) == "rect"]
     smart_texts = _marker_texts(elements, "SMART")
     smr_texts = _marker_texts(elements, "SMR")
 
-    targets = {smart_lbs_devref, smart_breaker_devref}
+    targets = {value.strip() for value in (smart_lbs_devref, smart_breaker_devref) if value.strip()}
     if normal_lbs_devref.strip():
         targets.add(normal_lbs_devref.strip())
     if normal_breaker_devref.strip():
@@ -779,29 +790,42 @@ def apply_smart_profile_to_tree(
             target = str(rule.get("standard_devref", "")).strip()
             if target:
                 targets.add(target)
-    file_geometry_templates = build_geometry_templates(elements, targets)
     profile_templates = deserialize_geometry_templates(profile_geometry_templates or {})
-    # A saved Site Profile is the confirmed standard.  Prefer its geometry for each
-    # devref/rotation and only fall back to same-file geometry when that rotation was
-    # not learned.  This is critical when a vendor keeps the same devref name but
-    # changes icon width/height or electrical anchor offsets in a new Profile version.
-    geometry_templates = {}
-    for key in set(file_geometry_templates) | set(profile_templates):
-        geometry_templates[key] = list(profile_templates.get(key) or file_geometry_templates.get(key) or [])
+    if allow_source_geometry_fallback:
+        file_geometry_templates = build_geometry_templates(elements, targets)
+        # Compatibility path for site-specific/legacy callers. The dedicated symbol
+        # standard checker disables this fallback so business drawings never become
+        # an implicit geometry source.
+        geometry_templates = {}
+        for key in set(file_geometry_templates) | set(profile_templates):
+            geometry_templates[key] = list(profile_templates.get(key) or file_geometry_templates.get(key) or [])
+    else:
+        geometry_templates = {key: list(value) for key, value in profile_templates.items()}
 
+    emit(5)
     mismatch_counter: Counter = Counter()
+    # RMU identification is a protected baseline algorithm. It intentionally stays
+    # unchanged; the UI switches to an animated busy state if this exact phase takes
+    # long, then resumes determinate percentages as soon as identification returns.
     identification = identify_rmus(
         tree,
         file_path,
         name_positions=("top", "bottom", "left", "right"),
         smart_in_type=True,
     )
+    emit(30)
     result.scanned_rmu_count = len(identification.items)
     element_scope: dict[int, str] = {}
     element_rmu_name: dict[int, str] = {}
     element_rmu_rect_id: dict[int, str] = {}
     fixed_processed: set[int] = set()
-    for item in identification.items:
+    rmu_total = max(1, len(identification.items))
+    element_total = max(1, len(elements))
+    for item_index, item in enumerate(identification.items):
+        rmu_start = 30 + round(item_index * 52 / rmu_total)
+        rmu_end = 30 + round((item_index + 1) * 52 / rmu_total)
+        rmu_span = max(1, rmu_end - rmu_start)
+        emit(rmu_start)
         rect = _find_rect(rects, item)
         if rect is None:
             result.warnings.append(
@@ -817,48 +841,48 @@ def apply_smart_profile_to_tree(
         else:
             result.normal_rmu_count += 1
 
-        for scoped_element in elements:
+        for scoped_index, scoped_element in enumerate(elements, 1):
+            emit(rmu_start + round(rmu_span * 0.35 * scoped_index / element_total))
             if _center_inside(scoped_element, rect):
                 element_scope[id(scoped_element)] = cabinet_class
                 element_rmu_name[id(scoped_element)] = item.name or ""
                 element_rmu_rect_id[id(scoped_element)] = item.rect_id or ""
 
-        for element in elements:
+        for element_index, element in enumerate(elements, 1):
+            emit(rmu_start + round(rmu_span * (0.35 + 0.65 * element_index / element_total)))
             tag = local_name(element.tag)
             if tag not in {"CBreakerDis", "ZhaiWaiJieDiDaoZha"} or not _center_inside(element, rect):
                 continue
             old_devref = (element.get("devref") or "").strip()
             if tag == "ZhaiWaiJieDiDaoZha":
                 role = "GROUND"
-                if cabinet_class == "SMART":
-                    result.ground_checked_count += 1
-                    target = smart_ground_devref.strip()
-                else:
-                    result.normal_ground_checked_count += 1
-                    target = normal_ground_devref.strip()
-                # Historical profiles did not learn grounding-switch symbols.
+                target = smart_ground_devref.strip() if cabinet_class == "SMART" else normal_ground_devref.strip()
                 if not target:
                     continue
+                if cabinet_class == "SMART":
+                    result.ground_checked_count += 1
+                else:
+                    result.normal_ground_checked_count += 1
             else:
                 role = _device_role(element)
                 if role not in {"LBS", "BREAKER"}:
                     continue
                 if cabinet_class == "SMART":
-                    if role == "LBS":
-                        result.lbs_checked_count += 1
-                        target = smart_lbs_devref
-                    else:
-                        result.breaker_checked_count += 1
-                        target = smart_breaker_devref
-                else:
-                    if role == "LBS":
-                        result.normal_lbs_checked_count += 1
-                        target = normal_lbs_devref.strip()
-                    else:
-                        result.normal_breaker_checked_count += 1
-                        target = normal_breaker_devref.strip()
+                    target = smart_lbs_devref.strip() if role == "LBS" else smart_breaker_devref.strip()
                     if not target:
                         continue
+                    if role == "LBS":
+                        result.lbs_checked_count += 1
+                    else:
+                        result.breaker_checked_count += 1
+                else:
+                    target = normal_lbs_devref.strip() if role == "LBS" else normal_breaker_devref.strip()
+                    if not target:
+                        continue
+                    if role == "LBS":
+                        result.normal_lbs_checked_count += 1
+                    else:
+                        result.normal_breaker_checked_count += 1
 
             fixed_processed.add(id(element))
             before = _element_snapshot(element)
@@ -909,13 +933,15 @@ def apply_smart_profile_to_tree(
     # User-defined standards are evaluated after the protected built-in RMU rules.
     # A custom rule can target any XML element type, optionally limited to SMART or
     # NORMAL RMUs. Built-in elements already handled above are never double-mutated.
+    emit(82)
     enabled_custom = [
         dict(rule) for rule in (custom_symbols or [])
         if isinstance(rule, dict)
         and bool(rule.get("enabled", True))
         and str(rule.get("standard_devref", "")).strip()
     ]
-    for element in elements:
+    for custom_index, element in enumerate(elements, 1):
+        emit(82 + round(custom_index * 16 / element_total))
         if id(element) in fixed_processed:
             continue
         matches = [
@@ -968,6 +994,7 @@ def apply_smart_profile_to_tree(
             result.custom_changed_count += 1
 
     result.mismatch_counts = dict(mismatch_counter)
+    emit(100)
     return result
 
 
@@ -984,11 +1011,27 @@ def apply_smart_profile_to_file(
     profile_geometry_templates: dict[str, list[dict[str, object]]] | None = None,
     custom_symbols: list[dict[str, object]] | None = None,
     require_template_for_connected_devref_change: bool = False,
+    allow_source_geometry_fallback: bool = True,
+    progress: Callable[[int], None] | None = None,
 ) -> SmartProfileApplyResult:
+    last_progress = -1
+
+    def emit(value: int) -> None:
+        nonlocal last_progress
+        if progress is None:
+            return
+        value = max(0, min(100, int(value)))
+        if value != last_progress:
+            last_progress = value
+            progress(value)
+
+    emit(0)
     source_path = Path(source_path)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    emit(3)
     tree = ET.parse(source_path)
+    emit(8)
     result = apply_smart_profile_to_tree(
         tree,
         source_path,
@@ -1001,14 +1044,19 @@ def apply_smart_profile_to_file(
         profile_geometry_templates=profile_geometry_templates,
         custom_symbols=custom_symbols,
         require_template_for_connected_devref_change=require_template_for_connected_devref_change,
+        allow_source_geometry_fallback=allow_source_geometry_fallback,
+        progress=(lambda value: emit(8 + round(value * 0.84))) if progress else None,
     )
+    emit(92)
     if result.changed_count or result.geometry_adjusted_count:
         if hasattr(ET, "indent"):
             ET.indent(tree, space="    ")
         tmp = output_path.with_name(output_path.name + ".tmp")
         tree.write(tmp, encoding="utf-8", xml_declaration=True)
+        emit(96)
         ET.parse(tmp)
         os.replace(tmp, output_path)
     else:
         shutil.copy2(source_path, output_path)
+    emit(100)
     return result

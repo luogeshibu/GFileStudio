@@ -3,7 +3,6 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
-    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -22,9 +21,12 @@ from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.services.run_history import cleanup_expired_runs
 from g_file_studio.i18n import LANG_EN, LANG_ZH, LanguageManager
 from g_file_studio.ui.pages import BasicPage, FramePage, HelpPage, IdPage, MarginPage, MergePage, RmuPage, SmallElementPage
+from g_file_studio.ui.pages.poke_page import PokePage
+from g_file_studio.ui.pages.database_page import DatabasePage
 from g_file_studio.ui.pages.site_profile_page import SiteProfilePage
 from g_file_studio.ui.pages.jeddah_batch_page import JeddahBatchPage
 from g_file_studio.ui.theme import build_app_style
+from g_file_studio.ui.widgets import WheelSafeComboBox
 
 
 class MainWindow(QMainWindow):
@@ -53,10 +55,12 @@ class MainWindow(QMainWindow):
         self.site_profile_page = SiteProfilePage(self.user_settings)
         self.jeddah_batch_page = JeddahBatchPage(self.user_settings)
         self.pages = [
+            DatabasePage(self.user_settings),
             SmallElementPage(self.user_settings),
             IdPage(self.user_settings),
             self.site_profile_page,
             RmuPage(self.user_settings),
+            PokePage(self.user_settings),
             BasicPage(self.user_settings),
             MergePage(self.user_settings),
             MarginPage(self.user_settings),
@@ -107,6 +111,8 @@ class MainWindow(QMainWindow):
             "recent_paths/site_profile/output_directory",
             "rmu/output_directory",
             "recent_paths/rmu/output_directory",
+            "poke/output_directory",
+            "recent_paths/poke/output_directory",
             "basic/output_directory",
             "recent_paths/basic/output_directory",
             "merge/output_directory",
@@ -173,10 +179,12 @@ class MainWindow(QMainWindow):
         self.nav.setUniformItemSizes(True)
         self.nav.setResizeMode(QListView.ResizeMode.Fixed)
         navigation = [
+            ("数据库", "公共 Oracle 数据库连接配置与只读访问入口；后续需要数据库的业务模块统一复用该配置"),
             ("异常小尺寸图元检测", "检测 ConnectLine、FeedLine、Bus、BusDis 中 w/h 同时过小的疑似残留短线图元；通过首列勾选单选/多选/全选后统一执行处理"),
             ("ID 检查与修复", "全局 ID 规则中心：维护模板、扫描覆盖并强制修复格式异常或重复 ID"),
             ("图元标准检查", "通用图元标准检查与安全纠正：检查模式只读；纠正模式仅对 ACTIVE 标准已定义图元生成 workspace 副本，并保持可可靠解析的 ConnectLine 电气锚点不动"),
             ("环网柜处理", "独立处理环网柜组合/取消组合、增强操作，以及柜名与柜型识别"),
+            ("Poke 跳转处理", "独立生成/修复 RMU 与站点跳转 Poke；复用公共 RMU 识别、Oracle 数据库及站点 Poke 参考属性"),
             ("基础处理", "执行通用属性、同类图元版本升级、馈线标题、连接点和线路/母线颜色处理；涉及 ID 时强制使用全局模板"),
             ("馈线图合并", "按用户选择顺序合并多个馈线 G 图"),
             ("图形边距调整", "调整主体四边距，并同步适配内置图框"),
@@ -194,7 +202,7 @@ class MainWindow(QMainWindow):
         language_label.setObjectName("sidebarLanguageLabel")
         language_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.language_combo = QComboBox()
+        self.language_combo = WheelSafeComboBox()
         self.language_combo.setObjectName("languageSelector")
         self.language_combo.addItem("中文", LANG_ZH)
         self.language_combo.addItem("English", LANG_EN)

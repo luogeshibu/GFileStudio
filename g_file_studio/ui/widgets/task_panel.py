@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QThreadPool, QUrl, Signal
+from PySide6.QtCore import QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFrame,
@@ -33,6 +33,25 @@ class TaskPanel(QFrame):
         self._output_dir: Path | None = None
         self._raw_log_lines: list[str] = []
         self._show_result_dialogs = True
+        self._live_progress_enabled = False
+        self._task_running = False
+        self._progress_busy_active = False
+        self._last_progress_value = 0
+        self._progress_stall_timer = QTimer(self)
+        self._progress_stall_timer.setSingleShot(True)
+        self._progress_stall_timer.setInterval(900)
+        self._progress_stall_timer.timeout.connect(self._enter_progress_busy_state)
+        # Optional display-side smoothing. Worker progress remains authoritative,
+        # but high-frequency worker signals update only the target value so the
+        # QProgressBar is repainted at a stable cadence instead of flashing through
+        # queued values. This is opt-in because most legacy modules already have
+        # their own established progress behaviour.
+        self._smooth_progress_enabled = False
+        self._smooth_progress_target = 0
+        self._smooth_progress_display = 0
+        self._smooth_progress_timer = QTimer(self)
+        self._smooth_progress_timer.setInterval(30)
+        self._smooth_progress_timer.timeout.connect(self._advance_smooth_progress)
 
         self.run_button = QPushButton("开始执行")
         self.run_button.setToolTip("按照当前页面参数开始处理。处理会在后台线程中运行。")
@@ -93,6 +112,89 @@ class TaskPanel(QFrame):
         """Allow pages with domain-specific completion dialogs to suppress the generic popup."""
         self._show_result_dialogs = bool(enabled)
 
+    def set_smooth_progress_enabled(self, enabled: bool) -> None:
+        """Render determinate progress monotonically at a stable cadence.
+
+        The worker's percentage is still the source of truth.  Enabling this does
+        not invent progress and never lets the displayed value move backwards; it
+        only decouples frequent worker signals from QProgressBar repaints.
+        """
+        self._smooth_progress_enabled = bool(enabled)
+        self._smooth_progress_timer.stop()
+        current = max(0, min(100, int(self.progress.value())))
+        self._smooth_progress_display = current
+        self._smooth_progress_target = max(current, int(self._last_progress_value))
+        if self._smooth_progress_enabled and self._smooth_progress_target > current:
+            self._smooth_progress_timer.start()
+
+    def _advance_smooth_progress(self) -> None:
+        if not self._smooth_progress_enabled:
+            self._smooth_progress_timer.stop()
+            return
+        current = max(0, min(100, int(self._smooth_progress_display)))
+        target = max(current, min(100, int(self._smooth_progress_target)))
+        if current >= target:
+            self._smooth_progress_timer.stop()
+            return
+        # Move by only one or two percentage points per paint.  Large worker jumps
+        # therefore become a short, continuous rise instead of a burst/flicker,
+        # while small real-time updates still appear promptly.
+        delta = target - current
+        step = 2 if delta >= 18 else 1
+        current = min(target, current + step)
+        self._smooth_progress_display = current
+        self.progress.setValue(current)
+        if current >= target:
+            self._smooth_progress_timer.stop()
+
+    def set_live_progress_enabled(self, enabled: bool) -> None:
+        """Keep long background phases visibly alive without inventing fake percentages.
+
+        Worker callbacks remain authoritative. If a phase cannot expose an exact
+        percentage for ~0.9 s, the bar temporarily switches to Qt's animated busy
+        state. The next real callback restores the exact determinate percentage.
+        """
+        self._live_progress_enabled = bool(enabled)
+        if not self._live_progress_enabled:
+            self._progress_stall_timer.stop()
+            self._restore_determinate_progress()
+
+    def _restore_determinate_progress(self) -> None:
+        if self._progress_busy_active or self.progress.minimum() == 0 and self.progress.maximum() == 0:
+            self.progress.setRange(0, 100)
+        self._progress_busy_active = False
+        self.progress.setFormat("%p%")
+        value = self._smooth_progress_display if self._smooth_progress_enabled else self._last_progress_value
+        self.progress.setValue(max(0, min(100, int(value))))
+
+    def _enter_progress_busy_state(self) -> None:
+        if not self._live_progress_enabled or not self._task_running or self._last_progress_value >= 100:
+            return
+        self._progress_busy_active = True
+        self.progress.setRange(0, 0)
+        self.progress.setFormat("处理中…")
+
+    def _on_worker_progress(self, value: int) -> None:
+        value = max(0, min(100, int(value)))
+        # Progress is monotonic for a single task.  Ignore late/out-of-order queued
+        # signals rather than letting the bar jump backwards and visually flash.
+        value = max(int(self._last_progress_value), value)
+        self._last_progress_value = value
+        if self._progress_busy_active:
+            self.progress.setRange(0, 100)
+            self._progress_busy_active = False
+            self.progress.setFormat("%p%")
+        if self._smooth_progress_enabled:
+            self._smooth_progress_target = max(int(self._smooth_progress_target), value)
+            if self._smooth_progress_display < self._smooth_progress_target and not self._smooth_progress_timer.isActive():
+                self._smooth_progress_timer.start()
+        else:
+            self.progress.setValue(value)
+        if self._live_progress_enabled and self._task_running and value < 100:
+            self._progress_stall_timer.start()
+        else:
+            self._progress_stall_timer.stop()
+
     def log_view_clear(self) -> None:
         self._raw_log_lines.clear()
         self.log_view.clear()
@@ -120,6 +222,13 @@ class TaskPanel(QFrame):
 
     def start(self, function, output_dir: Path) -> None:
         self.log_view_clear()
+        self._task_running = True
+        self._last_progress_value = 0
+        self._progress_stall_timer.stop()
+        self._smooth_progress_timer.stop()
+        self._smooth_progress_target = 0
+        self._smooth_progress_display = 0
+        self._restore_determinate_progress()
         self.progress.setValue(0)
         self.run_button.setEnabled(False)
         self.open_button.setEnabled(False)
@@ -129,18 +238,23 @@ class TaskPanel(QFrame):
 
         worker = FunctionWorker(function)
         worker.signals.log.connect(self.append_log)
-        worker.signals.progress.connect(self.progress.setValue)
+        worker.signals.progress.connect(self._on_worker_progress)
         worker.signals.result.connect(self.on_result)
         worker.signals.error.connect(self.on_error)
         worker.signals.finished.connect(self.on_finished)
+        if self._live_progress_enabled:
+            self._progress_stall_timer.start()
         self.thread_pool.start(worker)
 
     def on_finished(self) -> None:
+        self._task_running = False
+        self._progress_stall_timer.stop()
+        self._restore_determinate_progress()
         self.run_button.setEnabled(True)
         self.busyChanged.emit(False)
 
     def on_result(self, result) -> None:
-        self.progress.setValue(100)
+        self._on_worker_progress(100)
         self.resultReceived.emit(result)
         self.append_log("\n处理完成。")
         for path in result.output_files:
@@ -169,6 +283,9 @@ class TaskPanel(QFrame):
                 )
 
     def on_error(self, traceback_text: str) -> None:
+        self._progress_stall_timer.stop()
+        self._smooth_progress_timer.stop()
+        self._restore_determinate_progress()
         if self._output_dir:
             update_run_status(self._output_dir, "FAILED", note=traceback_text.split("\n", 1)[0])
         self.open_button.setEnabled(bool(self._output_dir))

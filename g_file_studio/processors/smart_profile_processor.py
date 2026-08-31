@@ -10,11 +10,14 @@ from pathlib import Path
 from g_file_studio.engines.smart_profile_engine import (
     apply_smart_profile_to_file,
     apply_smart_profile_to_tree,
-    collect_symbol_catalog_from_tree,
 )
 from g_file_studio.models import InputMode, ProcessingResult
 from g_file_studio.processors.common import LogCallback, ProgressCallback, discover_g_inputs
-from g_file_studio.services.site_profile_service import SiteSmartProfile
+from g_file_studio.services.site_profile_service import (
+    SiteProfileService,
+    SiteSmartProfile,
+    authoritative_geometry_templates,
+)
 from g_file_studio.services.report_i18n import report_is_english
 
 
@@ -24,10 +27,13 @@ class SmartProfileProcessingSettings:
     input_mode: InputMode
     output_dir: Path
     profile: SiteSmartProfile
+    # UI execution sets this True. Default False keeps internal/API compatibility
+    # for legacy callers and unit fixtures created before authoritative standard files existed.
+    require_authoritative_standard: bool = False
 
 
 def _drift_candidates(counter: Counter[str], totals: dict[str, int]) -> list[str]:
-    """Return conservative re-learning hints; never auto-learn from processing files."""
+    """Return diagnostic mismatch-frequency hints; never use business G as standard input."""
     hints: list[str] = []
     for key, count in counter.most_common():
         try:
@@ -41,14 +47,19 @@ def _drift_candidates(counter: Counter[str], totals: dict[str, int]) -> list[str
     return hints
 
 
-def _check_only(source: Path, *, profile: SiteSmartProfile):
-    """Run the standard comparison against an in-memory tree only.
+def _check_only(
+    source: Path,
+    *,
+    profile: SiteSmartProfile,
+    progress: ProgressCallback | None = None,
+):
+    """Run a read-only comparison against the uploaded standard icon files only.
 
-    The Symbol Standard Check module is intentionally read-only.  The shared
-    profile engine still applies the expected devref/geometry to a temporary XML
-    tree so it can reuse the exact production comparison logic, but no G file is
-    ever written or copied by this processor.
+    The business drawing is never used to learn/fill the expected geometry. The
+    target devrefs come from role bindings and width/height/pin anchors come only
+    from the managed user-uploaded icon-definition G files.
     """
+    managed = bool(profile.managed_standard_files)
     kwargs = dict(
         smart_lbs_devref=profile.smart_lbs_devref,
         smart_breaker_devref=profile.smart_breaker_devref,
@@ -56,13 +67,24 @@ def _check_only(source: Path, *, profile: SiteSmartProfile):
         normal_breaker_devref=profile.normal_breaker_devref,
         smart_ground_devref=profile.smart_ground_devref,
         normal_ground_devref=profile.normal_ground_devref,
-        profile_geometry_templates=profile.geometry_templates,
+        profile_geometry_templates=(authoritative_geometry_templates(profile) if managed else profile.geometry_templates),
         custom_symbols=profile.custom_symbols,
+        allow_source_geometry_fallback=not managed,
     )
+    if progress:
+        progress(2)
     tree = ET.parse(source)
-    catalog = collect_symbol_catalog_from_tree(tree, source)
-    result = apply_smart_profile_to_tree(tree, source, **kwargs)
-    return result, catalog
+    if progress:
+        progress(8)
+    result = apply_smart_profile_to_tree(
+        tree,
+        source,
+        **kwargs,
+        progress=(lambda value: progress(8 + round(value * 0.92))) if progress else None,
+    )
+    if progress:
+        progress(100)
+    return result
 
 
 def _expected_devref(profile: SiteSmartProfile, scope: str, role: str) -> str:
@@ -95,25 +117,6 @@ def _expected_devref(profile: SiteSmartProfile, scope: str, role: str) -> str:
     return ""
 
 
-def _covered_devrefs(profile: SiteSmartProfile) -> set[str]:
-    covered = {
-        value.strip() for value in (
-            profile.smart_lbs_devref, profile.smart_breaker_devref, profile.smart_ground_devref,
-            profile.normal_lbs_devref, profile.normal_breaker_devref, profile.normal_ground_devref,
-        ) if str(value).strip()
-    }
-    for row in profile.custom_symbols:
-        if not bool(row.get("enabled", True)):
-            continue
-        target = str(row.get("standard_devref", "")).strip()
-        if target:
-            covered.add(target)
-        if str(row.get("match_attr", "")).strip() == "devref":
-            current = str(row.get("match_value", "")).strip()
-            if current:
-                covered.add(current)
-    return covered
-
 
 def process_smart_profile_consistency(
     settings: SmartProfileProcessingSettings,
@@ -124,19 +127,25 @@ def process_smart_profile_consistency(
     if not files:
         raise ValueError("没有找到可处理的 G 文件。")
     profile = settings.profile.normalized()
-    if not profile.smart_lbs_devref or not profile.smart_breaker_devref:
-        raise ValueError("当前图元标准未配置完整的 SMART LBS / Circuit Breaker devref。")
+    if settings.require_authoritative_standard:
+        standard_ready, standard_issues = SiteProfileService().validate_authoritative_standard(profile)
+        if not standard_ready:
+            raise ValueError(
+                "当前 ACTIVE 图元标准不是完整的用户上传标准库，不能执行检查：\n"
+                + "\n".join(standard_issues[:10])
+            )
 
     output_root = Path(settings.output_dir)
     report_dir = output_root / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
+    if progress:
+        progress(0)
 
     rows: list[dict[str, object]] = []
     detail_rows: list[dict[str, object]] = []
     warnings: list[str] = []
     outputs: list[Path] = []
     mismatch_counter: Counter[str] = Counter()
-    discovered_catalog: dict[str, dict[str, object]] = {}
     totals = {
         "files": len(files),
         "smart_rmus": 0,
@@ -160,7 +169,8 @@ def process_smart_profile_consistency(
     }
     log(
         f"[图元标准检查] 模式：只检查（只读，不修改 G）；标准：{profile.profile_name} / "
-        f"适用范围：{profile.site_name} / V{profile.profile_version}"
+        f"适用范围：{profile.site_name} / V{profile.profile_version} / "
+        f"标准指纹：{profile.standard_fingerprint or '-'}"
     )
     log(f"[图元标准检查] SMART LBS devref：{profile.smart_lbs_devref}")
     log(f"[图元标准检查] SMART Circuit Breaker devref：{profile.smart_breaker_devref}")
@@ -168,11 +178,18 @@ def process_smart_profile_consistency(
         log(f"[图元标准检查] NORMAL LBS devref：{profile.normal_lbs_devref}")
         log(f"[图元标准检查] NORMAL Circuit Breaker devref：{profile.normal_breaker_devref}")
     else:
-        log("[图元标准检查] NORMAL 图元尚未学习完整；普通 RMU 只统计，不参与该角色的一致性判定。")
+        log("[图元标准检查] NORMAL 标准尚未配置完整；普通 RMU 只统计，不参与该角色的一致性判定。")
     if profile.smart_ground_devref:
         log(f"[图元标准检查] SMART 接地刀闸 devref：{profile.smart_ground_devref}")
     if profile.normal_ground_devref:
         log(f"[图元标准检查] NORMAL 接地刀闸 devref：{profile.normal_ground_devref}")
+    if profile.managed_standard_files:
+        log(f"[图元标准检查] 权威标准图元文件：{len(profile.managed_standard_files)} 个（仅使用用户上传的持久化副本）")
+        for row in profile.managed_standard_files[:12]:
+            log(
+                f"  - {row.get('original_name') or '-'} | {row.get('devref') or '-'} | "
+                f"SHA256 {str(row.get('sha256') or '-')[:16]}"
+            )
     enabled_custom = [row for row in profile.custom_symbols if bool(row.get("enabled", True)) and str(row.get("standard_devref", "")).strip()]
     if enabled_custom:
         log(f"[图元标准检查] 自定义设备图元标准：{len(enabled_custom)} 项。")
@@ -182,20 +199,22 @@ def process_smart_profile_consistency(
                 f"{row.get('element_tag', '-')}: {row.get('standard_devref', '-')}"
             )
 
+    content_span = 82
+    file_total = max(1, len(files))
     for index, source in enumerate(files, 1):
-        result, file_catalog = _check_only(source, profile=profile)
+        file_start = round((index - 1) * content_span / file_total)
+        file_end = round(index * content_span / file_total)
+        file_span = max(1, file_end - file_start)
+        if progress:
+            progress(file_start)
+        result = _check_only(
+            source,
+            profile=profile,
+            progress=(
+                lambda value, start=file_start, span=file_span: progress(start + round(value * span / 100))
+            ) if progress else None,
+        )
         warnings.extend(result.warnings)
-        for devref, meta in file_catalog.items():
-            existing = dict(discovered_catalog.get(devref, {}))
-            count = int(existing.get("count", 0) or 0) + int(meta.get("count", 0) or 0)
-            for key, value in dict(meta).items():
-                if key == "count":
-                    continue
-                if value not in ("", None, [], 0, 0.0) or key not in existing:
-                    existing[key] = value
-            existing["devref"] = devref
-            existing["count"] = count
-            discovered_catalog[devref] = existing
         mismatch_counter.update(result.mismatch_counts)
         totals["smart_rmus"] += result.smart_rmu_count
         totals["normal_rmus"] += result.normal_rmu_count
@@ -278,8 +297,10 @@ def process_smart_profile_consistency(
             f"几何不符合 {result.geometry_adjusted_count}。"
         )
         if progress:
-            progress(round(index * 100 / max(1, len(files))))
+            progress(file_end)
 
+    if progress:
+        progress(83)
     role_totals = {
         "SMART:LBS": totals["lbs_checked"],
         "SMART:BREAKER": totals["breaker_checked"],
@@ -294,6 +315,8 @@ def process_smart_profile_consistency(
         for item in drift[:8]:
             log(f"[图元标准漂移] {item}")
 
+    if progress:
+        progress(85)
     csv_path = report_dir / "symbol-standard-check.csv"
     english = report_is_english()
     changed_word = "不符合"
@@ -330,6 +353,8 @@ def process_smart_profile_consistency(
         for row in rows:
             writer.writerow([row[key] for key in internal_headers])
 
+    if progress:
+        progress(89)
     detail_csv_path = report_dir / "symbol-standard-check-details.csv"
     detail_headers = [
         "File", "RMU", "RMURectID", "Scope", "Role", "ElementTag", "ElementID",
@@ -352,13 +377,22 @@ def process_smart_profile_consistency(
         for row in detail_rows:
             writer.writerow([row.get(key, "") for key in detail_headers])
 
+    if progress:
+        progress(92)
     html_path = report_dir / "symbol-standard-check.html"
+    standard_file_rows = []
+    for row in profile.managed_standard_files:
+        standard_file_rows.append(
+            f"{html.escape(str(row.get('original_name') or '-'))} | "
+            f"{html.escape(str(row.get('devref') or '-'))} | SHA256 {html.escape(str(row.get('sha256') or '-')[:16])}"
+        )
+    standard_files_html = "<br>".join(standard_file_rows) or "-"
 
     if english:
         report_title = "Symbol Standard Check Report"
         meta = (
             f"Standard: {html.escape(profile.profile_name)} | Scope: {html.escape(profile.site_name)} | "
-            f"Version: V{profile.profile_version} | Status: ACTIVE | Mode: CHECK ONLY (READ-ONLY)"
+            f"Version: V{profile.profile_version} | Status: ACTIVE | Standard Fingerprint: {html.escape(profile.standard_fingerprint or '-')} | Mode: CHECK ONLY (READ-ONLY)"
         )
         symbols = (
             f"SMART LBS: {html.escape(profile.smart_lbs_devref)}<br>SMART Breaker: {html.escape(profile.smart_breaker_devref)}"
@@ -366,6 +400,7 @@ def process_smart_profile_consistency(
             f"<br>NORMAL LBS: {html.escape(profile.normal_lbs_devref or '-')}<br>NORMAL Breaker: {html.escape(profile.normal_breaker_devref or '-')}"
             f"<br>NORMAL Ground: {html.escape(profile.normal_ground_devref or '-')}"
             f"<br>Custom Standards: {sum(1 for row in profile.custom_symbols if bool(row.get('enabled', True)))}"
+            f"<br><br><b>Uploaded Standard Files</b><br>{standard_files_html}"
         )
         labels = {
             "overview": "Overview", "files": "Files", "nonstd_files": "Non-standard Files",
@@ -379,7 +414,7 @@ def process_smart_profile_consistency(
         report_title = "图元标准检查报告"
         meta = (
             f"标准：{html.escape(profile.profile_name)} | 适用范围：{html.escape(profile.site_name)} | "
-            f"版本：V{profile.profile_version} | 状态：当前生效 | 模式：只检查（只读，不修改源 G）"
+            f"版本：V{profile.profile_version} | 状态：当前生效 | 标准指纹：{html.escape(profile.standard_fingerprint or '-')} | 模式：只检查（只读，不修改源 G）"
         )
         symbols = (
             f"SMART LBS：{html.escape(profile.smart_lbs_devref)}<br>SMART 断路器：{html.escape(profile.smart_breaker_devref)}"
@@ -387,6 +422,7 @@ def process_smart_profile_consistency(
             f"<br>普通 LBS：{html.escape(profile.normal_lbs_devref or '-')}<br>普通断路器：{html.escape(profile.normal_breaker_devref or '-')}"
             f"<br>普通接地刀闸：{html.escape(profile.normal_ground_devref or '-')}"
             f"<br>自定义设备标准：{sum(1 for row in profile.custom_symbols if bool(row.get('enabled', True)))} 项"
+            f"<br><br><b>用户上传的权威标准图元文件</b><br>{standard_files_html}"
         )
         labels = {
             "overview": "检查概览", "files": "检查文件", "nonstd_files": "存在问题文件",
@@ -454,8 +490,8 @@ def process_smart_profile_consistency(
     if drift:
         title = "Standard Drift Candidates" if english else "图元标准漂移候选"
         note = (
-            "Re-scan confirmed standard samples before updating the standard. Target files are never auto-learned."
-            if english else "如这些图元属于新的确认标准，请先使用标准 G 文件重新扫描；待检查文件不会被自动学习。"
+            "If the project standard has changed, upload the authoritative icon G for that role. Business drawings are never learned or promoted into the standard."
+            if english else "如项目标准已变化，请在对应设备角色中重新上传权威图元 G；业务单线图永远不会被学习或提升为标准。"
         )
         drift_html = f"<section><h3>{title}</h3><ul>" + "".join(
             f"<li>{html.escape(item)}</li>" for item in drift
@@ -471,6 +507,8 @@ def process_smart_profile_consistency(
         if details_html else f"<div class='empty'>{labels['no_issue']}</div>"
     )
 
+    if progress:
+        progress(96)
     html_path.write_text(
         f"<!doctype html><html><head><meta charset='utf-8'><title>{html.escape(report_title)}</title>"
         "<style>"
@@ -504,26 +542,13 @@ def process_smart_profile_consistency(
         encoding="utf-8",
     )
     outputs.extend([csv_path, detail_csv_path, html_path])
+    if progress:
+        progress(100)
     nonstandard_total = len(detail_rows)
-    covered_devrefs = _covered_devrefs(profile)
-    ignored_devrefs = {
-        devref for devref, state in profile.discovery_decisions.items()
-        if str(state).strip().lower() == "ignored"
-    }
-    mismatch_current_devrefs = {
-        str(row.get("CurrentDevref", "")).strip() for row in detail_rows
-        if str(row.get("CurrentDevref", "")).strip()
-    }
-    unmapped_candidates = [
-        dict(meta) for devref, meta in sorted(discovered_catalog.items(), key=lambda row: row[0].casefold())
-        if devref not in covered_devrefs
-        and devref not in ignored_devrefs
-        and devref not in mismatch_current_devrefs
-    ]
-    new_candidates = [
-        row for row in unmapped_candidates
-        if str(profile.discovery_decisions.get(str(row.get("devref", "")), "")).strip().lower() != "pending"
-    ]
+    # Business drawings are inspection targets only. v2.18.79 deliberately does
+    # not build/persist an unmapped-symbol catalog from them; new standards must be
+    # added by explicitly uploading an authoritative icon G in the standard table.
+    unmanaged_symbol_count = 0
     return ProcessingResult(
         success=True,
         output_files=outputs,
@@ -532,6 +557,7 @@ def process_smart_profile_consistency(
             "Mode": "CHECK",
             "Profile": profile.profile_name,
             "Profile Version": profile.profile_version,
+            "Standard Fingerprint": profile.standard_fingerprint,
             "Site": profile.site_name,
             "SMART RMUs": totals["smart_rmus"],
             "NORMAL RMUs": totals["normal_rmus"],
@@ -547,9 +573,10 @@ def process_smart_profile_consistency(
             "Geometry Adjusted": totals["geometry_adjusted"],
             "Nonstandard Symbols": nonstandard_total,
             "Profile Drift Candidates": len(drift),
-            "_UnmappedSymbolCandidates": unmapped_candidates,
-            "New Unmapped Symbols": len(new_candidates),
-            "Pending Unmapped Symbols": len(unmapped_candidates) - len(new_candidates),
+            "Unmanaged Symbols": unmanaged_symbol_count,
+            "_UnmappedSymbolCandidates": [],
+            "New Unmapped Symbols": 0,
+            "Pending Unmapped Symbols": 0,
         },
     )
 
@@ -577,13 +604,21 @@ def process_smart_profile_correction(
     if not files:
         raise ValueError("没有找到可处理的 G 文件。")
     profile = settings.profile.normalized()
-    if not profile.smart_lbs_devref or not profile.smart_breaker_devref:
-        raise ValueError("当前图元标准未配置完整的 SMART LBS / Circuit Breaker devref。")
+    if settings.require_authoritative_standard:
+        standard_ready, standard_issues = SiteProfileService().validate_authoritative_standard(profile)
+        if not standard_ready:
+            raise ValueError(
+                "当前 ACTIVE 图元标准不是完整的用户上传标准库，不能执行检查：\n"
+                + "\n".join(standard_issues[:10])
+            )
 
     output_root = Path(settings.output_dir)
     corrected_dir = output_root / "corrected"
     corrected_dir.mkdir(parents=True, exist_ok=True)
+    if progress:
+        progress(0)
 
+    managed = bool(profile.managed_standard_files)
     kwargs = dict(
         smart_lbs_devref=profile.smart_lbs_devref,
         smart_breaker_devref=profile.smart_breaker_devref,
@@ -591,14 +626,16 @@ def process_smart_profile_correction(
         normal_breaker_devref=profile.normal_breaker_devref,
         smart_ground_devref=profile.smart_ground_devref,
         normal_ground_devref=profile.normal_ground_devref,
-        profile_geometry_templates=profile.geometry_templates,
+        profile_geometry_templates=(authoritative_geometry_templates(profile) if managed else profile.geometry_templates),
         custom_symbols=profile.custom_symbols,
         require_template_for_connected_devref_change=True,
+        allow_source_geometry_fallback=not managed,
     )
 
     log(
         f"[图元标准纠正] 标准：{profile.profile_name} / 适用范围：{profile.site_name} / "
-        f"V{profile.profile_version}；源 G 只读，纠正副本输出到：{corrected_dir}"
+        f"V{profile.profile_version} / 标准指纹：{profile.standard_fingerprint or '-'}；"
+        f"源 G 只读，纠正副本输出到：{corrected_dir}"
     )
     log(
         "[图元标准纠正] 仅处理 ACTIVE 标准已定义的图元。连接锚点可可靠拟合时，"
@@ -611,9 +648,23 @@ def process_smart_profile_correction(
     corrected_elements = 0
     devref_changes = 0
     geometry_changes = 0
+    correction_span = 62
+    file_total = max(1, len(files))
     for index, source in enumerate(files, 1):
+        file_start = round((index - 1) * correction_span / file_total)
+        file_end = round(index * correction_span / file_total)
+        file_span = max(1, file_end - file_start)
+        if progress:
+            progress(file_start)
         target = corrected_dir / source.name
-        applied = apply_smart_profile_to_file(source, target, **kwargs)
+        applied = apply_smart_profile_to_file(
+            source,
+            target,
+            **kwargs,
+            progress=(
+                lambda value, start=file_start, span=file_span: progress(start + round(value * span / 100))
+            ) if progress else None,
+        )
         outputs.append(target)
         warnings.extend(applied.warnings)
         file_corrected = sum(
@@ -630,8 +681,10 @@ def process_smart_profile_correction(
             f"devref/变体纠正 {applied.changed_count}，连接锚点/几何纠正 {applied.geometry_adjusted_count}。"
         )
         if progress:
-            progress(round(index * 70 / max(1, len(files))))
+            progress(file_end)
 
+    if progress:
+        progress(62)
     # Always run a read-only post-check on the corrected copies.  The familiar
     # detailed HTML/CSV report therefore describes what, if anything, remains after
     # correction rather than forcing users to run the checker a second time.
@@ -645,7 +698,7 @@ def process_smart_profile_correction(
     post_result = process_smart_profile_consistency(
         post_settings,
         log=log,
-        progress=(lambda value: progress(70 + round(value * 0.30))) if progress else None,
+        progress=(lambda value: progress(62 + round(value * 0.37))) if progress else None,
     )
     outputs.extend(post_result.output_files)
     warnings.extend(post_result.warnings)

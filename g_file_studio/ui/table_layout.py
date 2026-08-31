@@ -43,10 +43,10 @@ _DENSE_TABLE_PROFILES: tuple[_DenseTableProfile, ...] = (
         minimum_row_height=38,
     ),
     _DenseTableProfile(
-        headers=("范围", "设备角色", "XML 元素", "标准图元 devref", "主体 ID", "w×h", "AlignCenter", "Pins", "匹配属性", "当前/旧图元匹配值", "置信度", "状态"),
-        minimum_widths=(90, 145, 170, 420, 180, 90, 120, 230, 120, 300, 90, 100),
-        maximum_widths=(110, 220, 260, 720, 300, 120, 170, 420, 150, 560, 110, 130),
-        minimum_row_height=46,
+        headers=("检查范围", "设备角色", "XML 元素", "标准图元文件", "主体 ID", "w×h", "AlignCenter", "Pins", "匹配属性", "当前/旧图元匹配值", "标准来源", "状态"),
+        minimum_widths=(92, 138, 168, 300, 210, 82, 112, 210, 110, 240, 96, 132),
+        maximum_widths=(118, 200, 245, 430, 320, 108, 155, 360, 145, 430, 125, 190),
+        minimum_row_height=40,
     ),
 )
 

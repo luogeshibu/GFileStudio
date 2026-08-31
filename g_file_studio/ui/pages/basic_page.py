@@ -58,9 +58,9 @@ class BasicPage(BasePage):
         self.layout.addWidget(
             InfoBanner(
                 "输入可以是单个 G 文件，也可以是 G 文件目录。属性替换、元素删除、"
-                "馈线名称定位、连接点修复、同类图元版本升级以及线路与母线样式修改，"
-                "都在点击“开始基础处理”后统一执行。ID 检查/修复已移到全局“ID 检查与修复”模块。连接点修复仅在勾选时处理 node_area/link；"
-                "未勾选时完全跳过。目录模式下每个文件独立处理。"
+                "馈线名称定位、同类图元版本升级以及线路与母线样式修改，"
+                "都在点击“开始基础处理”后统一执行。ID 检查/修复已移到全局“ID 检查与修复”模块。"
+                "图元及电气 Pin 的标准检查/纠正统一在“图元标准检查”模块执行。目录模式下每个文件独立处理。"
             )
         )
 
@@ -113,7 +113,6 @@ class BasicPage(BasePage):
         self._build_color_options()
         self._build_feeder_title_options()
         self._build_icon_upgrade_options()
-        self._build_connection_repair()
         self._restore_options()
 
         self.task = TaskPanel()
@@ -421,30 +420,6 @@ class BasicPage(BasePage):
         layout.addWidget(self.icon_upgrade_editor)
         self.layout.addWidget(box)
 
-    def _build_connection_repair(self) -> None:
-        box = QGroupBox("连接点修复")
-        layout = QVBoxLayout(box)
-        layout.setContentsMargins(16, 18, 16, 14)
-        layout.setSpacing(10)
-
-        description = QLabel(
-            "用于修复图形中未对齐、缺失或不完整的绿色连接点。程序采用保守增量模式："
-            "原有连接和端口编号一律保留；仅对已验证的半像素设备沿 X 方向吸附到整数网格，"
-            "不修改任何连接线坐标；随后只补齐缺失的 node_area 和 link。无法唯一判断时跳过，"
-            "不会修改设备 Y、ID、文字、颜色、图标、Merge、画布或其他业务属性。"
-        )
-        description.setWordWrap(True)
-        description.setObjectName("mutedText")
-        layout.addWidget(description)
-
-        self.repair_connection_points = QCheckBox("修复连接点（补齐 node_area / link）")
-        self.repair_connection_points.setProperty("optionChoice", True)
-        self.repair_connection_points.setToolTip(
-            "勾选后随“开始基础处理”执行保守连接修复；不勾选时完全跳过。原有连接不会被删除或改号。"
-        )
-        layout.addWidget(self.repair_connection_points)
-        self.layout.addWidget(box)
-
     def _restore_options(self) -> None:
         self.remove_all_graphic_merges.setChecked(
             self.user_settings.get_bool("basic/remove_all_graphic_merges", False)
@@ -456,9 +431,6 @@ class BasicPage(BasePage):
             self.user_settings.get_bool("basic/upgrade_icon_geometry", False)
         )
         self.icon_upgrade_editor.setEnabled(self.upgrade_icon_geometry.isChecked())
-        self.repair_connection_points.setChecked(
-            self.user_settings.get_bool("basic/repair_connection_points", False)
-        )
 
         color_rows = {
             "feedline": self.feedline_color,
@@ -490,9 +462,6 @@ class BasicPage(BasePage):
         )
         self.user_settings.set_value(
             "basic/upgrade_icon_geometry", self.upgrade_icon_geometry.isChecked()
-        )
-        self.user_settings.set_value(
-            "basic/repair_connection_points", self.repair_connection_points.isChecked()
         )
         color_rows = {
             "feedline": self.feedline_color,
@@ -548,7 +517,6 @@ class BasicPage(BasePage):
                 "old_icon_files": self.icon_upgrade_editor.old_paths(),
                 "new_icon_files": self.icon_upgrade_editor.new_paths(),
                 "icon_upgrade_pairs": self.icon_upgrade_editor.pairs(),
-                "repair_connection_points": self.repair_connection_points.isChecked(),
                 "move_feeder_titles_above_bus": self.move_feeder_titles_above_bus.isChecked(),
                 "remove_all_graphic_merges": self.remove_all_graphic_merges.isChecked(),
                 "lower_rmu_rects_after_merge_cleanup": True,

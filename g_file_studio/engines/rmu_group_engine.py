@@ -413,8 +413,17 @@ def _make_merge_element(
     return merge
 
 
-def _validate_rebuilt_rmu_groups(layer: ET.Element) -> None:
-    """验证本程序重建后的标准环网柜 Merge。"""
+def _validate_rebuilt_rmu_groups(
+    layer: ET.Element,
+    *,
+    expected_rect_ids: set[int] | None = None,
+) -> None:
+    """验证本程序重建后的标准环网柜 Merge。
+
+    ``expected_rect_ids`` 仅用于独立 RMU 页面“严格柜体模式”：图框标题栏、信息栏
+    等辅助 rect 允许继续作为普通图元留在 Layer 中，不要求它们必须拥有 Merge。
+    默认 ``None`` 保持历史行为，仍要求全部直属 rect 被组合。
+    """
     children = list(layer)
     rect_membership: dict[int, str] = {}
 
@@ -427,6 +436,8 @@ def _validate_rebuilt_rmu_groups(layer: ET.Element) -> None:
         rects = []
         for rect in children:
             if local_name(rect.tag) != "rect":
+                continue
+            if expected_rect_ids is not None and id(rect) not in expected_rect_ids:
                 continue
             rect_box = subtree_box(rect)
             if rect_box is not None and _is_rmu_relation(rect_box, merge_box):
@@ -480,10 +491,13 @@ def _validate_rebuilt_rmu_groups(layer: ET.Element) -> None:
                     f"<{local_name(member.tag)}> ID {member.get('id', '') or '<无ID>'}。"
                 )
 
-    all_rects = [element for element in children if local_name(element.tag) == "rect"]
-    if len(rect_membership) != len(all_rects):
+    if expected_rect_ids is None:
+        expected_count = len([element for element in children if local_name(element.tag) == "rect"])
+    else:
+        expected_count = len(expected_rect_ids)
+    if len(rect_membership) != expected_count:
         raise RmuGroupingError(
-            f"环网柜组合验证失败：rect 共 {len(all_rects)} 个，已组合 {len(rect_membership)} 个。"
+            f"环网柜组合验证失败：应组合 RMU rect {expected_count} 个，已组合 {len(rect_membership)} 个。"
         )
 
 
@@ -506,7 +520,13 @@ def _best_existing_merge_for_rect(
     return matches[0][2]
 
 
-def group_rmu_layer(layer: ET.Element, file_path: Path) -> RmuGroupingResult:
+def group_rmu_layer(
+    layer: ET.Element,
+    file_path: Path,
+    *,
+    validated_rmu_only: bool = False,
+    validated_rmu_rect_ids: set[str] | None = None,
+) -> RmuGroupingResult:
     """将每个直属 <rect> 框内的直属图元组合为一个标准 Merge。
 
     增强规则：
@@ -529,7 +549,22 @@ def group_rmu_layer(layer: ET.Element, file_path: Path) -> RmuGroupingResult:
     base_children = [
         element for element in original_children if id(element) not in removed_rmu_headers
     ]
-    rects = [element for element in base_children if local_name(element.tag) == "rect"]
+    all_rects = [element for element in base_children if local_name(element.tag) == "rect"]
+    # v2.18.59: 独立“环网柜处理”优先直接使用 RMU 信息汇总 identify_rmus()
+    # 已经确认的 rect ID 集合。这样“哪些 rect 是 RMU”只有一套权威识别算法，
+    # 组合引擎只负责对识别结果建立 Merge，不再自行猜测柜体。
+    # validated_rmu_only 仅为旧调用保留兼容；新 RMU 页面不会走该回退分支。
+    if validated_rmu_rect_ids is not None:
+        rects = [
+            rect for rect in all_rects
+            if (rect.get("id") or "").strip() in validated_rmu_rect_ids
+        ]
+    elif validated_rmu_only:
+        valid_ids = {id(rect) for rect in _valid_rmu_rects_for_smr(layer)}
+        rects = [rect for rect in all_rects if id(rect) in valid_ids]
+    else:
+        rects = all_rects
+    candidate_rect_ids = {id(rect) for rect in rects}
 
     result = RmuGroupingResult(
         file_path=file_path,
@@ -562,7 +597,7 @@ def group_rmu_layer(layer: ET.Element, file_path: Path) -> RmuGroupingResult:
         element_box = subtree_box(element)
         if element_box is None:
             continue
-        if tag == "rect":
+        if tag == "rect" and element_id in candidate_rect_ids:
             owner_by_element[element_id] = element
             continue
 
@@ -681,7 +716,14 @@ def group_rmu_layer(layer: ET.Element, file_path: Path) -> RmuGroupingResult:
 
     result.rebuilt_group_count = len(rects)
     result.removed_invalid_merge_count = max(0, len(rmu_blocks) - result.reused_merge_count)
-    _validate_rebuilt_rmu_groups(layer)
+    _validate_rebuilt_rmu_groups(
+        layer,
+        expected_rect_ids=(
+            candidate_rect_ids
+            if (validated_rmu_only or validated_rmu_rect_ids is not None)
+            else None
+        ),
+    )
     return result
 
 
@@ -794,6 +836,7 @@ def remove_all_graphic_merges(
     file_path: Path,
     *,
     lower_rmu_rects: bool = True,
+    rmu_rect_ids: set[str] | None = None,
 ) -> GraphicMergeCleanupResult:
     """彻底取消图形组合：删除所有 Layer 直属 ``<Merge>``。
 
@@ -813,8 +856,16 @@ def remove_all_graphic_merges(
         result.removed_merge_count += len(merges)
         result.removed_merge_ids.extend((element.get("id") or "").strip() for element in merges)
 
-        # 在移除 Merge 前/后识别 RMU 均可；识别只依赖实际图元几何，不读取 Merge。
-        rmu_rects = _valid_rmu_rects_for_smr(layer) if lower_rmu_rects else []
+        # 独立 RMU 页面会把 RMU 信息汇总 identify_rmus() 的确认结果传进来，
+        # 预清理与后续重组使用完全相同的柜体集合；其他历史调用保持原回退逻辑。
+        if lower_rmu_rects and rmu_rect_ids is not None:
+            rmu_rects = [
+                element for element in children
+                if local_name(element.tag) == "rect"
+                and (element.get("id") or "").strip() in rmu_rect_ids
+            ]
+        else:
+            rmu_rects = _valid_rmu_rects_for_smr(layer) if lower_rmu_rects else []
         result.rmu_rect_count += len(rmu_rects)
 
         without_merges = [element for element in children if local_name(element.tag) != "Merge"]
@@ -852,8 +903,19 @@ def _single_layer(tree: ET.ElementTree, file_path: Path) -> ET.Element:
     return layers[0]
 
 
-def group_rmu_tree(tree: ET.ElementTree, file_path: Path) -> RmuGroupingResult:
-    return group_rmu_layer(_single_layer(tree, file_path), file_path)
+def group_rmu_tree(
+    tree: ET.ElementTree,
+    file_path: Path,
+    *,
+    validated_rmu_only: bool = False,
+    validated_rmu_rect_ids: set[str] | None = None,
+) -> RmuGroupingResult:
+    return group_rmu_layer(
+        _single_layer(tree, file_path),
+        file_path,
+        validated_rmu_only=validated_rmu_only,
+        validated_rmu_rect_ids=validated_rmu_rect_ids,
+    )
 
 
 def ungroup_rmu_tree(tree: ET.ElementTree, file_path: Path) -> RmuUngroupingResult:
@@ -1345,6 +1407,7 @@ def enhance_rmu_layer(
     channel_status_position: str = 'bottom_left',
     channel_status_inner_margin: float = 5.0,
     remove_bus_frame_and_reposition_title: bool = False,
+    smart_rmu_rect_ids: set[str] | None = None,
 ) -> RmuEnhancementResult:
     """执行环网柜视觉和布局增强。
 
@@ -1357,7 +1420,17 @@ def enhance_rmu_layer(
 
     if change_smart_frame_color:
         for rect in rects:
-            if not _rect_contains_smart_text(layer, rect):
+            rect_id = (rect.get('id') or '').strip()
+            if smart_rmu_rect_ids is not None:
+                # Standalone RMU processing can supply the authoritative SMART
+                # cabinet set from RMU Summary / identify_rmus().  This avoids
+                # false negatives when the SMART label slightly crosses the
+                # cabinet border (for example by 1 px) while the cabinet itself
+                # is still unambiguously identified as SMART.
+                if not rect_id or rect_id not in smart_rmu_rect_ids:
+                    continue
+            elif not _rect_contains_smart_text(layer, rect):
+                # Legacy callers keep the historical geometry-only behaviour.
                 continue
             result.smart_rmu_rect_count += 1
             if _set_static_line_color(rect, smart_frame_color):

@@ -66,6 +66,24 @@ EN: dict[str, str] = {
     "关闭全局 ID 强制约束": "Disable Global ID Enforcement",
     "切换界面语言；选择会自动保存，下次启动继续使用。": "Switch the interface language. Your choice is saved automatically and restored at the next startup.",
     "NARI 国际业务部 · G 文件处理工具已就绪。鼠标停留在控件上可查看提示，按 F1 打开帮助中心。": "NARI International Business Division · G File Processing Tool is ready. Hover over controls for tips; press F1 to open Help Center.",
+    "数据库": "Database",
+    "Oracle 数据库作为独立公共模块；后续需要数据库的功能统一复用这里的连接配置。": "Oracle database connectivity is provided as a shared module. Future database-backed features reuse this configuration.",
+    "数据库连接说明": "Database Connection Help",
+    "Oracle 数据库连接": "Oracle Database Connection",
+    "用户名": "Username",
+    "密码": "Password",
+    "服务器地址": "Server Address",
+    "端口": "Port",
+    "显示密码": "Show Password",
+    "隐藏密码": "Hide Password",
+    "测试数据库连接": "Test Database Connection",
+    "保存数据库配置": "Save Database Configuration",
+    "数据库运行日志": "Database Runtime Log",
+    "复制日志": "Copy Log",
+    "清空日志": "Clear Log",
+    "尚未验证": "Not Verified",
+    "正在连接…": "Connecting…",
+    "公共 Oracle 数据库连接配置与只读访问入口；后续需要数据库的业务模块统一复用该配置": "Shared Oracle database configuration and read-only access entry point for future database-backed modules",
     "异常小尺寸图元检测": "Abnormal Small Element Detection",
     "ID 检查与修复": "ID Check & Repair",
     "环网柜处理": "RMU Processing",
@@ -252,6 +270,16 @@ EN: dict[str, str] = {
     "RMU 信息汇总设置": "RMU Summary Settings",
     "启用 RMU 信息汇总": "Enable RMU Summary",
     "启用智能环网柜分类（SMART / SMR）": "Enable Smart RMU Classification (SMART / SMR)",
+    "RMU 基础识别与汇总（必需）": "RMU Base Identification & Summary (Required)",
+    "启用 RMU 基础识别与汇总（固定开启）": "Enable RMU Base Identification & Summary (Always On)",
+    "识别范围（固定）：": "Identification Scope (Fixed):",
+    "智能环网柜（SMART / SMR）": "Smart RMUs (SMART / SMR)",
+    "非智能环网柜": "Non-Smart RMUs",
+    "智能 / 非智能分类（固定开启）": "Smart / Non-Smart Classification (Always On)",
+    "RMU 识别是本页面所有后续功能的基础能力，固定开启且每次处理都会输出汇总报告。": "RMU identification is the required base capability for all downstream functions on this page. It is always enabled and every run outputs a summary report.",
+    "固定开启 SMART / SMR 智能分类，同时保留全部非智能 RMU；后续组合、改色、Poke、台账等功能统一复用该识别结果。": "SMART / SMR classification is always enabled while all non-smart RMUs are retained. Grouping, frame coloring, Poke, ledger comparison, and other downstream functions reuse this same identification result.",
+    "基础识别固定覆盖智能与非智能全部有效 RMU，并检查重复名称/ID、柜名或柜型未识别、中低置信度等异常；每次运行都必须生成 RMU 汇总 CSV / HTML 报告。": "Base identification always covers all valid smart and non-smart RMUs and checks duplicate names/IDs, unidentified names or cabinet types, medium/low confidence, and other anomalies. Every run must generate RMU Summary CSV / HTML reports.",
+    "直接解析 G 文件，不使用 OCR。只有 rect 框内同时存在 BusDis、CBreakerDis 和 ZhaiWaiJieDiDaoZha 才认定为环网柜；柜名优先严格只在用户勾选方向中寻找：单候选直接使用；同一最近文字组存在多个候选时才优先绿色文字。常规几何匹配失败时，仅当柜内 BusDis.key_name 唯一候选与所选方向附近同名 Text 完全一致时回退。柜名排除字符串按完整文本匹配过滤。柜型优先按 Y1/Y2/... 与 Q1/Q2/... 名称计数，名称无法判断时才回退到设备 devref。SMART 与 SMR 统一统计为“智能环网柜”；标记会全图扫描并唯一归属最近的有效 RMU，不要求文字完全落在柜框内，并保留识别来源。": "Parse G files directly without OCR. A rect is recognized as an RMU only when BusDis, CBreakerDis, and ZhaiWaiJieDiDaoZha are all present inside it. RMU names are searched strictly in the selected directions. A single candidate is used directly; green text is preferred only when multiple candidates exist in the same nearest text group. If normal geometry matching fails, fallback is allowed only when the unique BusDis.key_name candidate inside the cabinet exactly matches nearby Text in a selected direction. Name exclusions use exact-text matching. Cabinet type is determined from Y1/Y2/... and Q1/Q2/... labels first, then falls back to device devref. SMART and SMR are treated as smart RMU markers; markers are scanned globally and assigned uniquely to the nearest valid RMU without requiring the text box to be fully inside the cabinet frame, while preserving the recognition source.",
     "RMU 台账对比": "RMU Ledger Comparison",
     "现有 RMU 台账对比（可选）": "Existing RMU Ledger Comparison (Optional)",
     "启用现有 RMU 台账对比": "Enable Existing RMU Ledger Comparison",
@@ -1885,4 +1913,138 @@ EN.update({
     "图元标准纠正完成（仍有待处理项）": "Symbol Standard Correction Complete (Items Remain)",
     "正在按 ACTIVE 标准生成纠正副本……源 G 文件不会覆盖。": "Creating corrected copies from the ACTIVE standard... Source G files will not be overwritten.",
     "用标准 G 文件建立可复用图元标准，检查所选 G 是否符合当前 ACTIVE 标准；需要时可生成按标准纠正后的 workspace 副本，源 G 不覆盖。": "Build reusable symbol standards, check selected G files against the current ACTIVE standard, and optionally create corrected workspace copies without overwriting source G files.",
+})
+
+# v2.18.68 Smart RMU Poke batch-safe ahref naming UI.
+EN.update({
+    "Poke ahref 命名": "Poke ahref Naming",
+    "自动按每个主图文件名生成（推荐）": "Auto from Each Main G Filename (Recommended)",
+    "自定义模板": "Custom Template",
+    "自定义 ahref 模板": "Custom ahref Template",
+    "自定义模板模式必须填写 ahref 模板；模板必须包含 {rmu}。": "Custom-template mode requires an ahref template containing {rmu}.",
+    "自定义 ahref 模板必须包含 {rmu}，避免多个智能 RMU 指向同一个详情图。": "The custom ahref template must contain {rmu} so multiple smart RMUs do not point to the same detail drawing.",
+    "Poke ahref 模板": "Poke ahref Template",
+})
+
+
+# v2.18.69 Smart RMU Poke standalone single/batch naming module.
+EN.update({
+    "智能环网柜 Poke 跳转": "Smart RMU Poke Jump",
+    "启用智能环网柜 Poke 跳转": "Enable Smart RMU Poke Jump",
+    "生成方式：": "Generation Mode:",
+    "单文件 / 固定详情图规则": "Single File / Fixed Detail Rule",
+    "批处理 / 从主图文件名提取 FEEDER": "Batch / Extract FEEDER from Main Filename",
+    "单文件详情图规则": "Single-File Detail Rule",
+    "批处理详情图规则": "Batch Detail Rule",
+    "智能 RMU Poke": "Smart RMU Poke",
+})
+
+# v2.18.70 Smart RMU Poke unified FACNAME/RMU ahref template.
+EN.update({
+    "ahref 文件名模板": "ahref Filename Template",
+    "请填写 ahref 文件名模板，例如 JED-NTH-ABH-{FACNAME}-{RMU}-JED.sln.pic.g。": "Enter an ahref filename template, for example JED-NTH-ABH-{FACNAME}-{RMU}-JED.sln.pic.g.",
+    "独立为已识别的智能 RMU（SMART / SMR）生成或更新 Poke ahref。单文件和批处理统一使用同一套模板：模板中的 {FACNAME} 从当前 G 文件根节点 facName 读取，{RMU} 使用现有 RMU 识别逻辑得到的柜名；除此之外的文件名内容全部由用户自己指定，程序不再从源 G 文件名推断区域、站点或馈线号。": "Create or update Poke ahref targets for identified smart RMUs (SMART / SMR). Single-file and batch processing use the same template: {FACNAME} comes from the current G root facName, and {RMU} comes from the existing RMU identification result. All other filename text is supplied by the user; the program no longer infers region, station, or feeder data from the source G filename.",
+    "示例：模板 JED-NTH-ABH-{FACNAME}-{RMU}-JED.sln.pic.g；当前 G 的 facName=AH303，识别 RMU=34661 → JED-NTH-ABH-AH303-34661-JED.sln.pic.g。批处理时每个文件读取自己的 facName；不再检查或解析源文件名。": "Example: template JED-NTH-ABH-{FACNAME}-{RMU}-JED.sln.pic.g; with facName=AH303 and RMU=34661, the result is JED-NTH-ABH-AH303-34661-JED.sln.pic.g. In batch processing, each file uses its own facName; source filenames are no longer validated or parsed.",
+    "Poke 仍只包住已识别的 RMU 柜名；已有 1 个相关 Poke 则复用，多个则删除多余项只保留 1 个。如果模板使用 {FACNAME} 而某个 G 文件根节点 facName 为空，只跳过该文件的 Poke 并记录告警，不影响该文件的组合、颜色、RMU 汇总或同批其他文件。": "The Poke still wraps only the identified RMU name. One existing related Poke is reused; duplicates are removed so only one remains. If the template uses {FACNAME} and a G file has an empty root facName, only that file's Poke operation is skipped with a warning; grouping, colors, RMU summary, and other batch files continue.",
+})
+
+# v2.18.73 Simplified mandatory RMU foundation + configurable intelligent markers.
+EN.update({
+    "智能 RMU 标记字符：": "Smart RMU Marker Text:",
+    "柜名排除字符串：": "RMU Name Exclusions:",
+    "例如：SMART, SMR, NEWSMART, SMART-SE": "e.g. SMART, SMR, NEWSMART, SMART-SE",
+    "修改智能环网柜外框颜色": "Change Smart RMU Frame Color",
+})
+
+# v2.18.74 Authoritative persistent symbol standard library.
+EN.update({
+    "上传标准图元 G / 创建标准": "Upload Standard Symbol G / Create Standard",
+    "上传标准图元 G / 更新标准": "Upload Standard Symbol G / Update Standard",
+    "上传标准图元 G（可多选）": "Upload Standard Symbol G (Multiple Selection)",
+    "尚未上传标准图元。": "No standard symbol G files uploaded yet.",
+    "标准图元库未就绪": "Standard Symbol Library Not Ready",
+    "必须上传标准图元": "Standard Symbol G Upload Required",
+    "标准图元文件": "Standard Symbol Files",
+    "标准指纹": "Standard Fingerprint",
+    "标准图元绑定无效": "Invalid Standard Symbol Binding",
+    "标准图元读取完成。请确认 6 个 RMU 基础角色都绑定了本次上传的唯一图元，然后保存为 ACTIVE 标准。": "Standard symbol files loaded. Confirm that all six RMU base roles are bound to exactly one uploaded symbol, then save the ACTIVE standard.",
+})
+
+# v2.18.75 Uploaded icon G is the sole authority for Symbol Standard Check.
+EN.update({
+    "上传 / 更新标准图元 G": "Upload / Update Standard Symbol G",
+    "上传标准图元 G": "Upload Standard Symbol G",
+    "添加自定义设备角色": "Add Custom Device Role",
+    "标准来源": "Standard Source",
+    "未上传": "Not Uploaded",
+    "标准图元无效": "Invalid Standard Symbol G",
+    "缺少标准图元": "Missing Standard Symbol",
+    "标准来源已切换为用户上传图元 G。业务单线图不会参与 devref、尺寸、AlignCenter 或 pin 标准的生成。": "The standard source is now the user-uploaded symbol G files. Business SLD G files never contribute devref, size, AlignCenter, or pin standards.",
+})
+
+# v2.18.79 Single-table symbol-standard UX + shared SMART/NORMAL bindings.
+EN.update({
+    "标准版本": "Standard Version",
+    "检查范围": "Check Scope",
+    "标准图元文件": "Standard Symbol File",
+    "用户上传": "User Upload",
+    "SMART / NORMAL 共用此标准": "Share This Standard Across SMART / NORMAL",
+    "勾选后，当前标准 G 会同时绑定到同一种设备角色的 SMART 与 NORMAL 检查范围。": "When enabled, the current standard G is bound to the same device role in both SMART and NORMAL check scopes.",
+    "这里不再分成“当前标准列表”和“标准定义”两个表格：一个页面只保留下面这一张图元标准表。标准版本通过上方下拉框切换。每个设备角色可以分别使用 SMART / NORMAL 标准，也允许两者共用同一个用户上传的标准图元 G。标准文件保存到用户数据目录；业务单线图永远只作为被检查对象，不会反向学习成标准。业务单线图不会参与 devref、尺寸、AlignCenter 或 pin 标准的生成。": "The separate current-standard list and standard-definition tables are merged into one symbol-standard table. Switch versions from the selector above. Each device role may use separate SMART/NORMAL standards or share one user-uploaded standard G. Standard files are stored in the user data directory; business SLD G files are check targets only and never contribute devref, size, AlignCenter, or pin standards.",
+    "表中的 SMART / NORMAL 表示“检查适用范围”，不代表一定要上传两套不同图元。如果同一设备在 SMART 与 NORMAL 中使用同一个图元，勾选“SMART / NORMAL 共用此标准”后上传一次即可同时绑定两行；例如接地刀闸没有智能/非智能版本时，就应共用同一个标准 G。若两边确实不同，则分别上传即可。可以只配置当前需要检查的设备角色，不要求一次补齐全部范围。": "SMART / NORMAL in the table describes the check scope; it does not require two different symbol files. If the same device uses one symbol in both scopes, enable Share This Standard Across SMART / NORMAL and upload once to bind both rows. For example, a grounding switch with no smart/non-smart variant should share one standard G. If the variants truly differ, upload them separately. You may configure only the roles you need to check.",
+})
+
+
+# v2.18.79 Explicit role binding, immutable standard lock, and no business-G learning.
+EN.update({
+    "这里不再分成“当前标准列表”和“标准定义”两个表格：一个页面只保留下面这一张图元标准表。标准版本通过上方下拉框切换。每个设备角色可以分别使用 SMART / NORMAL 标准，也允许两者共用同一个用户上传的标准图元 G。标准文件保存到用户数据目录；业务单线图永远只作为被检查对象，不会反向学习、发现或补全标准。设备角色由用户选中的表格行明确绑定；上传 G 只提供该角色的 devref、尺寸、AlignCenter 与 pin 标准。业务单线图不会参与 devref、尺寸、AlignCenter 或 pin 标准的生成。": "The page now uses one symbol-standard table. Switch versions from the selector above. SMART/NORMAL standards may be separate or share one uploaded G. Business drawings are inspection targets only: they never learn, discover, or complete standards. The selected table role is the explicit binding authority; the uploaded G supplies devref, size, AlignCenter, and pin standards only.",
+    "表中的 SMART / NORMAL 表示“检查适用范围”，不代表一定要上传两套不同图元。如果同一设备在 SMART 与 NORMAL 中使用同一个图元，勾选“SMART / NORMAL 共用此标准”后上传一次即可同时绑定两行；例如接地刀闸没有智能/非智能版本时，就应共用同一个标准 G。若两边确实不同，则分别上传即可。可以只配置当前需要检查的设备角色，不要求一次补齐全部范围。上传文件名/XML 类型仅作为参考信息，不再阻止人工绑定。": "SMART/NORMAL describes check scope and does not require two different symbol files. If the same device uses one symbol in both scopes, enable sharing and upload once to bind both rows. Ground switches without smart/non-smart variants should share one standard. Configure only the roles you need. Uploaded filenames and parsed XML types are reference information only and do not block explicit manual binding.",
+    "锁定当前版本": "Lock Current Version",
+    "解锁当前版本": "Unlock Current Version",
+    "锁定当前标准": "Lock Current Standard",
+    "解锁当前标准": "Unlock Current Standard",
+    "当前标准已锁定": "Current Standard Is Locked",
+    "检查对象 XML": "Target XML",
+    "设备定位规则": "Device Locator Rule",
+    "定位条件": "Locator Condition",
+    "上传文件名/XML 类型仅作为参考信息，不再阻止人工绑定。": "Uploaded filenames and parsed XML types are reference information only and no longer block explicit manual binding.",
+})
+
+
+# v2.18.89 Database-driven Smart RMU Poke naming.
+EN.update({
+    "启用后不再要求用户填写站名、馈线名或 ahref 模板。程序读取当前 G 根节点 facID，通过公共 Oracle 数据库依次查询 DMS_FEEDER_DEVICE.NAME/ST_ID、SUBSTATION.NAME/SUBAREA_ID、SUBCONTROLAREA.NAME，自动得到完整馈线名，再与 G 文件中已识别的智能 RMU 柜名组合生成 Poke 跳转文件名。": "When enabled, users no longer enter station, feeder, or ahref templates. The program reads the G root facID, resolves DMS_FEEDER_DEVICE.NAME/ST_ID, SUBSTATION.NAME/SUBAREA_ID, and SUBCONTROLAREA.NAME through the shared Oracle database, builds the full feeder name, then combines it with the already identified smart RMU name.",
+    "自动命名规则：SUBCONTROLAREA.NAME + SUBSTATION.NAME + DMS_FEEDER_DEVICE.NAME + RMU。例如数据库得到 JED-NTH + ABH + AH303，G 中识别 RMU=34661，最终 ahref 为 JED-NTH-ABH-AH303-34661.sln.pic.g。GRAPH_NAME 和 G.facName 不参与名称拼接；facName 仅可用于一致性提示。": "Automatic naming: SUBCONTROLAREA.NAME + SUBSTATION.NAME + DMS_FEEDER_DEVICE.NAME + RMU. For example, JED-NTH + ABH + AH303 with RMU=34661 produces JED-NTH-ABH-AH303-34661.sln.pic.g. GRAPH_NAME and G.facName are not used to construct the name; facName is only an optional consistency hint.",
+    "前提：G 根节点 facID 必须有效。facID 为空时，本文件不会执行 Poke，程序会提示“请先关联馈线”，其他环网柜组合、改色、柜名和汇总操作仍继续。数据库连接统一使用左侧“数据库”页面保存的公共配置。": "Requirement: the G root facID must be valid. If facID is empty, Poke is skipped for that file and the program asks the user to associate the feeder first; grouping, coloring, RMU names, and summaries continue. The shared connection saved on the Database page is used.",
+    "Poke 仍只包住既有 RMU 基础识别得到的智能柜名 Text；已有 1 个对应 Poke 则复用，多个则删除多余项仅保留 1 个。Poke 模块不会另写 RMU 识别规则。": "Poke still covers only the smart cabinet-name Text returned by the existing RMU identification. One matching Poke is reused; duplicates are removed so only one remains. The Poke module does not implement a separate RMU recognition rule.",
+})
+
+# v2.18.90 Standalone Poke processing: RMU detail jumps + station-jump jumps.
+EN.update({
+    "Poke 跳转处理": "Poke Jump Processing",
+    "独立生成/修复 RMU 与站点跳转 Poke；复用公共 RMU 识别、Oracle 数据库及站点 Poke 参考属性": "Create/repair RMU and station-jump Pokes using the shared RMU recognition, Oracle database, and station-Poke reference properties.",
+    "独立生成/修复 RMU 与站点跳转 Poke；数据库命名和 RMU 识别均复用公共能力。": "Independently create/repair RMU and station-jump Pokes using the shared database naming and RMU recognition services.",
+    "Poke 跳转处理帮助": "Poke Jump Processing Help",
+    "跳转类型": "Jump Types",
+    "RMU Poke：跳转到具体环网柜明细图": "RMU Poke: Jump to a Specific RMU Detail Drawing",
+    "站点跳转 Poke：跳转到对端变电站馈线总图": "Station-Jump Poke: Jump to the Remote Substation Feeder Overview",
+    "识别与数据库规则": "Recognition & Database Rules",
+    "开始 Poke 跳转处理": "Start Poke Jump Processing",
+    "Poke 跳转处理输入": "Poke Processing Input",
+    "Poke 跳转处理输出目录": "Poke Processing Output Directory",
+    "请至少选择一种 Poke 跳转类型。": "Select at least one Poke jump type.",
+    "Poke 已从“环网柜处理”独立，facID 不再作为执行前提。RMU Poke 直接复用公共 RMU 识别结果，并按每个已识别环网柜名称查询 DMS_COMBINED_DEVICE.FEEDER_ID，再沿 DMS_FEEDER_DEVICE/SUBSTATION/SUBCONTROLAREA 生成各自的完整馈线目标；一张大图可同时处理多条馈线。站点跳转 Poke 只按标签中的站名关键字查询 SUBSTATION/SUBCONTROLAREA，本身不使用 facID。GRAPH_NAME 不参与目标名称生成。": "Poke processing is independent from RMU Processing and no longer requires facID. RMU Pokes reuse shared RMU recognition, resolve each recognized cabinet through DMS_COMBINED_DEVICE.FEEDER_ID, then follow DMS_FEEDER_DEVICE/SUBSTATION/SUBCONTROLAREA to build that RMU's own feeder target; one overview drawing may therefore contain multiple feeders. Station-jump Pokes use only the station key through SUBSTATION/SUBCONTROLAREA and do not use facID. GRAPH_NAME is not used for target naming.",
+    "RMU Poke 不在本模块重新定义 RMU 规则：运行时直接读取“环网柜处理”保存的柜名方向、名称排除项和智能标记，并调用同一个 identify_rmus()。识别到柜名后，以 RMU 名称查询 DMS_COMBINED_DEVICE，由 FEEDER_ID 找到所属 DMS_FEEDER_DEVICE，再按 SUBSTATION/SUBCONTROLAREA 生成该 RMU 自己的馈线完整业务名；不依赖 facID。": "This module does not define a second RMU rule set. It reads the name directions, exclusions and smart markers saved by RMU Processing and calls the same identify_rmus(). After a cabinet name is recognized, that RMU name resolves DMS_COMBINED_DEVICE, FEEDER_ID identifies its DMS_FEEDER_DEVICE, and SUBSTATION/SUBCONTROLAREA produce that RMU's own full feeder business name without facID.",
+    "站点跳转示例：DHN-40 → 只取 DHN → SUBSTATION.NAME → SUBAREA_ID → SUBCONTROLAREA.NAME → JED-CTL-DHN → ahref=JED-CTL-DHN.sln.pic.g，对端目标为变电站馈线总图。后缀 40 和附近 (14858) 等数字均忽略。": "Station-jump example: DHN-40 -> use only DHN -> SUBSTATION.NAME -> SUBAREA_ID -> SUBCONTROLAREA.NAME -> JED-CTL-DHN -> ahref=JED-CTL-DHN.sln.pic.g, targeting the remote substation feeder overview. The suffix 40 and nearby numbers such as (14858) are ignored.",
+    "识别优先级：已有覆盖标签的非 RMU Poke > 线路末端附近标签 > 紧凑背景图形。背景颜色只作视觉信息，不作为必要条件；所有候选必须通过 Oracle 唯一匹配才允许修改。多个相关 Poke 删除多余项只保留一个。": "Recognition priority: existing non-RMU Poke covering the label > label near a line endpoint > compact background geometry. Background color is not required. Every candidate must resolve uniquely in Oracle before modification. Duplicate related Pokes are removed so only one remains.",
+    "本页面负责 RMU 基础识别、环网柜组合、智能 RMU 外框改色、RMU 柜名改白、channel_status 状态点，以及柜名/柜型识别；Poke 跳转已独立到左侧“Poke 跳转处理”模块。": "This page handles RMU recognition, grouping, smart-RMU frame color, white RMU names, channel_status positioning, and name/type recognition. Poke jumps have moved to the standalone Poke Jump Processing module.",
+})
+
+# v2.18.91 Poke processing report.
+EN.update({
+    "打开 Poke 报告": "Open Poke Report",
+    "打开最近一次 Poke 跳转处理生成的 HTML 报告；报告包含 RMU/站点跳转识别、写入 ahref、处理动作及未加跳转原因。": "Open the latest Poke HTML report. It includes RMU/station-jump recognition, written ahref targets, actions, and reasons why a jump was not added.",
+    "请先执行一次 Poke 跳转处理并生成报告。": "Run Poke Jump Processing once to generate a report first.",
+    "Poke处理报告": "Poke Processing Report",
+    "Poke报告摘要": "Poke Report Summary",
 })

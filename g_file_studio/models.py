@@ -133,6 +133,9 @@ class BasicSettings(BaseModel):
     rmu_action: RmuAction = RmuAction.NONE
     # 兼容 v2.7/v2.8 代码；为 True 且 rmu_action=NONE 时按 GROUP 处理。
     group_rmu_elements: bool = False
+    # 独立“环网柜处理”页面专用：组合前若当前文件已有 Merge，先彻底取消全部 Merge 再重建。
+    # 默认 False，基础处理等其他调用保持原有组合逻辑不变。
+    reset_existing_merges_before_rmu_group: bool = False
 
     # 图形组合清理：删除 Layer 直属全部 <Merge>，并可将识别到的 RMU 外框置于设备底层。
     remove_all_graphic_merges: bool = False
@@ -161,6 +164,18 @@ class BasicSettings(BaseModel):
     smr_rmu_frame_color: str = "#FF0000"
     # 将现有 RMU 名称识别算法最终选中的柜名 Text 统一改为白色；不影响其他 Text。
     set_rmu_name_text_white: bool = False
+    # 独立 RMU 页面专用：基于 identify_rmus() 的智能柜结果添加/更新 Poke 详情图跳转。
+    # 默认 False，其他基础处理/吉达流程不受影响。
+    add_smart_rmu_poke: bool = False
+    # v2.18.71 智能 RMU Poke ahref 模板。程序始终替换 {RMU}（识别到的智能 RMU，必填）；
+    # 单文件若模板未使用 {FACNAME}，则完全不依赖 facName。仅当模板包含 {FACNAME}
+    # 时，才读取当前 G 根节点 facName 进行替换。
+    smart_rmu_poke_ahref_template: str = ""
+    # 以下为 v2.18.69 及更早兼容字段；新版 RMU 页面不再写入，也不参与新版执行路径。
+    smart_rmu_poke_naming_mode: str = "batch"
+    smart_rmu_poke_single_rule: str = ""
+    smart_rmu_poke_batch_rule: str = ""
+    smart_rmu_poke_target_override: str = ""
     # 将 BusDis 环网柜内 devref 指向 channel_status 的红色状态点移动到框内指定锚点。
     reposition_channel_status: bool = False
     channel_status_position: RmuStatusPosition = RmuStatusPosition.BOTTOM_LEFT
@@ -175,6 +190,9 @@ class BasicSettings(BaseModel):
     rmu_name_right: bool = False
     # 用户指定的 RMU 柜名排除字符串。仅用于名称候选过滤，不影响柜体/柜型识别。
     rmu_name_exclusions: str = ""
+    # 可配置智能 RMU 文本标记；完整文本匹配、全图扫描、唯一归属最近有效 RMU。
+    # 默认 SMART / SMR；这些标记也会自动从柜名候选中排除。
+    rmu_intelligent_markers: str = "SMART, SMR"
     rmu_smart_in_type: bool = False
     export_rmu_identification_csv: bool = True
 

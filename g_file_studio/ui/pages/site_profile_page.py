@@ -7,6 +7,8 @@ from PySide6.QtCore import Qt, QThreadPool, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -22,8 +24,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from g_file_studio.engines.smart_profile_engine import SmartProfileScanResult, scan_smart_profile_samples
-from g_file_studio.processors.common import discover_g_inputs
 from g_file_studio.processors.smart_profile_processor import (
     SmartProfileProcessingSettings,
     process_smart_profile_consistency,
@@ -56,7 +56,7 @@ class SiteProfilePage(BasePage):
     def __init__(self, user_settings: UserSettingsService, parent=None) -> None:
         self.user_settings = user_settings
         self.service = SiteProfileService()
-        self._last_scan: SmartProfileScanResult | None = None
+        self._last_scan = None
         self._last_report_path: Path | None = None
         self._scan_worker: FunctionWorker | None = None
         self._scan_pool = QThreadPool.globalInstance()
@@ -65,105 +65,68 @@ class SiteProfilePage(BasePage):
         self._task_busy = False
         self._candidate_counts: dict[int, dict[str, int]] = {}
         self._symbol_catalog: dict[str, dict[str, object]] = {}
+        self._pending_standard_file_records: list[dict[str, object]] = []
         help_title, help_html = APP_HELP["site_profile"]
         super().__init__(
             "图元标准检查",
-            "用标准 G 文件建立可复用图元标准，检查所选 G 是否符合当前 ACTIVE 标准；需要时可生成按标准纠正后的 workspace 副本，源 G 不覆盖。",
+            "先由用户上传权威图元 G 建立持久化标准库，再检查业务 G 是否严格使用当前 ACTIVE 标准；需要时可生成纠正副本，源 G 不覆盖。",
             help_title,
             help_html,
             parent,
         )
         self.layout.addWidget(
             InfoBanner(
-                "这是通用图元标准检查与纠正模块，不绑定吉达或其他现场批处理。同一套 G 文件输入既可作为标准样本学习，也可作为待检查文件。"
+                "这是通用图元标准检查与纠正模块，不绑定吉达或其他现场批处理。标准来源与业务 G 完全分离："
+                "标准必须由用户明确上传图元定义 G 文件；业务单线图永远只作为被检查对象，不能自动学习成标准。"
+                "标准图元会复制到版本独立的用户标准库，升级程序不会丢失。"
                 "“检查图元标准”始终只读；“纠正标准问题”只对当前 ACTIVE 标准已定义的图元生成 workspace 纠正副本，源 G 永不覆盖。"
                 "带电气 pin 且与 ConnectLine 关系可可靠解析的标准图元，会保持连接线绝对端点不动并反算图元位置/尺寸；无法可靠映射时只告警不猜测。"
                 "同类图元的 OLD → NEW 版本升级仍统一在“基础处理 → 同类图元版本升级”执行；吉达批处理流程不受本模块新增纠正功能影响。"
             )
         )
 
-        profile_box = QGroupBox("当前图元标准")
-        profile_layout = QVBoxLayout(profile_box)
-        profile_layout.setContentsMargins(14, 18, 14, 12)
-        profile_layout.setSpacing(10)
+        standard_box = QGroupBox("图元标准")
+        standard_layout = QVBoxLayout(standard_box)
+        standard_layout.setContentsMargins(14, 18, 14, 12)
+        standard_layout.setSpacing(10)
 
         self.active_profile_summary = QLabel("当前执行标准：尚未创建标准")
         self.active_profile_summary.setObjectName("sectionCaption")
         self.active_profile_summary.setWordWrap(True)
-        profile_layout.addWidget(self.active_profile_summary)
+        standard_layout.addWidget(self.active_profile_summary)
 
         intro = QLabel(
-            "一个图元标准可以保留多个历史版本，但同一时间只有一个 ACTIVE 版本参与标准检查。"
-            "低频的新增、删除、恢复和标准样本重扫统一放在“标准管理”菜单中。"
+            "这里不再分成“当前标准列表”和“标准定义”两个表格：一个页面只保留下面这一张图元标准表。"
+            "标准版本通过上方下拉框切换。每个设备角色可以分别使用 SMART / NORMAL 标准，也允许两者共用同一个用户上传的标准图元 G。"
+            "标准文件保存到用户数据目录；业务单线图永远只作为被检查对象，不会反向学习、发现或补全标准。"
+            "设备角色由用户选中的表格行明确绑定；上传 G 只提供该角色的 devref、尺寸、AlignCenter 与 pin 标准。"
+            "业务单线图不会参与 devref、尺寸、AlignCenter 或 pin 标准的生成。"
         )
         intro.setWordWrap(True)
         intro.setObjectName("mutedText")
-        profile_layout.addWidget(intro)
+        standard_layout.addWidget(intro)
 
         manage_row = QHBoxLayout()
+        manage_row.addWidget(QLabel("标准版本"))
+        self.profile_selector = WheelSafeComboBox()
+        self.profile_selector.setMinimumContentsLength(42)
+        self.profile_selector.currentIndexChanged.connect(self._profile_selection_changed)
+        manage_row.addWidget(self.profile_selector, 1)
         self.profile_manage_button = QPushButton("标准管理")
         set_secondary(self.profile_manage_button)
         self.profile_menu = QMenu(self.profile_manage_button)
         self.new_action = self.profile_menu.addAction("新建标准")
-        self.scan_action = self.profile_menu.addAction("扫描标准样本 / 创建标准")
-        self.profile_menu.addSeparator()
-        self.review_discovery_action = self.profile_menu.addAction("查看待确认图元")
-        self.reset_ignored_action = self.profile_menu.addAction("重新显示已忽略图元")
+        self.scan_action = self.profile_menu.addAction("为选中角色上传标准图元 G")
         self.profile_menu.addSeparator()
         self.restore_action = self.profile_menu.addAction("恢复此版本")
         self.delete_action = self.profile_menu.addAction("删除标准")
         self.new_action.triggered.connect(self._new_profile)
         self.scan_action.triggered.connect(self._scan_samples)
-        self.review_discovery_action.triggered.connect(self._review_pending_discoveries)
-        self.reset_ignored_action.triggered.connect(self._reset_ignored_discoveries)
         self.restore_action.triggered.connect(self._restore_selected_version)
         self.delete_action.triggered.connect(self._delete_profile)
         self.profile_manage_button.setMenu(self.profile_menu)
         manage_row.addWidget(self.profile_manage_button)
-        self.edit_standard_button = QPushButton("编辑标准")
-        set_secondary(self.edit_standard_button)
-        self.edit_standard_button.setCheckable(True)
-        self.edit_standard_button.toggled.connect(self._toggle_standard_editor)
-        manage_row.addWidget(self.edit_standard_button)
-        manage_hint = QLabel("日常只需选择 ACTIVE 标准并执行检查；新增/修改标准时再展开编辑。")
-        manage_hint.setObjectName("mutedText")
-        manage_row.addWidget(manage_hint)
-        manage_row.addStretch(1)
-        profile_layout.addLayout(manage_row)
-
-        self.profile_table = QTableWidget(0, 9)
-        self.profile_table.setHorizontalHeaderLabels(
-            ["适用范围", "标准名称", "版本", "状态", "内置 RMU 标准", "自定义设备图元", "样本", "置信度", "标准状态"]
-        )
-        self.profile_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.profile_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.profile_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.profile_table.horizontalHeader().setStretchLastSection(True)
-        self.profile_table.setMinimumHeight(105)
-        self.profile_table.setMaximumHeight(165)
-        self.profile_table.itemSelectionChanged.connect(self._profile_selection_changed)
-        configure_known_dense_table(self.profile_table)
-        profile_layout.addWidget(self.profile_table)
-
-        # Profile learning is a low-frequency maintenance action. Keep only its
-        # status/progress here; the trigger itself lives in the Profile menu.
-        self.scan_summary = QLabel("尚未扫描标准样本。")
-        self.scan_summary.setObjectName("mutedText")
-        self.scan_summary.setWordWrap(True)
-        profile_layout.addWidget(self.scan_summary)
-        self.scan_progress = QProgressBar()
-        self.scan_progress.setRange(0, 100)
-        self.scan_progress.setValue(0)
-        self.scan_progress.setFormat("扫描进度 %p%")
-        self.scan_progress.setToolTip("扫描标准样本并学习 SMART / NORMAL 图元、接地刀闸及图元几何的进度。")
-        self.scan_progress.setVisible(False)
-        profile_layout.addWidget(self.scan_progress)
-        self.layout.addWidget(profile_box)
-
-        editor_box = QGroupBox("标准定义")
-        editor_layout = QVBoxLayout(editor_box)
-        editor_layout.setContentsMargins(14, 18, 14, 12)
-        editor_layout.setSpacing(10)
+        standard_layout.addLayout(manage_row)
 
         form = QFormLayout()
         self.site_name = QLineEdit()
@@ -172,7 +135,7 @@ class SiteProfilePage(BasePage):
         self.profile_name.setPlaceholderText("例如：RMU Standard V1")
         form.addRow("适用范围", self.site_name)
         form.addRow("标准名称", self.profile_name)
-        editor_layout.addLayout(form)
+        standard_layout.addLayout(form)
 
         self.lbs_combo = WheelSafeComboBox()
         self.breaker_combo = WheelSafeComboBox()
@@ -182,38 +145,59 @@ class SiteProfilePage(BasePage):
         self.normal_ground_combo = WheelSafeComboBox()
 
         standard_note = QLabel(
-            "前 6 行是现有 RMU 系统标准；下面可以继续添加任意设备图元。扫描标准 G 后，表格会直接显示 XML 元素类型、主体 ID、"
-            "w/h、AlignCenter、pin 坐标等属性，便于确认“业务元素 → 标准图元”的对应关系。"
+            "表中的 SMART / NORMAL 表示“检查适用范围”，不代表一定要上传两套不同图元。"
+            "如果同一设备在 SMART 与 NORMAL 中使用同一个图元，勾选“SMART / NORMAL 共用此标准”后上传一次即可同时绑定两行；"
+            "例如接地刀闸没有智能/非智能版本时，就应共用同一个标准 G。若两边确实不同，则分别上传即可。"
+            "可以只配置当前需要检查的设备角色，不要求一次补齐全部范围。上传文件名/XML 类型仅作为参考信息，不再阻止人工绑定。"
         )
         standard_note.setWordWrap(True)
         standard_note.setObjectName("mutedText")
-        editor_layout.addWidget(standard_note)
+        standard_layout.addWidget(standard_note)
 
         custom_actions = QHBoxLayout()
-        self.add_custom_button = QPushButton("添加设备图元")
+        self.upload_standard_button = QPushButton("为选中角色上传 / 更新标准 G")
+        self.upload_standard_button.clicked.connect(self._scan_samples)
+        custom_actions.addWidget(self.upload_standard_button)
+        self.share_pair_checkbox = QCheckBox("SMART / NORMAL 共用此标准")
+        self.share_pair_checkbox.setToolTip("勾选后，当前标准 G 会同时绑定到同一种设备角色的 SMART 与 NORMAL 检查范围。")
+        self.share_pair_checkbox.toggled.connect(self._share_pair_toggled)
+        custom_actions.addWidget(self.share_pair_checkbox)
+        self.add_custom_button = QPushButton("添加自定义设备角色")
         set_secondary(self.add_custom_button)
         self.add_custom_button.clicked.connect(self._add_custom_standard)
         custom_actions.addWidget(self.add_custom_button)
-        self.add_scanned_button = QPushButton("添加扫描到的未映射图元")
-        set_secondary(self.add_scanned_button)
-        self.add_scanned_button.clicked.connect(self._add_unmapped_scanned_symbols)
-        custom_actions.addWidget(self.add_scanned_button)
         self.delete_custom_button = QPushButton("删除选中自定义项")
         set_secondary(self.delete_custom_button)
         self.delete_custom_button.clicked.connect(self._delete_selected_custom_standard)
         custom_actions.addWidget(self.delete_custom_button)
         custom_actions.addStretch(1)
-        editor_layout.addLayout(custom_actions)
+        self.lock_standard_button = QPushButton("锁定当前版本")
+        set_secondary(self.lock_standard_button)
+        self.lock_standard_button.setToolTip("锁定后当前 ACTIVE 标准版本不可修改、上传、删除或恢复历史版本；检查业务 G 仍可正常执行。")
+        self.lock_standard_button.clicked.connect(self._toggle_profile_lock)
+        custom_actions.addWidget(self.lock_standard_button)
+        standard_layout.addLayout(custom_actions)
 
         self.standard_table = QTableWidget(6, 12)
         self.standard_table.setHorizontalHeaderLabels(
-            ["范围", "设备角色", "XML 元素", "标准图元 devref", "主体 ID", "w×h", "AlignCenter", "Pins", "匹配属性", "当前/旧图元匹配值", "置信度", "状态"]
+            ["检查范围", "设备角色", "检查对象 XML", "标准图元文件", "主体 ID", "w×h", "AlignCenter", "Pins", "设备定位规则", "定位条件", "标准来源", "状态"]
         )
         self.standard_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.standard_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.standard_table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.SelectedClicked)
         self.standard_table.verticalHeader().setVisible(False)
-        self.standard_table.itemSelectionChanged.connect(self._update_action_state)
+        self.standard_table.setObjectName("symbolStandardTable")
+        self.standard_table.setShowGrid(True)
+        self.standard_table.setAlternatingRowColors(True)
+        # Cell editors should sit flush with the grid.  The application-wide input
+        # style adds padding/borders that look offset when a QComboBox is embedded
+        # in a QTableWidget, so only this engineering table uses a compact flat editor.
+        self.standard_table.setStyleSheet(
+            "QTableWidget#symbolStandardTable { padding: 0px; }"
+            "QTableWidget#symbolStandardTable QComboBox { margin: 0px; border: none; border-radius: 0px; padding: 3px 24px 3px 6px; }"
+            "QTableWidget#symbolStandardTable QComboBox::drop-down { border: none; width: 22px; }"
+        )
+        self.standard_table.itemSelectionChanged.connect(self._standard_row_selection_changed)
         for column in (0, 1, 2, 4, 5, 6, 7, 8, 10, 11):
             self.standard_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         self.standard_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
@@ -229,21 +213,24 @@ class SiteProfilePage(BasePage):
             ("NORMAL", "接地刀闸", "ZhaiWaiJieDiDaoZha", self.normal_ground_combo, "系统规则", "RMU 内接地刀闸"),
         ]
         for row, (rmu_class, role, element_tag, combo, match_attr, match_value) in enumerate(self._standard_specs):
-            combo.setMinimumContentsLength(36)
+            combo.setMinimumContentsLength(28)
             combo.setMinimumHeight(36)
             combo.currentIndexChanged.connect(lambda _index, c=combo: self._refresh_standard_row(c))
             self._set_readonly_cell(row, 0, rmu_class, kind="system")
             self._set_readonly_cell(row, 1, role)
             self._set_readonly_cell(row, 2, element_tag)
-            self.standard_table.setCellWidget(row, 3, combo)
+            # “标准图元文件”是结果展示列，不是下拉编辑器。角色绑定通过
+            # “为选中角色上传 / 更新标准 G”完成；这里保持真正的表格单元格，
+            # 避免 QComboBox 的白色背景覆盖网格线、选中行底色和单元格边界。
+            self._set_readonly_cell(row, 3, "-")
             for column in (4, 5, 6, 7):
                 self._set_readonly_cell(row, column, "-")
             self._set_readonly_cell(row, 8, match_attr)
             self._set_readonly_cell(row, 9, match_value)
             self._set_readonly_cell(row, 10, "-")
-            self._set_readonly_cell(row, 11, "未学习")
+            self._set_readonly_cell(row, 11, "未上传")
         fit_known_dense_table(self.standard_table)
-        editor_layout.addWidget(self.standard_table)
+        standard_layout.addWidget(self.standard_table)
 
         save_row = QHBoxLayout()
         self.save_button = QPushButton("保存当前标准")
@@ -253,16 +240,29 @@ class SiteProfilePage(BasePage):
         self.profile_status.setObjectName("mutedText")
         self.profile_status.setWordWrap(True)
         save_row.addWidget(self.profile_status, 1)
-        editor_layout.addLayout(save_row)
-        self.layout.addWidget(editor_box)
+        standard_layout.addLayout(save_row)
+
+        self.scan_summary = QLabel("尚未上传标准图元。")
+        self.scan_summary.setObjectName("mutedText")
+        self.scan_summary.setWordWrap(True)
+        standard_layout.addWidget(self.scan_summary)
+        self.scan_progress = QProgressBar()
+        self.scan_progress.setRange(0, 100)
+        self.scan_progress.setValue(0)
+        self.scan_progress.setFormat("读取标准图元 %p%")
+        self.scan_progress.setToolTip("读取用户上传的标准图元 G，并提取 devref、w/h、AlignCenter、pin 等权威定义。")
+        self.scan_progress.setVisible(False)
+        standard_layout.addWidget(self.scan_progress)
+
+        self.layout.addWidget(standard_box)
 
         source_box = QGroupBox("待检查 G 文件")
         source_layout = QVBoxLayout(source_box)
         source_layout.setContentsMargins(14, 18, 14, 12)
         source_layout.setSpacing(10)
         source_note = QLabel(
-            "选择需要检查的 G 文件或目录。本模块只读，不修改源 G；输出目录只保存检查报告和日志。"
-            "标准样本的维护请使用上方“标准管理”。"
+            "选择需要被检查的业务单线图 G 文件或目录。本模块只读，不修改源 G；输出目录只保存检查报告和日志。"
+            "标准只来自上方用户上传的图元定义 G；业务 G 永远不会参与标准学习。"
         )
         source_note.setWordWrap(True)
         source_note.setObjectName("mutedText")
@@ -270,8 +270,8 @@ class SiteProfilePage(BasePage):
         self.source = InputSourceSelector(
             default_directory=default_workspace() / "input",
             file_filter="G Files (*.sln.pic.g *.g)",
-            file_tooltip="选择一张用于学习图元标准或执行只读标准检查的 G 文件。",
-            directory_tooltip="选择包含标准样本或待检查 G 文件的目录。",
+            file_tooltip="选择一张需要按 ACTIVE 标准检查的业务 G 文件。",
+            directory_tooltip="选择包含需要按 ACTIVE 标准检查的业务 G 文件目录。",
             settings_prefix="site_profile_source",
             settings_service=self.user_settings,
         )
@@ -319,20 +319,14 @@ class SiteProfilePage(BasePage):
         self.result_summary.setWordWrap(True)
         apply_layout.addWidget(self.result_summary)
 
-        discovery_row = QHBoxLayout()
-        self.discovery_status = QLabel("")
-        self.discovery_status.setObjectName("mutedText")
-        self.discovery_status.setVisible(False)
-        discovery_row.addWidget(self.discovery_status)
-        self.review_discovery_button = QPushButton("查看待确认图元")
-        set_secondary(self.review_discovery_button)
-        self.review_discovery_button.setVisible(False)
-        self.review_discovery_button.clicked.connect(self._review_pending_discoveries)
-        discovery_row.addWidget(self.review_discovery_button)
-        discovery_row.addStretch(1)
-        apply_layout.addLayout(discovery_row)
-
         self.task = TaskPanel()
+        # v2.18.85: symbol-standard inspection/correction always stays in determinate
+        # v2.18.85 is rebased directly from v2.18.82.  Keep the exact 0~100
+        # determinate style, but smooth only the display-side repaint cadence so
+        # queued worker progress does not make the bar flash/jump visually.
+        self.task.set_live_progress_enabled(False)
+        self.task.set_smooth_progress_enabled(True)
+        self.task.progress.setToolTip("图元标准检查/纠正始终以 0~100% 百分比样式显示，并平滑递增；后台真实进度只更新目标值，不会造成进度条闪烁或倒退。")
         self.task.set_result_dialogs_enabled(False)
         self.task.run_button.hide()
         self.check_button = QPushButton("检查图元标准")
@@ -360,27 +354,60 @@ class SiteProfilePage(BasePage):
         apply_layout.addWidget(self.task)
         self.layout.addWidget(apply_box, 1)
 
-        # Workflow order: choose G files/output -> review ACTIVE standard -> inspect standards -> read-only check -> reports.
-        # Standard learning/update remains a low-frequency maintenance action in the Standard Management menu.
-        for widget in (source_box, profile_box, editor_box, apply_box):
+        # Workflow order: choose business G -> maintain/select the single standard table -> run check/correction.
+        for widget in (source_box, standard_box, apply_box):
             self.layout.removeWidget(widget)
         self.layout.insertWidget(1, source_box)
-        self.layout.insertWidget(2, profile_box)
-        self.layout.insertWidget(3, editor_box)
-        self.layout.insertWidget(4, apply_box)
-        self.editor_box = editor_box
-        self.editor_box.setVisible(False)
+        self.layout.insertWidget(2, standard_box)
+        self.layout.insertWidget(3, apply_box)
 
         self._reload_profiles()
         self._update_action_state()
 
+    @staticmethod
+    def _paired_builtin_row(row: int) -> int:
+        return {0: 3, 3: 0, 1: 4, 4: 1, 2: 5, 5: 2}.get(int(row), -1)
 
-    def _toggle_standard_editor(self, checked: bool) -> None:
-        if not hasattr(self, "editor_box"):
+    def _standard_row_selection_changed(self) -> None:
+        row = self.standard_table.currentRow()
+        is_builtin = 0 <= row < len(self._standard_specs)
+        self.share_pair_checkbox.setEnabled(is_builtin and not self._task_busy)
+        if not is_builtin:
+            self.share_pair_checkbox.setChecked(False)
+            self._update_action_state()
             return
-        visible = bool(checked)
-        self.editor_box.setVisible(visible)
-        self.edit_standard_button.setText("收起标准编辑" if visible else "编辑标准")
+        pair = self._paired_builtin_row(row)
+        selected = str(self._standard_specs[row][3].currentData() or "").strip()
+        paired = str(self._standard_specs[pair][3].currentData() or "").strip() if pair >= 0 else ""
+        role = self._standard_specs[row][1]
+        # Existing shared bindings are reflected automatically. For grounding
+        # switches with no binding yet, default to shared because many projects do
+        # not distinguish SMART/NORMAL grounding symbols. The user can untick it.
+        self.share_pair_checkbox.blockSignals(True)
+        self.share_pair_checkbox.setChecked(bool(selected and paired and selected.casefold() == paired.casefold()) or (not selected and not paired and role == "接地刀闸"))
+        self.share_pair_checkbox.blockSignals(False)
+        self._update_action_state()
+
+    def _share_pair_toggled(self, checked: bool) -> None:
+        if not checked or self._task_busy:
+            return
+        row = self.standard_table.currentRow()
+        if not (0 <= row < len(self._standard_specs)):
+            return
+        pair_row = self._paired_builtin_row(row)
+        if pair_row < 0:
+            return
+        combo = self._standard_specs[row][3]
+        devref = str(combo.currentData() or "").strip()
+        if not devref:
+            return
+        pair_combo = self._standard_specs[pair_row][3]
+        pair_index = pair_combo.findData(devref)
+        if pair_index < 0:
+            return
+        pair_combo.setCurrentIndex(pair_index)
+        self._refresh_standard_row(pair_combo)
+        self._refresh_standard_row(combo)
 
     def _toggle_log(self, checked: bool) -> None:
         visible = bool(checked)
@@ -388,278 +415,61 @@ class SiteProfilePage(BasePage):
         self.task.clear_button.setVisible(visible)
         self.toggle_log_button.setText("隐藏日志" if visible else "显示日志")
 
-    def _refresh_discovery_status(self, profile: SiteSmartProfile | None = None) -> None:
-        if profile is None:
-            name, _version, active = self._selected_profile_key()
-            profile = self.service.load_profiles().get(name) if name and active else None
-        pending = []
-        ignored = []
-        if profile is not None:
-            pending = [devref for devref, state in profile.discovery_decisions.items() if state == "pending"]
-            ignored = [devref for devref, state in profile.discovery_decisions.items() if state == "ignored"]
-        has_pending = bool(pending)
-        self.discovery_status.setVisible(has_pending)
-        self.review_discovery_button.setVisible(has_pending)
-        if has_pending:
-            self.discovery_status.setText(f"待确认图元：{len(pending)} 种（已提示过，不会在每次检查时重复弹窗）")
-            self.review_discovery_button.setText(f"查看待确认图元（{len(pending)}）")
-        self.review_discovery_action.setEnabled(has_pending and not self._task_busy)
-        self.reset_ignored_action.setEnabled(bool(ignored) and not self._task_busy)
-
-    @staticmethod
-    def _discovery_role(meta: dict[str, object]) -> str:
-        body_id = str(meta.get("element_id", "")).strip()
-        tag = str(meta.get("element_tag", "")).strip()
-        return body_id or tag or "自定义设备"
-
-    def _handle_discovered_symbols(self, candidates: list[dict[str, object]]) -> None:
-        name, version, active = self._selected_profile_key()
-        profile = self.service.load_profiles().get(name) if name else None
-        if profile is None or not active or version != profile.profile_version:
-            return
-        original = dict(profile.discovery_decisions)
-        decisions = dict(original)
-        catalog = dict(profile.discovery_catalog)
-        new_rows: list[dict[str, object]] = []
-        for raw in candidates:
-            if not isinstance(raw, dict):
-                continue
-            devref = str(raw.get("devref", "")).strip()
-            if not devref:
-                continue
-            catalog[devref] = dict(raw)
-            if devref not in decisions:
-                decisions[devref] = "pending"
-                new_rows.append(dict(raw))
-        self.service.update_discovery_metadata(name, catalog=catalog, decisions=decisions)
-        profile = self.service.load_profiles().get(name)
-        self._refresh_discovery_status(profile)
-        if not new_rows:
-            return
-        answer = QMessageBox.question(
-            self,
-            "发现新的图元类型",
-            f"本次检查发现 {len(new_rows)} 种尚未纳入当前图元标准的图元。\n\n"
-            "它们不会自动判定为错误，也不会自动加入标准。是否现在逐个确认？\n"
-            "如果选择“否”，这些图元会保留在“待确认图元”中，并且后续检查不会重复弹窗提醒。",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if answer == QMessageBox.StandardButton.Yes:
-            self._review_pending_discoveries(only_devrefs={str(row.get("devref", "")).strip() for row in new_rows})
-
-    def _review_pending_discoveries(self, *_args, only_devrefs: set[str] | None = None) -> None:
-        name, version, active = self._selected_profile_key()
-        profile = self.service.load_profiles().get(name) if name else None
-        if profile is None or not active or version != profile.profile_version:
-            QMessageBox.information(self, "请选择当前标准", "请先选择一个 ACTIVE 图元标准。")
-            return
-        decisions = dict(profile.discovery_decisions)
-        rows: list[dict[str, object]] = []
-        for devref, state in decisions.items():
-            if state != "pending":
-                continue
-            if only_devrefs is not None and devref not in only_devrefs:
-                continue
-            meta = dict(profile.discovery_catalog.get(devref, {}))
-            meta.setdefault("devref", devref)
-            rows.append(meta)
-        rows.sort(key=lambda row: (-int(row.get("count", 0) or 0), str(row.get("devref", "")).casefold()))
-        if not rows:
-            QMessageBox.information(self, "没有待确认图元", "当前标准没有需要确认的新图元。")
-            self._refresh_discovery_status(profile)
-            return
-
-        additions: list[dict[str, object]] = []
-        ignored = 0
-        existing_standard = {str(row.get("standard_devref", "")).strip() for row in profile.custom_symbols}
-        for index, meta in enumerate(rows, 1):
-            devref = str(meta.get("devref", "")).strip()
-            tag = str(meta.get("element_tag", "")).strip() or "-"
-            body_id = str(meta.get("element_id", "")).strip() or "-"
-            count = int(meta.get("count", 0) or 0)
-            source_file = str(meta.get("source_file", "")).strip() or "-"
-            box = QMessageBox(self)
-            box.setIcon(QMessageBox.Icon.Question)
-            box.setWindowTitle(f"确认新图元 {index}/{len(rows)}")
-            box.setText(f"XML 元素：{tag}\n图元：{devref}")
-            box.setInformativeText(
-                f"主体 ID：{body_id}\n出现次数：{count}\n示例文件：{source_file}\n\n"
-                "“加入当前标准”：作为一个新的自定义设备图元加入；\n"
-                "“不纳入此标准”：以后不再提示这个 devref；\n"
-                "“剩余稍后处理”：保留待确认状态并结束本次确认。"
-            )
-            add_button = box.addButton("加入当前标准", QMessageBox.ButtonRole.AcceptRole)
-            ignore_button = box.addButton("不纳入此标准", QMessageBox.ButtonRole.DestructiveRole)
-            later_button = box.addButton("剩余稍后处理", QMessageBox.ButtonRole.RejectRole)
-            box.exec()
-            clicked = box.clickedButton()
-            if clicked is add_button:
-                if devref not in existing_standard:
-                    additions.append({
-                        "uid": f"custom-{uuid4().hex[:10]}",
-                        "scope": "ANY",
-                        "role": self._discovery_role(meta),
-                        "element_tag": "" if tag == "-" else tag,
-                        "standard_devref": devref,
-                        "match_attr": "devref",
-                        "match_value": devref,
-                        "enabled": True,
-                        "source_file": "" if source_file == "-" else source_file,
-                    })
-                    existing_standard.add(devref)
-                decisions.pop(devref, None)
-            elif clicked is ignore_button:
-                decisions[devref] = "ignored"
-                ignored += 1
-            else:
-                break
-
-        if additions:
-            profile.custom_symbols = list(profile.custom_symbols) + additions
-            merged_catalog = dict(profile.symbol_catalog)
-            for row in rows:
-                devref = str(row.get("devref", "")).strip()
-                if devref in {str(item.get("standard_devref", "")).strip() for item in additions}:
-                    merged_catalog[devref] = dict(row)
-            profile.symbol_catalog = merged_catalog
-            try:
-                profile = self.service.upsert(profile)
-            except ValueError as exc:
-                QMessageBox.warning(self, "加入标准失败", str(exc))
-                return
-        self.service.update_discovery_metadata(name, catalog=profile.discovery_catalog, decisions=decisions)
-        current = self.service.load_profiles().get(name)
-        if current is not None:
-            self._reload_profiles(current.profile_name, current.profile_version)
-            self._refresh_discovery_status(current)
-            if additions:
-                self.activeProfileChanged.emit(current.profile_name)
-        if additions or ignored:
-            QMessageBox.information(
-                self,
-                "新图元已处理",
-                f"加入当前标准：{len(additions)} 种；不纳入本标准：{ignored} 种。\n"
-                "未处理的图元会保留在待确认列表中，不会在每次检查时重复弹窗。",
-            )
-
-    def _reset_ignored_discoveries(self, *_args) -> None:
-        name, version, active = self._selected_profile_key()
-        profile = self.service.load_profiles().get(name) if name else None
-        if profile is None or not active or version != profile.profile_version:
-            return
-        decisions = dict(profile.discovery_decisions)
-        ignored = [devref for devref, state in decisions.items() if state == "ignored"]
-        if not ignored:
-            QMessageBox.information(self, "没有已忽略图元", "当前标准没有已忽略的新图元。")
-            return
-        for devref in ignored:
-            decisions[devref] = "pending"
-        profile = self.service.update_discovery_metadata(name, decisions=decisions)
-        self._refresh_discovery_status(profile)
-        QMessageBox.information(self, "已恢复提示", f"已将 {len(ignored)} 种图元重新放回待确认列表。")
-
     def _selected_profile_key(self) -> tuple[str, int | None, bool]:
-        row = self.profile_table.currentRow()
-        if row < 0:
+        data = self.profile_selector.currentData() if hasattr(self, "profile_selector") else None
+        if not isinstance(data, (tuple, list)) or len(data) != 3:
             return "", None, False
-        name_item = self.profile_table.item(row, 1)
-        version_item = self.profile_table.item(row, 2)
-        state_item = self.profile_table.item(row, 3)
-        name = str(name_item.data(Qt.ItemDataRole.UserRole) or "") if name_item else ""
-        version = version_item.data(Qt.ItemDataRole.UserRole) if version_item else None
+        name = str(data[0] or "").strip()
         try:
-            version = int(version) if version is not None else None
+            version = int(data[1]) if data[1] is not None else None
         except (TypeError, ValueError):
             version = None
-        active = bool(state_item and str(state_item.text()).upper() == "ACTIVE")
-        return name, version, active
+        return name, version, bool(data[2])
 
     def _selected_profile_name(self) -> str:
         return self._selected_profile_key()[0]
 
     def _reload_profiles(self, select_name: str = "", select_version: int | None = None) -> None:
         profiles = self.service.load_profiles()
-        self.profile_table.blockSignals(True)
-        self.profile_table.setRowCount(0)
-        selected_row = -1
+        if not select_name:
+            remembered = self.user_settings.get_value("site_profile/last_profile_name", "").strip()
+            if remembered in profiles:
+                select_name = remembered
+                select_version = profiles[remembered].profile_version
+
+        self.profile_selector.blockSignals(True)
+        self.profile_selector.clear()
+        selected_index = -1
         for profile_name, current in sorted(profiles.items(), key=lambda row: row[0].casefold()):
             versions = self.service.load_profile_versions(profile_name) or [current]
             for profile in reversed(versions):
-                row = self.profile_table.rowCount()
-                self.profile_table.insertRow(row)
                 is_active = profile.profile_version == current.profile_version
-                confidences = [float(profile.lbs_confidence), float(profile.breaker_confidence)]
-                if profile.smart_ground_devref:
-                    confidences.append(float(profile.ground_confidence))
-                if profile.normal_ready:
-                    confidences.extend([float(profile.normal_lbs_confidence), float(profile.normal_breaker_confidence)])
-                if profile.normal_ground_devref:
-                    confidences.append(float(profile.normal_ground_confidence))
-                confidence = min(confidences) if confidences else 0.0
-                if profile.full_ready:
-                    readiness = "Ready"
-                elif profile.smart_ready and profile.normal_ready and not profile.ground_ready:
-                    readiness = "Needs Ground"
-                elif profile.smart_ready:
-                    readiness = "SMART Only"
-                else:
-                    readiness = "Incomplete"
-                builtins = [
-                    profile.smart_lbs_devref,
-                    profile.smart_breaker_devref,
-                    profile.smart_ground_devref,
-                    profile.normal_lbs_devref,
-                    profile.normal_breaker_devref,
-                    profile.normal_ground_devref,
-                ]
-                enabled_custom = [entry for entry in profile.custom_symbols if bool(entry.get("enabled", True))]
-                values = [
-                    profile.site_name,
-                    profile_name,
-                    f"V{profile.profile_version}",
-                    "ACTIVE" if is_active else "ARCHIVED",
-                    f"{sum(1 for value in builtins if value)}/6",
-                    str(len(enabled_custom)),
-                    str(len(profile.sample_files)),
-                    f"{confidence:.0%}",
-                    readiness,
-                ]
-                for column, text_value in enumerate(values):
-                    item = QTableWidgetItem(text_value)
-                    if column == 1:
-                        item.setData(Qt.ItemDataRole.UserRole, profile_name)
-                    if column == 2:
-                        item.setData(Qt.ItemDataRole.UserRole, profile.profile_version)
-                    if column == 4:
-                        item.setToolTip(
-                            "\n".join([
-                                f"SMART LBS: {profile.smart_lbs_devref or '-'}",
-                                f"SMART CB: {profile.smart_breaker_devref or '-'}",
-                                f"SMART Ground: {profile.smart_ground_devref or '-'}",
-                                f"NORMAL LBS: {profile.normal_lbs_devref or '-'}",
-                                f"NORMAL CB: {profile.normal_breaker_devref or '-'}",
-                                f"NORMAL Ground: {profile.normal_ground_devref or '-'}",
-                            ])
-                        )
-                    if column == 5 and enabled_custom:
-                        item.setToolTip("\n".join(
-                            f"{entry.get('scope', 'ANY')} / {entry.get('role', '自定义')}: {entry.get('standard_devref', '-')}"
-                            for entry in enabled_custom
-                        ))
-                    self.profile_table.setItem(row, column, item)
+                ready, _issues = self.service.validate_authoritative_standard(profile)
+                role_values = (
+                    profile.smart_lbs_devref, profile.smart_breaker_devref, profile.smart_ground_devref,
+                    profile.normal_lbs_devref, profile.normal_breaker_devref, profile.normal_ground_devref,
+                )
+                configured = sum(1 for value in role_values if str(value).strip())
+                unique_files = len({str(value).casefold() for value in role_values if str(value).strip()})
+                state = "ACTIVE" if is_active else "ARCHIVED"
+                readiness = "READY" if ready else "NOT READY"
+                lock_label = " · LOCKED" if profile.locked else ""
+                label = (
+                    f"{profile.site_name} / {profile_name} / V{profile.profile_version} · {state} · {readiness}{lock_label}"
+                    f" · 覆盖 {configured}/6 · 标准文件 {unique_files}"
+                )
+                self.profile_selector.addItem(label, (profile_name, profile.profile_version, is_active))
+                index = self.profile_selector.count() - 1
                 target_version = select_version if select_version is not None else current.profile_version
                 if profile_name == select_name and profile.profile_version == target_version:
-                    selected_row = row
-        fit_known_dense_table(self.profile_table)
-        self.profile_table.blockSignals(False)
+                    selected_index = index
 
-        if selected_row >= 0:
-            self.profile_table.selectRow(selected_row)
+        self.profile_selector.blockSignals(False)
+        if selected_index >= 0:
+            self.profile_selector.setCurrentIndex(selected_index)
             self._profile_selection_changed()
-        elif self.profile_table.rowCount() > 0:
-            # First row is the newest ACTIVE version of the alphabetically first profile.
-            self.profile_table.selectRow(0)
+        elif self.profile_selector.count() > 0:
+            self.profile_selector.setCurrentIndex(0)
             self._profile_selection_changed()
         else:
             self._new_profile(clear_selection=False)
@@ -694,6 +504,108 @@ class SiteProfilePage(BasePage):
 
     def _symbol_meta(self, devref: str) -> dict[str, object]:
         return dict(self._symbol_catalog.get(str(devref).strip(), {}))
+
+    @staticmethod
+    def _catalog_from_standard_records(records: list[dict[str, object]]) -> dict[str, dict[str, object]]:
+        catalog: dict[str, dict[str, object]] = {}
+        for raw in records:
+            row = dict(raw)
+            devref = str(row.get("devref", "")).strip()
+            if not devref:
+                continue
+            catalog[devref] = {
+                "devref": devref,
+                "element_tag": str(row.get("element_tag", "")).strip(),
+                "element_id": str(row.get("element_id", "")).strip(),
+                "source_file": str(row.get("original_name", "")).strip(),
+                "width": float(row.get("width", 0.0) or 0.0),
+                "height": float(row.get("height", 0.0) or 0.0),
+                "align_center": list(row.get("align_center", [])),
+                "pins": list(row.get("pins", [])),
+                "pin_ids": list(row.get("pin_ids", [])),
+                "pin_indices": list(row.get("pin_indices", [])),
+                "rotations": [0, 90, 180, 270],
+                "count": 1,
+                "sha256": str(row.get("sha256", "")).strip(),
+                "managed_path": str(row.get("managed_path", "")).strip(),
+                "p_NameString": "",
+                "key_name": "",
+            }
+        return catalog
+
+    def _editor_standard_records(self) -> list[dict[str, object]]:
+        """Return current ACTIVE files plus pending uploads, with pending files winning.
+
+        This makes partial updates safe: replacing one device standard does not force
+        the user to re-upload the other five standard files.
+        """
+        name, _version, active = self._selected_profile_key()
+        current = self.service.load_profiles().get(name) if name and active else None
+        merged: dict[str, dict[str, object]] = {}
+        for raw in (current.managed_standard_files if current else []):
+            row = dict(raw)
+            devref = str(row.get("devref", "")).strip()
+            if devref:
+                merged[devref.casefold()] = row
+        for raw in self._pending_standard_file_records:
+            row = dict(raw)
+            devref = str(row.get("devref", "")).strip()
+            if devref:
+                merged[devref.casefold()] = row
+        return sorted(merged.values(), key=lambda row: str(row.get("devref", "")).casefold())
+
+    def _fill_authoritative_combo(
+        self, combo: WheelSafeComboBox, expected_tag: str, selected: str, records: list[dict[str, object]]
+    ) -> None:
+        """Populate with every uploaded authoritative G.
+
+        ``expected_tag`` remains a business-drawing locator hint for the built-in
+        role, not an upload restriction. The user-selected row is authoritative;
+        filename/XML inference never blocks or silently reassigns a standard file.
+        """
+        combo.blockSignals(True)
+        combo.clear()
+        combo.setEditable(False)
+        for raw in records:
+            row = dict(raw)
+            devref = str(row.get("devref", "")).strip()
+            if not devref:
+                continue
+            filename = Path(str(row.get("original_name", "")).strip() or "standard.g").name
+            combo.addItem(filename, devref)
+            parsed_tag = str(row.get("element_tag", "")).strip() or "-"
+            combo.setItemData(
+                combo.count() - 1,
+                "\n".join([
+                    f"文件：{filename}",
+                    f"devref：{devref}",
+                    f"上传 G 解析 XML：{parsed_tag}",
+                    f"当前行检查对象 XML：{expected_tag or '-'}",
+                    f"主体 ID：{str(row.get('element_id', '')).strip() or '-'}",
+                    "绑定依据：用户明确选择当前设备角色；解析类型仅作参考，不限制绑定。",
+                ]),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        index = combo.findData(selected) if selected else -1
+        combo.setCurrentIndex(index if index >= 0 else -1)
+        combo.blockSignals(False)
+        self._refresh_standard_row(combo)
+
+    def _populate_builtin_standard_combos(self, records: list[dict[str, object]], *, preserve_current: bool = True) -> None:
+        selections = {
+            "lbs": str(self.lbs_combo.currentData() or "").strip() if preserve_current else "",
+            "breaker": str(self.breaker_combo.currentData() or "").strip() if preserve_current else "",
+            "ground": str(self.ground_combo.currentData() or "").strip() if preserve_current else "",
+            "normal_lbs": str(self.normal_lbs_combo.currentData() or "").strip() if preserve_current else "",
+            "normal_breaker": str(self.normal_breaker_combo.currentData() or "").strip() if preserve_current else "",
+            "normal_ground": str(self.normal_ground_combo.currentData() or "").strip() if preserve_current else "",
+        }
+        self._fill_authoritative_combo(self.lbs_combo, "CBreakerDis", selections["lbs"], records)
+        self._fill_authoritative_combo(self.breaker_combo, "CBreakerDis", selections["breaker"], records)
+        self._fill_authoritative_combo(self.ground_combo, "ZhaiWaiJieDiDaoZha", selections["ground"], records)
+        self._fill_authoritative_combo(self.normal_lbs_combo, "CBreakerDis", selections["normal_lbs"], records)
+        self._fill_authoritative_combo(self.normal_breaker_combo, "CBreakerDis", selections["normal_breaker"], records)
+        self._fill_authoritative_combo(self.normal_ground_combo, "ZhaiWaiJieDiDaoZha", selections["normal_ground"], records)
 
     def _refresh_symbol_properties(self, row: int, devref: str) -> None:
         meta = self._symbol_meta(devref)
@@ -750,32 +662,35 @@ class SiteProfilePage(BasePage):
                 result.append(row)
         return result
 
-    def _populate_custom_devref_combo(self, combo: WheelSafeComboBox, selected: str) -> None:
-        combo.blockSignals(True)
-        combo.clear()
-        combo.setEditable(True)
-        for devref, meta in sorted(
-            self._symbol_catalog.items(),
-            key=lambda item: (
-                str(item[1].get("element_tag", "")).casefold(),
-                str(item[1].get("element_id", "")).casefold(),
-                item[0].casefold(),
-            ),
-        ):
-            tag = str(meta.get("element_tag", "")).strip()
-            body_id = str(meta.get("element_id", "")).strip()
-            label = f"{devref}"
-            if tag or body_id:
-                label += f"   [{tag or '-'} / {body_id or '-'}]"
-            combo.addItem(label, devref)
-        if selected and combo.findData(selected) < 0:
-            combo.addItem(selected, selected)
-        index = combo.findData(selected)
-        if index >= 0:
-            combo.setCurrentIndex(index)
-        elif selected:
-            combo.setEditText(selected)
-        combo.blockSignals(False)
+    def _set_standard_file_cell(self, row: int, devref: str) -> QTableWidgetItem:
+        """Render the authoritative G as a normal table cell and keep devref as data."""
+        devref = str(devref or "").strip()
+        meta = self._symbol_meta(devref)
+        filename = Path(str(meta.get("source_file", "")).strip()).name
+        display = filename or (self._devref_short(devref) if devref else "-")
+        item = self.standard_table.item(row, 3)
+        if item is None:
+            item = self._set_readonly_cell(row, 3, display)
+        else:
+            item.setText(display)
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        item.setData(Qt.ItemDataRole.UserRole, devref)
+        item.setToolTip(
+            "\n".join([
+                f"文件：{filename or '-'}",
+                f"devref：{devref or '-'}",
+                f"XML：{str(meta.get('element_tag', '')).strip() or '-'}",
+                f"主体 ID：{str(meta.get('element_id', '')).strip() or '-'}",
+                "绑定方式：选中设备角色后，由用户直接上传标准图元 G。",
+            ])
+        )
+        return item
+
+    def _standard_file_devref(self, row: int) -> str:
+        item = self.standard_table.item(row, 3)
+        if item is None:
+            return ""
+        return str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
 
     def _insert_custom_standard_row(self, entry: dict[str, object] | None = None) -> int:
         entry = dict(entry or {})
@@ -798,12 +713,8 @@ class SiteProfilePage(BasePage):
         tag_item = QTableWidgetItem(str(entry.get("element_tag", "")).strip())
         self.standard_table.setItem(row, 2, tag_item)
 
-        devref_combo = WheelSafeComboBox()
-        devref_combo.setMinimumContentsLength(34)
-        devref_combo.setMinimumHeight(34)
         selected_devref = str(entry.get("standard_devref", "")).strip()
-        self._populate_custom_devref_combo(devref_combo, selected_devref)
-        self.standard_table.setCellWidget(row, 3, devref_combo)
+        self._set_standard_file_cell(row, selected_devref)
 
         for column in (4, 5, 6, 7):
             self._set_readonly_cell(row, column, "-")
@@ -817,30 +728,24 @@ class SiteProfilePage(BasePage):
         self._set_readonly_cell(row, 10, "-")
         self._set_readonly_cell(row, 11, "待确认")
 
-        def refresh_custom(*_args, target_row=row, combo=devref_combo) -> None:
-            self._refresh_custom_standard_row(target_row, combo)
-
-        devref_combo.currentIndexChanged.connect(refresh_custom)
-        devref_combo.currentTextChanged.connect(refresh_custom)
-        self._refresh_custom_standard_row(row, devref_combo)
+        self._refresh_custom_standard_row(row)
         fit_known_dense_table(self.standard_table)
         return row
 
-    def _refresh_custom_standard_row(self, row: int, combo: WheelSafeComboBox | None = None) -> None:
+    def _refresh_custom_standard_row(self, row: int) -> None:
         if row < len(self._standard_specs) or row >= self.standard_table.rowCount():
             return
-        combo = combo or self.standard_table.cellWidget(row, 3)
-        if not isinstance(combo, WheelSafeComboBox):
-            return
-        devref = str(combo.currentData() or combo.currentText() or "").strip()
+        devref = self._standard_file_devref(row)
+        self._set_standard_file_cell(row, devref)
         meta = self._symbol_meta(devref)
         tag_item = self.standard_table.item(row, 2)
         if tag_item is not None and not tag_item.text().strip() and meta.get("element_tag"):
             tag_item.setText(str(meta.get("element_tag", "")))
         self._refresh_symbol_properties(row, devref)
-        count = int(meta.get("count", 0) or 0)
-        confidence_item = self.standard_table.item(row, 10) or self._set_readonly_cell(row, 10, "-")
-        confidence_item.setText(f"样本 {count}" if count else ("已定义" if devref else "-"))
+        source_item = self.standard_table.item(row, 10) or self._set_readonly_cell(row, 10, "-")
+        source_file = Path(str(meta.get("source_file", "")).strip()).name
+        source_item.setText("用户上传" if devref and source_file else ("未上传" if not devref else "-"))
+        source_item.setToolTip(source_file or "未上传")
         status_item = self.standard_table.item(row, 11) or self._set_readonly_cell(row, 11, "待确认")
         if not devref:
             status_item.setText("缺少标准图元")
@@ -865,63 +770,23 @@ class SiteProfilePage(BasePage):
         self._update_action_state()
 
     def _add_unmapped_scanned_symbols(self) -> None:
-        if not self._symbol_catalog:
-            QMessageBox.information(self, "没有扫描结果", "请先扫描标准 G 文件。程序会把 G 中识别到的 devref 与元素属性列出来。")
-            return
-        mapped = {
-            str(combo.currentData() or "").strip()
-            for _scope, _role, _tag, combo, _match_attr, _match_value in self._standard_specs
-            if str(combo.currentData() or "").strip()
-        }
-        for row in self._custom_standard_rows():
-            combo = self.standard_table.cellWidget(row, 3)
-            if isinstance(combo, WheelSafeComboBox):
-                value = str(combo.currentData() or combo.currentText() or "").strip()
-                if value:
-                    mapped.add(value)
-        candidates = [(devref, meta) for devref, meta in self._symbol_catalog.items() if devref not in mapped]
-        if not candidates:
-            QMessageBox.information(self, "没有未映射图元", "扫描到的图元都已经存在于当前标准表中。")
-            return
-        if len(candidates) > 30:
-            if QMessageBox.question(
-                self,
-                "批量添加未映射图元",
-                f"当前扫描到 {len(candidates)} 个尚未映射的 devref。全部加入会产生较多自定义规则。\n\n确认全部加入吗？",
-            ) != QMessageBox.StandardButton.Yes:
-                return
-        first_row = -1
-        for devref, meta in sorted(candidates, key=lambda item: (str(item[1].get("element_tag", "")), item[0])):
-            role = str(meta.get("element_id", "")).strip() or self._devref_short(devref) or "自定义设备"
-            row = self._insert_custom_standard_row({
-                "scope": "ANY",
-                "role": role,
-                "element_tag": str(meta.get("element_tag", "")).strip(),
-                "standard_devref": devref,
-                "match_attr": "devref",
-                "match_value": devref,
-                "source_file": str(meta.get("source_file", "")).strip(),
-            })
-            if first_row < 0:
-                first_row = row
-        if first_row >= 0:
-            self.standard_table.selectRow(first_row)
-            self.standard_table.scrollToItem(self.standard_table.item(first_row, 1))
-        self.profile_status.setText(
-            f"已加入 {len(candidates)} 个扫描到的未映射图元。若要把旧图元升级到该标准，请把“当前/旧图元匹配值”改成旧 devref，或改用 p_NameString / key_name / XML元素 作为匹配条件。"
+        """Legacy entry retained for compatibility; business G can no longer become a standard."""
+        QMessageBox.information(
+            self,
+            "必须上传标准图元",
+            "业务单线图中发现的 devref 只能作为检查线索，不能直接加入图元标准。\n"
+            "请通过“标准管理 → 上传标准图元 G”上传对应的真实图元定义文件，再将其绑定到设备角色。",
         )
-        self._update_action_state()
 
     def _collect_custom_symbols(self) -> list[dict[str, object]]:
         result: list[dict[str, object]] = []
         for row in self._custom_standard_rows():
             marker_item = self.standard_table.item(row, 0)
             scope_combo = self.standard_table.cellWidget(row, 0)
-            devref_combo = self.standard_table.cellWidget(row, 3)
             match_combo = self.standard_table.cellWidget(row, 8)
-            if not isinstance(scope_combo, WheelSafeComboBox) or not isinstance(devref_combo, WheelSafeComboBox) or not isinstance(match_combo, WheelSafeComboBox):
+            if not isinstance(scope_combo, WheelSafeComboBox) or not isinstance(match_combo, WheelSafeComboBox):
                 continue
-            devref = str(devref_combo.currentData() or devref_combo.currentText() or "").strip()
+            devref = self._standard_file_devref(row)
             role = (self.standard_table.item(row, 1).text() if self.standard_table.item(row, 1) else "").strip()
             element_tag = (self.standard_table.item(row, 2).text() if self.standard_table.item(row, 2) else "").strip()
             match_value = (self.standard_table.item(row, 9).text() if self.standard_table.item(row, 9) else "").strip()
@@ -952,7 +817,7 @@ class SiteProfilePage(BasePage):
         for combo in (self.lbs_combo, self.breaker_combo, self.ground_combo, self.normal_lbs_combo, self.normal_breaker_combo, self.normal_ground_combo):
             combo.setEnabled(enabled)
         for row in self._custom_standard_rows():
-            for column in (0, 3, 8):
+            for column in (0, 8):
                 widget = self.standard_table.cellWidget(row, column)
                 if widget is not None:
                     widget.setEnabled(enabled)
@@ -960,21 +825,64 @@ class SiteProfilePage(BasePage):
             (QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.SelectedClicked)
             if enabled else QAbstractItemView.EditTrigger.NoEditTriggers
         )
+        if hasattr(self, "upload_standard_button"):
+            self.upload_standard_button.setEnabled(enabled)
+        if hasattr(self, "share_pair_checkbox"):
+            self.share_pair_checkbox.setEnabled(enabled and 0 <= self.standard_table.currentRow() < len(self._standard_specs))
         self.add_custom_button.setEnabled(enabled)
-        self.add_scanned_button.setEnabled(enabled)
         self.delete_custom_button.setEnabled(enabled)
         self.save_button.setEnabled(enabled)
 
+    def _current_active_profile(self) -> SiteSmartProfile | None:
+        name = self._selected_profile_name()
+        return self.service.load_profiles().get(name) if name else None
+
+    def _toggle_profile_lock(self) -> None:
+        name, version, active = self._selected_profile_key()
+        if not name or version is None or not active:
+            QMessageBox.information(self, "请先保存标准", "锁定功能只针对已保存的当前 ACTIVE 标准版本。")
+            return
+        profile = self.service.load_profiles().get(name)
+        if profile is None:
+            return
+        if profile.locked:
+            if QMessageBox.question(
+                self,
+                "解锁当前标准",
+                f"确认解锁 {name} V{profile.profile_version}？\n\n解锁后可以重新上传/绑定标准 G、修改表格并保存新版本。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            locked = False
+        else:
+            if QMessageBox.question(
+                self,
+                "锁定当前标准",
+                f"确认锁定 {name} V{profile.profile_version}？\n\n锁定后该 ACTIVE 版本不能修改、上传标准 G、删除或恢复历史版本；仍可正常执行图元标准检查。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            locked = True
+        try:
+            saved = self.service.set_locked(name, locked)
+        except ValueError as exc:
+            QMessageBox.warning(self, "锁定状态更新失败", str(exc))
+            return
+        self._reload_profiles(saved.profile_name, saved.profile_version)
+        self.activeProfileChanged.emit(saved.profile_name)
+
     def _new_profile(self, *_args, clear_selection: bool = True) -> None:
-        if hasattr(self, "edit_standard_button"):
-            self.edit_standard_button.setChecked(True)
-        if clear_selection:
-            self.profile_table.clearSelection()
-            self.profile_table.setCurrentCell(-1, -1)
+        if clear_selection and hasattr(self, "profile_selector"):
+            self.profile_selector.blockSignals(True)
+            self.profile_selector.setCurrentIndex(-1)
+            self.profile_selector.blockSignals(False)
         self._selected_version = None
         self._selected_is_active = False
         self._candidate_counts.clear()
         self._symbol_catalog.clear()
+        self._pending_standard_file_records = []
         self._clear_custom_standard_rows()
         self.site_name.clear()
         self.profile_name.clear()
@@ -984,17 +892,20 @@ class SiteProfilePage(BasePage):
         self.normal_breaker_combo.clear()
         self.ground_combo.clear()
         self.normal_ground_combo.clear()
-        self.scan_summary.setText("尚未扫描。")
-        self.profile_status.setText("新建标准：填写适用范围 / 标准名称后扫描标准样本。")
+        self.scan_summary.setText("尚未上传标准图元。")
+        self.profile_status.setText("新建标准：填写适用范围 / 标准名称后，点击“上传标准图元 G”建立权威标准库。")
         self.current_profile_label.setText("当前执行标准：未选择")
         self.active_profile_summary.setText("当前执行标准：尚未创建 Profile")
         self._last_scan = None
         self._set_editor_enabled(True)
+        if hasattr(self, "lock_standard_button"):
+            self.lock_standard_button.setText("锁定当前版本")
+            self.lock_standard_button.setEnabled(False)
         self.restore_action.setEnabled(False)
         self.delete_action.setEnabled(False)
         self._update_action_state()
 
-    def _profile_selection_changed(self) -> None:
+    def _profile_selection_changed(self, *_args) -> None:
         name, version, active = self._selected_profile_key()
         if not name or version is None:
             return
@@ -1004,24 +915,50 @@ class SiteProfilePage(BasePage):
             return
         self._selected_version = version
         self._selected_is_active = active
-        self._symbol_catalog = {str(key): dict(value) for key, value in profile.symbol_catalog.items()}
+        self._pending_standard_file_records = []
+        records = [dict(row) for row in profile.managed_standard_files]
+        self._symbol_catalog = self._catalog_from_standard_records(records)
         self._load_custom_symbols(profile.custom_symbols)
         self.site_name.setText(profile.site_name)
         self.profile_name.setText(profile.profile_name)
-        self._fill_candidate_combo(self.lbs_combo, profile.lbs_candidates, profile.smart_lbs_devref)
-        self._fill_candidate_combo(self.breaker_combo, profile.breaker_candidates, profile.smart_breaker_devref)
-        self._fill_candidate_combo(self.ground_combo, profile.ground_candidates, profile.smart_ground_devref)
-        self._fill_candidate_combo(self.normal_lbs_combo, profile.normal_lbs_candidates, profile.normal_lbs_devref)
-        self._fill_candidate_combo(self.normal_breaker_combo, profile.normal_breaker_candidates, profile.normal_breaker_devref)
-        self._fill_candidate_combo(self.normal_ground_combo, profile.normal_ground_candidates, profile.normal_ground_devref)
+        self._fill_authoritative_combo(self.lbs_combo, "CBreakerDis", profile.smart_lbs_devref, records)
+        self._fill_authoritative_combo(self.breaker_combo, "CBreakerDis", profile.smart_breaker_devref, records)
+        self._fill_authoritative_combo(self.ground_combo, "ZhaiWaiJieDiDaoZha", profile.smart_ground_devref, records)
+        self._fill_authoritative_combo(self.normal_lbs_combo, "CBreakerDis", profile.normal_lbs_devref, records)
+        self._fill_authoritative_combo(self.normal_breaker_combo, "CBreakerDis", profile.normal_breaker_devref, records)
+        self._fill_authoritative_combo(self.normal_ground_combo, "ZhaiWaiJieDiDaoZha", profile.normal_ground_devref, records)
+        # Refresh once more after all six scopes are loaded so shared SMART/NORMAL
+        # bindings are visible in both paired status cells.
+        for _scope, _role, _tag, combo, _match_attr, _match_value in self._standard_specs:
+            self._refresh_standard_row(combo)
+        builtin_values = (
+            profile.smart_lbs_devref, profile.smart_breaker_devref, profile.smart_ground_devref,
+            profile.normal_lbs_devref, profile.normal_breaker_devref, profile.normal_ground_devref,
+        )
+        shared_pairs = sum(
+            1 for smart_value, normal_value in (
+                (profile.smart_lbs_devref, profile.normal_lbs_devref),
+                (profile.smart_breaker_devref, profile.normal_breaker_devref),
+                (profile.smart_ground_devref, profile.normal_ground_devref),
+            )
+            if smart_value and normal_value and smart_value.casefold() == normal_value.casefold()
+        )
         self.scan_summary.setText(
-            f"样本 {len(profile.sample_files)} 个，SMART RMU {profile.smart_rmu_count}，NORMAL RMU {profile.normal_rmu_count}；"
-            f"SMART Y/Q/接地 {profile.lbs_confidence:.0%}/{profile.breaker_confidence:.0%}/{profile.ground_confidence:.0%}，"
-            f"NORMAL Y/Q/接地 {profile.normal_lbs_confidence:.0%}/{profile.normal_breaker_confidence:.0%}/{profile.normal_ground_confidence:.0%}；"
-            f"自定义设备图元 {len(profile.custom_symbols)} 项。"
+            f"标准文件 {len(profile.managed_standard_files)} 个；"
+            f"检查范围覆盖 {sum(1 for value in builtin_values if value)}/6；"
+            f"SMART/NORMAL 共用 {shared_pairs} 组；"
+            f"自定义设备 {len(profile.custom_symbols)} 项；标准指纹 {(profile.standard_fingerprint or '-')[:16]}。"
         )
         if active:
-            self.profile_status.setText(f"ACTIVE · Profile V{profile.profile_version} · 最后保存：{profile.updated_at or '-'}")
+            self.user_settings.set_value("site_profile/last_profile_name", profile.profile_name)
+            ready_ok, ready_issues = self.service.validate_authoritative_standard(profile)
+            fingerprint = (profile.standard_fingerprint or "-")[:16]
+            lock_state = "LOCKED" if profile.locked else "UNLOCKED"
+            self.profile_status.setText(
+                f"ACTIVE · V{profile.profile_version} · {'READY' if ready_ok else 'NOT READY'} · {lock_state} · 标准指纹 {fingerprint} · 最后保存：{profile.updated_at or '-'}"
+            )
+            if not ready_ok:
+                self.scan_summary.setText("当前标准不可执行：" + "；".join(ready_issues[:3]))
             self.current_profile_label.setText(
                 f"当前执行标准：{current.site_name} / {current.profile_name} / V{current.profile_version} · ACTIVE"
             )
@@ -1030,7 +967,7 @@ class SiteProfilePage(BasePage):
             )
         else:
             self.profile_status.setText(
-                f"ARCHIVED · V{profile.profile_version} · 仅供查看。当前 ACTIVE 是 V{current.profile_version}；如需回滚请点击“恢复此版本”。"
+                f"ARCHIVED · V{profile.profile_version} · {'LOCKED · ' if profile.locked else ''}仅供查看。当前 ACTIVE 是 V{current.profile_version}；如需回滚请点击“恢复此版本”。"
             )
             self.current_profile_label.setText(
                 f"当前执行标准仍为：{current.site_name} / {current.profile_name} / V{current.profile_version} · ACTIVE"
@@ -1039,11 +976,15 @@ class SiteProfilePage(BasePage):
                 f"当前执行标准：{current.site_name} / {current.profile_name} / V{current.profile_version} · ACTIVE（当前查看 V{profile.profile_version} 历史版本）"
             )
         self._last_scan = None
-        self._set_editor_enabled(active)
-        self.restore_action.setEnabled(not active)
-        self.delete_action.setEnabled(active)
+        editable = bool(active and not profile.locked)
+        self._set_editor_enabled(editable)
+        if hasattr(self, "lock_standard_button"):
+            self.lock_standard_button.setText("解锁当前版本" if active and profile.locked else "锁定当前版本")
+            self.lock_standard_button.setEnabled(bool(active and not self._task_busy))
+        self.restore_action.setEnabled(bool(not active and not current.locked))
+        self.delete_action.setEnabled(bool(active and not profile.locked))
         self._update_action_state()
-        self._refresh_discovery_status(current if active else None)
+        self._standard_row_selection_changed()
 
     def _restore_selected_version(self) -> None:
         name, version, active = self._selected_profile_key()
@@ -1055,6 +996,9 @@ class SiteProfilePage(BasePage):
             return
         current = self.service.load_profiles().get(name)
         if current is None:
+            return
+        if current.locked:
+            QMessageBox.information(self, "当前标准已锁定", f"{name} V{current.profile_version} 已锁定。请先解锁后再删除。")
             return
         if QMessageBox.question(
             self,
@@ -1100,72 +1044,65 @@ class SiteProfilePage(BasePage):
         if row < 0 or not hasattr(self, "standard_table"):
             return
         selected = str(combo.currentData() or combo.currentText() or "").strip()
-        counts = self._candidate_counts.get(id(combo), {})
-        total = sum(max(0, int(value)) for value in counts.values())
-        count = max(0, int(counts.get(selected, 0))) if selected else 0
-        confidence = (count / total) if total else 0.0
+        self._set_standard_file_cell(row, selected)
         self._refresh_symbol_properties(row, selected)
-        confidence_item = self.standard_table.item(row, 10) or self._set_readonly_cell(row, 10, "-")
-        status_item = self.standard_table.item(row, 11) or self._set_readonly_cell(row, 11, "未学习")
-        confidence_item.setText(f"{confidence:.0%}" if selected and total else ("已定义" if selected else "-"))
-        if not selected:
-            status = "未学习"
-        elif not total:
-            status = "已保存"
-        elif confidence >= 0.90:
-            status = "就绪"
-        else:
-            status = "需确认"
-        status_item.setText(status)
+        meta = self._symbol_meta(selected)
+        source_item = self.standard_table.item(row, 10) or self._set_readonly_cell(row, 10, "-")
+        status_item = self.standard_table.item(row, 11) or self._set_readonly_cell(row, 11, "未上传")
+        source_file = Path(str(meta.get("source_file", "")).strip()).name
+        source_item.setText("用户上传" if selected and source_file else "未上传")
+        source_item.setToolTip(source_file or "未上传")
+        status_text = "READY" if selected and meta else "缺少标准图元"
+        if row < len(self._standard_specs) and selected and meta:
+            expected_tag = str(self._standard_specs[row][2] or "").strip()
+            actual_tag = str(meta.get("element_tag", "") or "").strip()
+            if expected_tag and actual_tag and expected_tag != actual_tag:
+                status_text = "READY · XML参考不同"
+                status_item.setToolTip(
+                    f"当前设备角色由用户明确绑定。上传 G 解析 XML={actual_tag}；检查对象 XML={expected_tag}。"
+                    "这不会阻止保存/检查，但请确认当前行确实是你希望绑定的设备角色。"
+                )
+            pair_row = self._paired_builtin_row(row)
+            if pair_row >= 0:
+                paired = str(self._standard_specs[pair_row][3].currentData() or "").strip()
+                if paired and paired.casefold() == selected.casefold():
+                    pair_scope = self._standard_specs[pair_row][0]
+                    suffix = " · XML参考不同" if "XML参考不同" in status_text else ""
+                    status_text = f"READY · 与 {pair_scope} 共用{suffix}"
+        status_item.setText(status_text)
+        if self.standard_table.currentRow() == row and hasattr(self, "share_pair_checkbox"):
+            self._standard_row_selection_changed()
         fit_known_dense_table(self.standard_table)
 
-    def _confirm_rescan_target(self) -> bool:
-        name, version, active = self._selected_profile_key()
-        current = self.service.load_profiles().get(name) if name else None
-        if current is None or not current.smart_ready:
-            return True
-        if not active:
-            QMessageBox.information(
-                self,
-                "历史版本只读",
-                "当前选中的是 ARCHIVED 历史版本。请先选择 ACTIVE 版本，或者点击“恢复此版本”后再重新扫描。",
-            )
-            return False
-
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Question)
-        box.setWindowTitle("Profile 已有图元标准")
-        box.setText(
-            f"{current.profile_name} V{current.profile_version} 已经保存了图元 devref / 几何标准。\n\n"
-            "如果图元名称、大小、旋转或连接锚点发生变化，应使用新的标准 G 样本重新扫描。"
-        )
-        box.setInformativeText(
-            "选择“更新当前 Profile”继续扫描；保存时如果标准发生变化，会自动生成新的 ACTIVE 版本并保留旧版本。"
-            "如果这批样本属于另一套标准，请新建标准，避免覆盖当前 ACTIVE 标准。"
-        )
-        update_button = box.addButton("更新当前 Profile", QMessageBox.ButtonRole.AcceptRole)
-        new_button = box.addButton("新建标准", QMessageBox.ButtonRole.ActionRole)
-        box.addButton(QMessageBox.StandardButton.Cancel)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is update_button:
-            return True
-        if clicked is new_button:
-            self._new_profile()
-            QMessageBox.information(self, "新建标准", "请填写新的适用范围 / 标准名称，然后重新点击扫描。")
-        return False
 
     def _scan_samples(self) -> None:
-        if hasattr(self, "edit_standard_button"):
-            self.edit_standard_button.setChecked(True)
-        if self._scan_worker is not None:
-            return
+        """Upload exactly one authoritative icon G into the currently selected role."""
         if not self.site_name.text().strip():
-            QMessageBox.warning(self, "Site Name", "请先输入 Site Name，再扫描属于该现场的标准样本。")
+            QMessageBox.warning(self, "Site Name", "请先输入适用范围，再上传标准图元 G。")
             return
         if not self.profile_name.text().strip():
-            QMessageBox.warning(self, "Profile Name", "请先输入 Profile Name。")
+            QMessageBox.warning(self, "Profile Name", "请先输入标准名称。")
             return
+        selected_name, selected_version, selected_active = self._selected_profile_key()
+        selected_profile = self.service.load_profiles().get(selected_name) if selected_name and selected_active else None
+        if selected_profile is not None and selected_profile.locked:
+            QMessageBox.information(
+                self,
+                "当前标准已锁定",
+                f"{selected_name} V{selected_version} 已锁定，不能上传或替换标准 G。请先点击“解锁当前版本”。",
+            )
+            return
+
+        row = self.standard_table.currentRow()
+        if row < 0:
+            QMessageBox.information(
+                self,
+                "先选择设备角色",
+                "请先在“标准定义”表格中选中要设置的设备角色，例如 NORMAL / Circuit Breaker，"
+                "然后点击上传。一个 G 文件只绑定这一行。",
+            )
+            return
+
         typed_name = self.profile_name.text().strip()
         selected_name, _version, _active = self._selected_profile_key()
         existing = self.service.load_profiles().get(typed_name)
@@ -1173,50 +1110,100 @@ class SiteProfilePage(BasePage):
             QMessageBox.warning(
                 self,
                 "标准名称已存在",
-                f"图元标准“{typed_name}”已存在。请在上方列表选择并维护该标准，或者使用新的标准名称。",
+                f"图元标准“{typed_name}”已存在。请在“标准版本”下拉框中选择后更新，或者使用新的标准名称。",
             )
             return
-        if not self._confirm_rescan_target():
-            return
 
-        # Remote selection may need to be downloaded to the read-only local snapshot.
-        # Show indeterminate progress immediately so the UI never looks frozen.
-        self.scan_progress.setVisible(True)
-        self.scan_progress.setRange(0, 0)
-        self.scan_summary.setText("正在准备标准样本……")
-        self.scan_action.setEnabled(False)
-        self.save_button.setEnabled(False)
+        if row < len(self._standard_specs):
+            scope, role_label, expected_tag, target_combo, _match_attr, _match_value = self._standard_specs[row]
+            role_display = f"{scope} / {role_label}"
+        else:
+            target_combo = None
+            scope_widget = self.standard_table.cellWidget(row, 0)
+            scope = scope_widget.currentText().strip().upper() if isinstance(scope_widget, WheelSafeComboBox) else "ANY"
+            role_label = (self.standard_table.item(row, 1).text() if self.standard_table.item(row, 1) else "").strip() or "自定义设备"
+            expected_tag = (self.standard_table.item(row, 2).text() if self.standard_table.item(row, 2) else "").strip()
+            role_display = f"{scope} / {role_label}"
+
+        share_pair = bool(row < len(self._standard_specs) and self.share_pair_checkbox.isChecked())
+        if share_pair:
+            role_display = f"SMART + NORMAL / {role_label}"
+
+        recent = self.user_settings.resolve_directory(
+            "recent_paths/site_profile/standard_icon_directory", fallback=Path.home()
+        ).directory
+        selected_file, _filter = QFileDialog.getOpenFileName(
+            self,
+            f"为 {role_display} 选择标准图元 G",
+            str(recent),
+            "G Icon Files (*.g);;All Files (*.*)",
+        )
+        if not selected_file:
+            return
+        path = Path(selected_file)
+        self.user_settings.set_path("recent_paths/site_profile/standard_icon_directory", path.parent)
         try:
-            if not validate_input_source(self, self.source, display_name="图元标准样本"):
-                self.scan_progress.setRange(0, 100)
-                self.scan_progress.setValue(0)
-                self.scan_progress.setVisible(False)
-                self._update_action_state()
-                return
-            self.source.persist_current()
-            files = discover_g_inputs(self.source.path(), self.source.mode())
+            record = dict(self.service.prepare_standard_file_records([path])[0])
         except Exception as exc:
-            self.scan_progress.setRange(0, 100)
-            self.scan_progress.setValue(0)
-            self.scan_progress.setVisible(False)
-            self._update_action_state()
-            QMessageBox.critical(self, "扫描失败", str(exc))
+            QMessageBox.critical(self, "标准图元无效", str(exc))
             return
 
-        self.scan_progress.setRange(0, 100)
-        self.scan_progress.setValue(0)
-        self.scan_summary.setText(f"正在扫描 {len(files)} 个标准 G 文件……")
+        actual_tag = str(record.get("element_tag", "")).strip()
 
-        def do_scan(*, log, progress):
-            return scan_smart_profile_samples(files, progress=progress)
+        devref = str(record.get("devref", "")).strip()
+        pending_by_devref = {
+            str(item.get("devref", "")).casefold(): dict(item)
+            for item in self._pending_standard_file_records
+            if str(item.get("devref", "")).strip()
+        }
+        pending_by_devref[devref.casefold()] = record
+        self._pending_standard_file_records = list(pending_by_devref.values())
 
-        worker = FunctionWorker(do_scan)
-        self._scan_worker = worker
-        worker.signals.progress.connect(self.scan_progress.setValue)
-        worker.signals.result.connect(lambda scan, selected_files=files: self._on_scan_result(scan, selected_files))
-        worker.signals.error.connect(self._on_scan_error)
-        worker.signals.finished.connect(self._on_scan_finished)
-        self._scan_pool.start(worker)
+        records = self._editor_standard_records()
+        self._symbol_catalog = self._catalog_from_standard_records(records)
+        self._populate_builtin_standard_combos(records, preserve_current=True)
+        for custom_row in self._custom_standard_rows():
+            self._refresh_custom_standard_row(custom_row)
+
+        # Bind the uploaded file to the selected role. The same authoritative G
+        # is allowed to serve both SMART and NORMAL for the same device role.
+        # This is common for grounding switches and is also valid for LBS/CB when
+        # the project actually uses one identical symbol in both cabinet classes.
+        if row < len(self._standard_specs):
+            target_combo = self._standard_specs[row][3]
+            index = target_combo.findData(devref)
+            target_combo.setCurrentIndex(index if index >= 0 else -1)
+            if share_pair:
+                pair_row = self._paired_builtin_row(row)
+                if pair_row >= 0:
+                    pair_combo = self._standard_specs[pair_row][3]
+                    pair_index = pair_combo.findData(devref)
+                    pair_combo.setCurrentIndex(pair_index if pair_index >= 0 else -1)
+                    self._refresh_standard_row(pair_combo)
+                self._refresh_standard_row(target_combo)
+                self._standard_row_selection_changed()
+        else:
+            if not expected_tag:
+                tag_item = self.standard_table.item(row, 2)
+                if tag_item is not None:
+                    tag_item.setText(actual_tag)
+            self._set_standard_file_cell(row, devref)
+            self._refresh_custom_standard_row(row)
+
+        self._last_scan = None
+        shared_text = "并同时用于 SMART / NORMAL 两个检查范围" if share_pair else "仅绑定当前检查范围"
+        reference_note = (
+            f" 上传 G 解析 XML={actual_tag or '-'}；当前行检查对象 XML={expected_tag or '-'}，二者仅作为参考，不限制人工绑定。"
+            if expected_tag and actual_tag and actual_tag != expected_tag else ""
+        )
+        self.scan_summary.setText(
+            f"已将 {path.name} 作为 {role_display} 的权威标准图元，{shared_text}。"
+            "保存后只按当前标准中已配置的设备角色检查业务单线图。" + reference_note
+        )
+        self.profile_status.setText(
+            f"待保存：{role_display} → {devref}。devref、w/h、AlignCenter、pin/连接锚点均以这个上传 G 为准。"
+        )
+        self._update_action_state()
 
     def _on_scan_error(self, details: str) -> None:
         self.scan_progress.setValue(0)
@@ -1240,6 +1227,13 @@ class SiteProfilePage(BasePage):
             merged_catalog[devref] = combined
         self._symbol_catalog = merged_catalog
         self.scan_progress.setValue(100)
+        def uploaded_counts(expected_tag: str, observed: dict[str, int]) -> dict[str, int]:
+            values = {str(key): int(value) for key, value in observed.items()}
+            for devref, meta in scan.symbol_catalog.items():
+                if str(meta.get("element_tag", "")).strip() == expected_tag:
+                    values.setdefault(str(devref), 0)
+            return values
+
         current_fixed = {
             "lbs": str(self.lbs_combo.currentData() or "").strip(),
             "breaker": str(self.breaker_combo.currentData() or "").strip(),
@@ -1248,18 +1242,14 @@ class SiteProfilePage(BasePage):
             "normal_breaker": str(self.normal_breaker_combo.currentData() or "").strip(),
             "normal_ground": str(self.normal_ground_combo.currentData() or "").strip(),
         }
-        self._fill_candidate_combo(self.lbs_combo, scan.lbs_counts, scan.suggested_lbs_devref or current_fixed["lbs"])
-        self._fill_candidate_combo(self.breaker_combo, scan.breaker_counts, scan.suggested_breaker_devref or current_fixed["breaker"])
-        self._fill_candidate_combo(self.ground_combo, scan.ground_counts, scan.suggested_ground_devref or current_fixed["ground"])
-        self._fill_candidate_combo(self.normal_lbs_combo, scan.normal_lbs_counts, scan.suggested_normal_lbs_devref or current_fixed["normal_lbs"])
-        self._fill_candidate_combo(self.normal_breaker_combo, scan.normal_breaker_counts, scan.suggested_normal_breaker_devref or current_fixed["normal_breaker"])
-        self._fill_candidate_combo(self.normal_ground_combo, scan.normal_ground_counts, scan.suggested_normal_ground_devref or current_fixed["normal_ground"])
+        self._fill_candidate_combo(self.lbs_combo, uploaded_counts("CBreakerDis", scan.lbs_counts), scan.suggested_lbs_devref or current_fixed["lbs"])
+        self._fill_candidate_combo(self.breaker_combo, uploaded_counts("CBreakerDis", scan.breaker_counts), scan.suggested_breaker_devref or current_fixed["breaker"])
+        self._fill_candidate_combo(self.ground_combo, uploaded_counts("ZhaiWaiJieDiDaoZha", scan.ground_counts), scan.suggested_ground_devref or current_fixed["ground"])
+        self._fill_candidate_combo(self.normal_lbs_combo, uploaded_counts("CBreakerDis", scan.normal_lbs_counts), scan.suggested_normal_lbs_devref or current_fixed["normal_lbs"])
+        self._fill_candidate_combo(self.normal_breaker_combo, uploaded_counts("CBreakerDis", scan.normal_breaker_counts), scan.suggested_normal_breaker_devref or current_fixed["normal_breaker"])
+        self._fill_candidate_combo(self.normal_ground_combo, uploaded_counts("ZhaiWaiJieDiDaoZha", scan.normal_ground_counts), scan.suggested_normal_ground_devref or current_fixed["normal_ground"])
         for row in self._custom_standard_rows():
-            combo = self.standard_table.cellWidget(row, 3)
-            if isinstance(combo, WheelSafeComboBox):
-                selected = str(combo.currentData() or combo.currentText() or "").strip()
-                self._populate_custom_devref_combo(combo, selected)
-                self._refresh_custom_standard_row(row, combo)
+            self._refresh_custom_standard_row(row)
         lbs_conf = scan.lbs_candidates[0].confidence if scan.lbs_candidates else 0.0
         brk_conf = scan.breaker_candidates[0].confidence if scan.breaker_candidates else 0.0
         ground_conf = scan.ground_candidates[0].confidence if scan.ground_candidates else 0.0
@@ -1267,9 +1257,8 @@ class SiteProfilePage(BasePage):
         normal_brk_conf = scan.normal_breaker_candidates[0].confidence if scan.normal_breaker_candidates else 0.0
         normal_ground_conf = scan.normal_ground_candidates[0].confidence if scan.normal_ground_candidates else 0.0
         self.scan_summary.setText(
-            f"扫描 {scan.parsed_file_count}/{len(files)} 个文件：SMART RMU {scan.smart_rmu_count}，NORMAL RMU {scan.normal_rmu_count}，特殊/SMR {scan.ignored_rmu_count}；"
-            f"SMART Y/Q/接地 {lbs_conf:.0%}/{brk_conf:.0%}/{ground_conf:.0%}，NORMAL Y/Q/接地 {normal_lbs_conf:.0%}/{normal_brk_conf:.0%}/{normal_ground_conf:.0%}；"
-            f"共识别 {len(scan.symbol_catalog)} 种带 devref 的图元，可在下方继续添加为自定义设备标准。"
+            f"已读取 {len(self._pending_standard_file_records)} 个用户上传的标准图元 G；"
+            f"识别 {len(scan.symbol_catalog)} 个标准 devref。请在下方为 6 个 RMU 基础角色各选择唯一标准图元后保存。"
         )
         old = self.service.load_profiles().get(self._selected_profile_name() or self.profile_name.text().strip())
         changes: list[str] = []
@@ -1308,9 +1297,17 @@ class SiteProfilePage(BasePage):
         elif min(lbs_conf, brk_conf, ground_conf, normal_lbs_conf, normal_brk_conf, normal_ground_conf) < 0.8:
             self.profile_status.setText("至少一类候选一致率低于 80%，请人工检查 LBS / Circuit Breaker / 接地刀闸候选后再保存。")
         else:
-            self.profile_status.setText("扫描完成。请确认内置 RMU 标准；还可以点击“添加设备图元”或“添加扫描到的未映射图元”，继续维护其他设备图元标准。")
+            self.profile_status.setText("标准图元读取完成。请确认 6 个 RMU 基础角色都绑定了本次上传的唯一图元，然后保存为 ACTIVE 标准。")
 
     def _save_profile(self) -> None:
+        selected_name, selected_version, selected_active = self._selected_profile_key()
+        selected_profile = self.service.load_profiles().get(selected_name) if selected_name and selected_active else None
+        if selected_profile is not None and selected_profile.locked:
+            QMessageBox.information(
+                self, "当前标准已锁定",
+                f"{selected_name} V{selected_version} 已锁定，当前版本不能修改或保存。请先解锁。",
+            )
+            return
         site_name = self.site_name.text().strip()
         profile_name = self.profile_name.text().strip()
         lbs = str(self.lbs_combo.currentData() or "").strip()
@@ -1327,73 +1324,64 @@ class SiteProfilePage(BasePage):
         if invalid_custom:
             QMessageBox.warning(self, "自定义图元未完成", "自定义设备图元必须至少填写“XML 元素”和“标准图元 devref”。请补充后再保存。")
             return
-        if not site_name or not profile_name or not lbs or not breaker:
-            QMessageBox.warning(self, "标准未完成", "适用范围、标准名称、SMART LBS 和 SMART Circuit Breaker 都必须确认。NORMAL 与接地刀闸图元可稍后用包含对应柜型的标准样本补充学习。")
+        if not site_name or not profile_name:
+            QMessageBox.warning(self, "标准未完成", "适用范围和标准名称不能为空。")
+            return
+        required_roles = {
+            "SMART / LBS": lbs,
+            "SMART / Circuit Breaker": breaker,
+            "SMART / 接地刀闸": ground,
+            "NORMAL / LBS": normal_lbs,
+            "NORMAL / Circuit Breaker": normal_breaker,
+            "NORMAL / 接地刀闸": normal_ground,
+        }
+        if not any(required_roles.values()) and not custom_symbols:
+            QMessageBox.warning(
+                self, "标准未完成",
+                "请至少为 1 个设备角色上传并绑定标准图元 G。可以只配置当前需要检查的角色，不要求一次补齐 6 个。",
+            )
             return
 
-        scan = self._last_scan
-        if scan is not None:
-            lbs_rows = {row.devref: row for row in scan.lbs_candidates}
-            breaker_rows = {row.devref: row for row in scan.breaker_candidates}
-            sample_files = [path.name for path in scan.files]
-            smart_rmu_count = scan.smart_rmu_count
-            normal_rmu_count = scan.normal_rmu_count
-            ignored_rmu_count = scan.ignored_rmu_count
-            ground_rows = {row.devref: row for row in scan.ground_candidates}
-            normal_lbs_rows = {row.devref: row for row in scan.normal_lbs_candidates}
-            normal_breaker_rows = {row.devref: row for row in scan.normal_breaker_candidates}
-            normal_ground_rows = {row.devref: row for row in scan.normal_ground_candidates}
-            lbs_observations = sum(scan.lbs_counts.values())
-            breaker_observations = sum(scan.breaker_counts.values())
-            normal_lbs_observations = sum(scan.normal_lbs_counts.values())
-            normal_breaker_observations = sum(scan.normal_breaker_counts.values())
-            ground_observations = sum(scan.ground_counts.values())
-            normal_ground_observations = sum(scan.normal_ground_counts.values())
-            lbs_confidence = lbs_rows.get(lbs).confidence if lbs in lbs_rows else 0.0
-            breaker_confidence = breaker_rows.get(breaker).confidence if breaker in breaker_rows else 0.0
-            normal_lbs_confidence = normal_lbs_rows.get(normal_lbs).confidence if normal_lbs in normal_lbs_rows else 0.0
-            normal_breaker_confidence = normal_breaker_rows.get(normal_breaker).confidence if normal_breaker in normal_breaker_rows else 0.0
-            ground_confidence = ground_rows.get(ground).confidence if ground in ground_rows else 0.0
-            normal_ground_confidence = normal_ground_rows.get(normal_ground).confidence if normal_ground in normal_ground_rows else 0.0
-            lbs_candidates = dict(scan.lbs_counts)
-            breaker_candidates = dict(scan.breaker_counts)
-            normal_lbs_candidates = dict(scan.normal_lbs_counts)
-            normal_breaker_candidates = dict(scan.normal_breaker_counts)
-            ground_candidates = dict(scan.ground_counts)
-            normal_ground_candidates = dict(scan.normal_ground_counts)
-            selected_devrefs = {value for value in (lbs, breaker, ground, normal_lbs, normal_breaker, normal_ground) if value}
-            selected_devrefs.update(
-                str(entry.get("standard_devref", "")).strip()
-                for entry in custom_symbols
-                if str(entry.get("standard_devref", "")).strip()
-            )
-            geometry_templates = {key: list(value) for key, value in scan.geometry_templates.items() if key in selected_devrefs}
-        else:
-            old_name = self._selected_profile_name() or profile_name
-            old = self.service.load_profiles().get(old_name)
-            sample_files = list(old.sample_files) if old else []
-            smart_rmu_count = old.smart_rmu_count if old else 0
-            normal_rmu_count = old.normal_rmu_count if old else 0
-            ignored_rmu_count = old.ignored_rmu_count if old else 0
-            lbs_observations = old.lbs_observations if old else 0
-            breaker_observations = old.breaker_observations if old else 0
-            normal_lbs_observations = old.normal_lbs_observations if old else 0
-            normal_breaker_observations = old.normal_breaker_observations if old else 0
-            ground_observations = old.ground_observations if old else 0
-            normal_ground_observations = old.normal_ground_observations if old else 0
-            lbs_confidence = old.lbs_confidence if old else 0.0
-            breaker_confidence = old.breaker_confidence if old else 0.0
-            normal_lbs_confidence = old.normal_lbs_confidence if old else 0.0
-            normal_breaker_confidence = old.normal_breaker_confidence if old else 0.0
-            ground_confidence = old.ground_confidence if old else 0.0
-            normal_ground_confidence = old.normal_ground_confidence if old else 0.0
-            lbs_candidates = dict(old.lbs_candidates) if old else {lbs: 1}
-            breaker_candidates = dict(old.breaker_candidates) if old else {breaker: 1}
-            normal_lbs_candidates = dict(old.normal_lbs_candidates) if old else ({normal_lbs: 1} if normal_lbs else {})
-            normal_breaker_candidates = dict(old.normal_breaker_candidates) if old else ({normal_breaker: 1} if normal_breaker else {})
-            ground_candidates = dict(old.ground_candidates) if old else ({ground: 1} if ground else {})
-            normal_ground_candidates = dict(old.normal_ground_candidates) if old else ({normal_ground: 1} if normal_ground else {})
-            geometry_templates = dict(old.geometry_templates) if old else {}
+        # v2.18.76: the saved standard is built only from user-uploaded icon G
+        # files. Historical business-scan observations/confidence never participate
+        # in a new authoritative Profile version.
+        all_records = self._editor_standard_records()
+        selected_devrefs = {
+            value for value in (lbs, breaker, ground, normal_lbs, normal_breaker, normal_ground) if value
+        }
+        selected_devrefs.update(
+            str(entry.get("standard_devref", "")).strip()
+            for entry in custom_symbols
+            if str(entry.get("standard_devref", "")).strip()
+        )
+        managed_standard_files = [
+            dict(row) for row in all_records
+            if str(row.get("devref", "")).strip() in selected_devrefs
+        ]
+        sample_files = [
+            str(row.get("original_name", "")).strip()
+            for row in managed_standard_files
+            if str(row.get("original_name", "")).strip()
+        ]
+        self._symbol_catalog = self._catalog_from_standard_records(managed_standard_files)
+        geometry_templates: dict[str, list[dict[str, object]]] = {}
+
+        # These legacy statistical fields remain in the JSON schema only for old
+        # profile compatibility. For uploaded authoritative standards they are not
+        # evidence and are deliberately reset.
+        smart_rmu_count = normal_rmu_count = ignored_rmu_count = 0
+        lbs_observations = breaker_observations = 0
+        normal_lbs_observations = normal_breaker_observations = 0
+        ground_observations = normal_ground_observations = 0
+        lbs_confidence = breaker_confidence = 0.0
+        normal_lbs_confidence = normal_breaker_confidence = 0.0
+        ground_confidence = normal_ground_confidence = 0.0
+        lbs_candidates = {lbs: 1} if lbs else {}
+        breaker_candidates = {breaker: 1} if breaker else {}
+        normal_lbs_candidates = {normal_lbs: 1} if normal_lbs else {}
+        normal_breaker_candidates = {normal_breaker: 1} if normal_breaker else {}
+        ground_candidates = {ground: 1} if ground else {}
+        normal_ground_candidates = {normal_ground: 1} if normal_ground else {}
 
         old = self.service.load_profiles().get(profile_name)
         candidate_profile = SiteSmartProfile(
@@ -1430,7 +1418,42 @@ class SiteProfilePage(BasePage):
             geometry_templates=geometry_templates,
             custom_symbols=custom_symbols,
             symbol_catalog=self._symbol_catalog,
+            managed_standard_files=managed_standard_files,
+            locked=False,
         ).normalized()
+        # Every required ACTIVE role must resolve to exactly one user-uploaded icon file.
+        records_by_devref: dict[str, list[dict[str, object]]] = {}
+        for row in candidate_profile.managed_standard_files:
+            records_by_devref.setdefault(str(row.get("devref", "")).casefold(), []).append(row)
+        role_tags = {
+            "SMART / LBS": lbs,
+            "SMART / Circuit Breaker": breaker,
+            "SMART / 接地刀闸": ground,
+            "NORMAL / LBS": normal_lbs,
+            "NORMAL / Circuit Breaker": normal_breaker,
+            "NORMAL / 接地刀闸": normal_ground,
+        }
+        role_errors: list[str] = []
+        for label, devref in role_tags.items():
+            if not devref:
+                continue
+            rows = records_by_devref.get(devref.casefold(), [])
+            if len(rows) != 1:
+                role_errors.append(f"{label}: 当前选择必须对应且只能对应 1 个本次上传/已持久化的标准图元 G。")
+            elif not list(rows[0].get("pins", [])):
+                role_errors.append(f"{label}: 上传图元没有 pin 定义，不能作为 RMU 电气设备标准。")
+        for entry in custom_symbols:
+            if not bool(entry.get("enabled", True)):
+                continue
+            devref = str(entry.get("standard_devref", "")).strip()
+            label = str(entry.get("role", "自定义设备")).strip() or "自定义设备"
+            rows = records_by_devref.get(devref.casefold(), []) if devref else []
+            if len(rows) != 1:
+                role_errors.append(f"自定义设备 {label}: 必须且只能绑定 1 个用户上传的标准图元 G。")
+        if role_errors:
+            QMessageBox.warning(self, "标准图元绑定无效", "\n".join(role_errors))
+            return
+
         if old is not None and self.service._device_signature(old) != self.service._device_signature(candidate_profile):
             changes = []
             if old.smart_lbs_devref != candidate_profile.smart_lbs_devref:
@@ -1466,6 +1489,8 @@ class SiteProfilePage(BasePage):
         except ValueError as exc:
             QMessageBox.warning(self, "保存失败", str(exc))
             return
+        self.user_settings.set_value("site_profile/last_profile_name", profile.profile_name)
+        self._pending_standard_file_records = []
         self._reload_profiles(profile.profile_name, profile.profile_version)
         self.activeProfileChanged.emit(profile.profile_name)
         QMessageBox.information(self, "标准已保存", f"已保存 {profile.profile_name}（适用范围：{profile.site_name}）V{profile.profile_version}。")
@@ -1491,7 +1516,11 @@ class SiteProfilePage(BasePage):
             f"确认删除图元标准“{name}”及其全部历史版本（当前 ACTIVE V{current.profile_version}）？",
         ) != QMessageBox.StandardButton.Yes:
             return
-        self.service.remove(name)
+        try:
+            self.service.remove(name)
+        except ValueError as exc:
+            QMessageBox.warning(self, "删除失败", str(exc))
+            return
         self._reload_profiles()
         self.activeProfileChanged.emit("")
 
@@ -1515,13 +1544,21 @@ class SiteProfilePage(BasePage):
         name, version, active = self._selected_profile_key()
         profile = self.service.load_profiles().get(name)
         if profile is None:
-            QMessageBox.warning(self, "请选择标准", "请先在上方列表选择并保存一个图元标准。")
+            QMessageBox.warning(self, "请选择标准", "请先在“标准版本”下拉框中选择并保存一个图元标准。")
             return
         if not active or version != profile.profile_version:
             QMessageBox.information(
                 self,
                 "请选择 ACTIVE 版本",
-                f"当前选中的是历史版本。实际 ACTIVE 是 {name} V{profile.profile_version}。请选中 ACTIVE 行后执行，或先恢复历史版本。",
+                f"当前选中的是历史版本。实际 ACTIVE 是 {name} V{profile.profile_version}。请在“标准版本”下拉框中选择 ACTIVE 版本后执行，或先恢复历史版本。",
+            )
+            return
+        ready, issues = self.service.validate_authoritative_standard(profile)
+        if not ready:
+            QMessageBox.warning(
+                self,
+                "标准图元库未就绪",
+                "执行图元标准检查前，至少要保存 1 个有效的权威标准图元角色。只会检查已配置的角色。\n\n" + "\n".join(issues[:8]),
             )
             return
         if not validate_input_source(self, self.source, display_name="图元标准检查输入", log=self.task.append_log):
@@ -1540,6 +1577,7 @@ class SiteProfilePage(BasePage):
             input_mode=self.source.mode(),
             output_dir=run_dir,
             profile=profile,
+            require_authoritative_standard=True,
         )
         processor = process_smart_profile_correction if correct else process_smart_profile_consistency
         self.task.start(lambda log, progress: processor(settings, log, progress), run_dir)
@@ -1549,28 +1587,36 @@ class SiteProfilePage(BasePage):
         profile = self.service.load_profiles().get(name) if name else None
         busy_scan = self._scan_worker is not None
         busy = busy_scan or self._task_busy
-        ready = bool(profile and profile.smart_ready and active and version == profile.profile_version)
+        authoritative_ready, _issues = self.service.validate_authoritative_standard(profile)
+        ready = bool(profile and authoritative_ready and active and version == profile.profile_version)
         self.check_button.setEnabled(ready and not busy)
         self.correct_button.setEnabled(ready and not busy)
         # New profiles and ACTIVE profiles may be scanned. Archived rows are immutable.
-        allow_scan = (not name) or bool(active and profile is not None)
+        allow_scan = (not name) or bool(active and profile is not None and not profile.locked)
         self.scan_action.setEnabled(allow_scan and not busy)
-        self.scan_action.setText("扫描标准样本 / 更新标准" if profile and active else "扫描标准样本 / 创建标准")
-        can_edit = (not name) or bool(active and profile is not None)
+        self.scan_action.setText("为选中角色上传 / 更新标准 G")
+        if hasattr(self, "upload_standard_button"):
+            self.upload_standard_button.setEnabled(allow_scan and not busy)
+            self.upload_standard_button.setText("为选中角色上传 / 更新标准 G")
+        locked = bool(profile.locked) if profile is not None and active else False
+        can_edit = (not name) or bool(active and profile is not None and not locked)
         self.save_button.setEnabled(can_edit and not busy)
         self.add_custom_button.setEnabled(can_edit and not busy)
-        self.add_scanned_button.setEnabled(can_edit and not busy)
         selected_standard_row = self.standard_table.currentRow()
         self.delete_custom_button.setEnabled(
             can_edit and not busy and selected_standard_row >= len(self._standard_specs)
         )
-        self.restore_action.setEnabled(bool(name and profile and not active and not busy))
-        self.delete_action.setEnabled(bool(name and profile and active and not busy))
-        if hasattr(self, "review_discovery_action"):
-            pending = bool(profile and any(state == "pending" for state in profile.discovery_decisions.values()))
-            ignored = bool(profile and any(state == "ignored" for state in profile.discovery_decisions.values()))
-            self.review_discovery_action.setEnabled(bool(active and pending and not busy))
-            self.reset_ignored_action.setEnabled(bool(active and ignored and not busy))
+        if hasattr(self, "share_pair_checkbox"):
+            self.share_pair_checkbox.setEnabled(
+                can_edit and not busy and 0 <= selected_standard_row < len(self._standard_specs)
+            )
+        if hasattr(self, "lock_standard_button"):
+            self.lock_standard_button.setEnabled(bool(name and profile and active and not busy))
+            self.lock_standard_button.setText("解锁当前版本" if locked else "锁定当前版本")
+        current_profile = self.service.load_profiles().get(name) if name else None
+        current_locked = bool(current_profile.locked) if current_profile is not None else False
+        self.restore_action.setEnabled(bool(name and profile and not active and not busy and not current_locked))
+        self.delete_action.setEnabled(bool(name and profile and active and not busy and not locked))
         self.new_action.setEnabled(not busy)
 
     def _task_busy_changed(self, busy: bool) -> None:
@@ -1586,14 +1632,10 @@ class SiteProfilePage(BasePage):
                 break
         self.open_report_button.setEnabled(bool(self._last_report_path and self._last_report_path.exists()))
         stats = getattr(result, "statistics", {}) or {}
-        discovered = stats.get("_UnmappedSymbolCandidates", [])
-        discovery_rows = [dict(row) for row in discovered if isinstance(row, dict)] if isinstance(discovered, list) else []
         mode = str(stats.get("Mode", getattr(self, "_last_run_mode", "CHECK")) or "CHECK").upper()
         bad = int(stats.get("Nonstandard Symbols", 0) or 0)
         if stats:
-            new_unmapped = int(stats.get("New Unmapped Symbols", 0) or 0)
-            pending_unmapped = int(stats.get("Pending Unmapped Symbols", 0) or 0)
-            unmanaged = new_unmapped + pending_unmapped
+            unmanaged = int(stats.get("Unmanaged Symbols", 0) or 0)
             if mode == "CORRECT":
                 corrected = int(stats.get("Corrected Elements", 0) or 0)
                 changed_files = int(stats.get("Corrected Files", 0) or 0)
@@ -1603,7 +1645,7 @@ class SiteProfilePage(BasePage):
                     f"其中连接锚点/几何纠正 {geometry} 个；自动复查后剩余 {bad} 个不符合项。"
                 )
                 if unmanaged:
-                    text += f" 另有 {unmanaged} 种未纳入当前标准的图元未自动处理。"
+                    text += f" 另有 {unmanaged} 种未纳入当前标准的图元未自动处理；业务 G 不会被用于学习或补全标准。"
                 text += " 源 G 未覆盖；纠正副本位于本次结果目录的 corrected 文件夹。"
             else:
                 if bad:
@@ -1611,7 +1653,7 @@ class SiteProfilePage(BasePage):
                 else:
                     text = "检查完成：已配置的图元标准全部通过。"
                 if unmanaged:
-                    text += f" 另发现 {unmanaged} 种尚未纳入当前标准的图元（不计为错误），可在“待确认图元”中决定是否加入。"
+                    text += f" 另发现 {unmanaged} 种尚未纳入当前标准的图元（不计为错误）；如需纳入，请在上方设备角色中手动上传权威图元 G。"
                 text += " 源 G 未修改；详细原因请查看检查报告。"
             self.result_summary.setText(text)
         if mode == "CORRECT":
@@ -1645,8 +1687,6 @@ class SiteProfilePage(BasePage):
                 "图元标准检查完成",
                 "未发现图元类型/变体、devref 或连接锚点几何与当前 ACTIVE 标准不一致；源 G 文件未修改。",
             )
-        if discovery_rows:
-            self._handle_discovered_symbols(discovery_rows)
 
     def _open_report(self) -> None:
         path = self._last_report_path

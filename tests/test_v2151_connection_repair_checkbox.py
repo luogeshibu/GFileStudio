@@ -180,12 +180,11 @@ def test_basic_processor_repairs_connections_only_when_checkbox_setting_enabled(
     assert any("[连接点修复]" in line for line in logs)
 
 
-def test_basic_page_exposes_connection_repair_checkbox_not_independent_button():
+def test_basic_page_no_longer_exposes_legacy_connection_repair_module():
     source = (ROOT / "g_file_studio/ui/pages/basic_page.py").read_text(encoding="utf-8")
-    assert 'QCheckBox("修复连接点（补齐 node_area / link）")' in source
-    assert '"repair_connection_points": self.repair_connection_points.isChecked()' in source
-    assert '"basic/repair_connection_points"' in source
-    assert 'QPushButton("修复连接点")' not in source
-    assert "run_connection_repair" not in source
+    assert 'QGroupBox("连接点修复")' not in source
+    assert 'QCheckBox("修复连接点（补齐 node_area / link）")' not in source
+    assert 'self._build_connection_repair()' not in source
+    assert '"repair_connection_points": self.repair_connection_points.isChecked()' not in source
+    assert '"basic/repair_connection_points"' not in source
     assert "process_connection_points" not in source
-    assert "不勾选时完全跳过" in source

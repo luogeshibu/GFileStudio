@@ -19,5 +19,5 @@ def test_release_notes_are_consolidated():
 
 
 def test_release_version_21838():
-    assert '__version__ = "2.18.55"' in Path("g_file_studio/__init__.py").read_text(encoding="utf-8")
-    assert 'version = "2.18.55"' in Path("pyproject.toml").read_text(encoding="utf-8")
+    assert '__version__ = "2.18.97"' in Path("g_file_studio/__init__.py").read_text(encoding="utf-8")
+    assert 'version = "2.18.97"' in Path("pyproject.toml").read_text(encoding="utf-8")

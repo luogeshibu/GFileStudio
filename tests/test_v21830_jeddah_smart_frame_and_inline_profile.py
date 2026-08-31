@@ -76,7 +76,8 @@ def test_jeddah_batch_uses_final_smart_frame_consistency_pass():
 def test_site_profile_management_is_inline_table_not_popup_dialog():
     source = Path("g_file_studio/ui/pages/site_profile_page.py").read_text(encoding="utf-8")
     assert "QTableWidget" in source
-    assert "当前图元标准" in source
+    assert "当前图元标准" not in source
+    assert 'QGroupBox("图元标准")' in source
     assert "图元标准" in source
     assert "待检查 G 文件" in source
     assert "SiteProfileDialog" not in source

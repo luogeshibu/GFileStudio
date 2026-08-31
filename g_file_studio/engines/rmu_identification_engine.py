@@ -167,6 +167,26 @@ def parse_name_exclusions(raw: str) -> tuple[str, ...]:
     return tuple(unique)
 
 
+def parse_intelligent_markers(raw: str) -> tuple[str, ...]:
+    """Parse user-configured intelligent-RMU Text markers.
+
+    Values are comma/semicolon/newline separated and matched as whole Text
+    values, case-insensitively.  SMART/SMR remain the default for backward
+    compatibility.  The same marker values are automatically excluded from RMU
+    name candidates so a marker such as NEWSMART cannot become a cabinet name.
+    """
+    values = re.split(r"[,;，；\n\r]+", raw or "")
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = re.sub(r"\s+", " ", value.strip())
+        key = _normalize_excluded_name(cleaned)
+        if cleaned and key and key not in seen:
+            seen.add(key)
+            unique.append(cleaned)
+    return tuple(unique) if unique else ("SMART", "SMR")
+
+
 def _valid_name_text(element: ET.Element, excluded_names: frozenset[str] = frozenset()) -> bool:
     """柜名候选的基础过滤。
 
@@ -478,6 +498,7 @@ def identify_rmus(
     name_positions: tuple[str, ...] = ("top",),
     smart_in_type: bool = False,
     excluded_name_values: tuple[str, ...] = (),
+    intelligent_marker_values: tuple[str, ...] = ("SMART", "SMR"),
 ) -> RmuIdentificationResult:
     """识别环网柜名称、L/T 柜型及 SMART 状态，不修改 XML。
 
@@ -488,15 +509,26 @@ def identify_rmus(
     3. 柜型第一来源为框内 Y1/Y2/... 与 Q1/Q2/...：Y 数量=L，Q 数量=T，并检查序号连续性。
        第二来源仅按 CBreakerDis.devref 图元文件名：Load_Breaker*=L，Circuit_Breaker*=T。
        两种来源同时存在时强制交叉校验；某一类 Y/Q 完全缺失时才用 devref 对应类别回退。
-    4. 柜型始终只输出 nLmT；SMART 与 SMR 在统计层统一归类为“智能环网柜”，不追加到柜型字符串。
+    4. 柜型始终只输出 nLmT；用户配置的智能标记 Text 在统计层统一归类为“智能环网柜”，不追加到柜型字符串。
+       智能标记在全图有效 RMU 集合中做最近归属，每个标记只允许归属一个 RMU；标记无需完全落在柜框内。
+       默认标记为 SMART / SMR，可扩展为 NEWSMART、SMART-SE 等任意完整 Text。
 
-    smart_in_type 参数为了兼容现有设置保留；现在表示是否统计智能环网柜（SMART / SMR）。
+    smart_in_type 参数为了兼容现有设置保留；现在表示是否统计智能环网柜。
     """
     if not name_positions:
         raise ValueError("环网柜名称位置至少选择一个方向。")
 
+    intelligent_markers = tuple(
+        value for value in intelligent_marker_values if _normalize_excluded_name(value)
+    ) or ("SMART", "SMR")
+    marker_key_to_source = {
+        _normalize_excluded_name(value): re.sub(r"\s+", " ", value.strip()).upper()
+        for value in intelligent_markers
+        if _normalize_excluded_name(value)
+    }
     excluded_names = frozenset(
-        key for value in excluded_name_values
+        key
+        for value in (*excluded_name_values, *intelligent_markers)
         if (key := _normalize_excluded_name(value))
     )
 
@@ -528,26 +560,53 @@ def identify_rmus(
                      for index, (rect, rect_box) in enumerate(valid_cabinets)]
     name_assignments = _assign_names_globally(texts, cabinet_boxes, name_positions, excluded_names)
 
-    # SMR is also an intelligent RMU marker. It is usually outside the cabinet frame,
-    # so map each direct Text[ts=SMR] to the nearest valid RMU rect. This is read-only
-    # identification and does not change the existing SMART/grouping algorithms.
-    smr_rect_keys: set[str] = set()
+    # User-configured intelligent markers are global RMU markers. They are not
+    # required to be fully inside a cabinet frame: a label may sit on / slightly
+    # outside the frame. Each marker is assigned to exactly ONE nearest valid RMU.
+    marker_sources_by_rect: dict[str, set[str]] = {}
     if smart_in_type and valid_cabinets:
-        smr_texts = [
-            item for item in elements
-            if local_name(item.tag) == "Text" and (item.get("ts") or "").strip().upper() == "SMR"
+        marker_texts = [
+            item for item in tree.getroot().iter()
+            if local_name(item.tag) in {"Text", "DText"}
+            and _normalize_excluded_name(item.get("ts") or "") in marker_key_to_source
         ]
-        for text in smr_texts:
-            text_box = _box(text)
-            if text_box is None:
+        for marker in marker_texts:
+            marker_box = _box(marker)
+            if marker_box is None:
+                result.warnings.append(
+                    f"智能标记 {(marker.get('ts') or '').strip().upper()} "
+                    f"Text ID {(marker.get('id') or '<无ID>')} 缺少有效几何坐标，未参与 RMU 归属。"
+                )
                 continue
-            candidates: list[tuple[float, str]] = []
+            candidates: list[tuple[float, float, str]] = []
             for cabinet_index, (rect, rect_box) in enumerate(valid_cabinets):
                 key = rect.get("id") or f"__rect_{cabinet_index}"
-                candidates.append((_point_to_box_distance(text_box.center_x, text_box.center_y, rect_box), key))
-            if candidates:
-                candidates.sort(key=lambda item: (item[0], item[1]))
-                smr_rect_keys.add(candidates[0][1])
+                edge_distance = _point_to_box_distance(marker_box.center_x, marker_box.center_y, rect_box)
+                center_distance = (
+                    (marker_box.center_x - rect_box.center_x) ** 2
+                    + (marker_box.center_y - rect_box.center_y) ** 2
+                ) ** 0.5
+                candidates.append((edge_distance, center_distance, key))
+            if not candidates:
+                continue
+            # Distance to frame is authoritative. Center distance breaks ordinary
+            # overlap/touch ties. If two RMUs remain geometrically identical after
+            # both comparisons, the data is ambiguous: skip instead of guessing,
+            # so one marker can never be attributed to two cabinets.
+            candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+            chosen_edge, chosen_center, chosen_key = candidates[0]
+            if len(candidates) > 1:
+                next_edge, next_center, next_key = candidates[1]
+                if abs(chosen_edge - next_edge) <= 1e-6 and abs(chosen_center - next_center) <= 1e-6:
+                    result.warnings.append(
+                        f"智能标记 {(marker.get('ts') or '').strip().upper()} "
+                        f"Text ID {(marker.get('id') or '<无ID>')} 与 RMU {chosen_key}/{next_key} "
+                        f"几何距离完全相同，无法唯一归属；为避免一个标记属于两个 RMU，已跳过该标记。"
+                    )
+                    continue
+            marker_key = _normalize_excluded_name(marker.get("ts") or "")
+            source = marker_key_to_source.get(marker_key, (marker.get("ts") or "").strip().upper())
+            marker_sources_by_rect.setdefault(chosen_key, set()).add(source)
 
     for index, (rect, rect_box) in enumerate(valid_cabinets):
         rect_key = rect.get("id") or f"__rect_{index}"
@@ -639,14 +698,14 @@ def identify_rmus(
         smart_count = 0
         smart_source = ""
         if smart_in_type:
-            smart_text = any((item.get("ts") or "").strip().upper() == "SMART" for item in inside_texts)
+            marker_sources = marker_sources_by_rect.get(rect_key, set())
             smart_device = any(_is_smart_device(item) for item in inside_switches)
-            smr_text = rect_key in smr_rect_keys
-            sources: list[str] = []
-            if smart_text or smart_device:
-                sources.append("SMART")
-            if smr_text:
-                sources.append("SMR")
+            source_order = [marker_key_to_source[_normalize_excluded_name(value)] for value in intelligent_markers]
+            sources = [source for source in source_order if source in marker_sources]
+            # Preserve the historical SMART-device fallback only when no configured
+            # visible marker was assigned to this cabinet.
+            if smart_device and not sources:
+                sources.append("SMART_DEVICE")
             smart_source = " + ".join(sources)
             smart_count = 1 if sources else 0
 

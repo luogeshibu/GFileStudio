@@ -33,17 +33,19 @@ APP_HELP: dict[str, tuple[str, str]] = {
         "图元标准检查帮助",
         """
 <h3>用途</h3>
-<p>这是独立的通用图元标准检查与安全纠正模块，不依赖吉达或其他现场批处理。用户用确认过的标准 G 文件建立并版本化图元标准，然后对任意业务 G 文件执行一致性检查；需要时可显式执行“纠正标准问题”。前 6 行保留 SMART / NORMAL RMU 的 LBS、Circuit Breaker、接地刀闸系统规则，用户还可以继续添加任意设备图元标准。检查模式只读；纠正模式只在 workspace 中生成副本，绝不覆盖源 G。</p>
-<h3>标准学习与图元属性</h3>
-<p>适用范围由用户明确填写，可写现场名，也可写 General 等通用范围；程序不通过文件名前缀强制判断。扫描主 G 时会建立 devref 图元目录并显示 XML 元素类型、主体 ID、w/h、旋转样本、p_NameString/key_name 示例；若同一目录中还包含原始图元定义 G，则继续读取 AlignCenter、pin(cx,cy) 与 pin id，并形成可复用的旋转几何标准。</p>
-<h3>自定义设备图元</h3>
-<p>点击“添加设备图元”可手工增加任意规则；检查业务 G 时发现尚未纳入标准的新 devref，会只提示一次并进入“待确认图元”；用户可逐个选择加入当前标准、不纳入本标准或稍后处理。每条自定义规则可设置范围 ANY/SMART/NORMAL、设备角色、XML 元素、标准 devref，以及用于定位业务 G 中当前图元的匹配属性：devref、XML 元素、p_NameString 或 key_name。只有明确纳入当前 ACTIVE 标准的图元才允许自动纠正；未纳入标准的新图元不会被程序擅自修改。</p>
+<p>这是独立的通用图元标准检查与安全纠正模块，不依赖吉达或其他现场批处理。标准来源与业务 G 完全分离：用户必须先上传真实图元定义 G 文件建立 ACTIVE 标准，然后才能检查业务单线图。界面只保留一张图元标准表；SMART / NORMAL 表示检查适用范围，不代表必须使用两套不同图元。同一种设备可以分别绑定不同标准，也可以让 SMART 与 NORMAL 共用同一个标准图元文件；例如没有智能/非智能区分的接地刀闸可直接共用。</p>
+<h3>权威标准图元库</h3>
+<p>先在图元标准表中选中设备角色，再点击“为选中角色上传 / 更新标准 G”，一次选择一个真实图元定义 G。设备角色由用户当前选中的表格行明确绑定；程序只从上传 G 中解析 devref、主体、w/h、AlignCenter 与 pin 等标准属性。文件名、SMART/NORMAL 字样和解析到的 XML 元素都只作为参考，不再阻止人工绑定。如果同一设备在 SMART / NORMAL 中共用一个图元，可勾选“SMART / NORMAL 共用此标准”，一次上传同时绑定两个检查范围。保存后标准文件会复制到 Windows 用户数据目录中的 G File Studio 标准库，和程序安装目录、workspace 运行结果完全分离，因此升级或重新解压新版程序不会丢失。Profile 记录标准文件 SHA256 与整体标准指纹；文件被篡改或丢失时会阻止检查。</p>
+<h3>版本与角色</h3>
+<p>同一设备可以通过 Profile 历史版本保存多个标准图元版本，但当前 ACTIVE 版本中一个设备角色只能使用一个图元文件。更换标准图元后创建新的 ACTIVE Profile 版本，旧版本保留为 ARCHIVED。保存确认后可点击“锁定当前版本”：锁定期间不能修改表格、上传/替换标准 G、删除标准或恢复历史版本；检查业务 G 仍可执行。需要调整标准时先显式解锁。下次打开软件会默认恢复上次使用的 ACTIVE 标准及其锁定状态。</p>
+<h3>标准来源边界</h3>
+<p>业务单线图只用于定位设备实例并与已保存标准比较，不再扫描生成候选标准、待确认图元或学习数据。若要新增设备角色或更换标准，必须回到上方表格，由用户明确选择角色并上传对应的真实图元定义 G。这样业务图中的错误 devref、错误尺寸或历史图元不会反向污染标准。</p>
 <h3>标准检查</h3>
 <p>“检查图元标准”是完全只读模式：源 G 文件不会被修改。程序比较图元类型/变体、devref、w/h、AlignCenter 与 pin 锚点等标准信息，并生成 CSV/HTML 图元标准检查报告；发现差异时界面会明确告警。</p><h3>按标准纠正</h3><p>点击“纠正标准问题”后，程序只处理当前 ACTIVE 标准已经定义的图元，并把结果写到本次 workspace 运行目录的 corrected 文件夹。对于带电气 pin 且能从 node_area/link 与 ConnectLine 可靠取得连接端点的图元，会保持连接线绝对坐标不动，根据标准 w/h、旋转与 pin 几何反算图元 x/y；图元 XML 类型不限于 LBS、Circuit Breaker 或接地刀闸，自定义设备标准也使用同一套锚点内核。若端口数量、连接关系或几何模板无法可靠对应，则跳过自动移动并在复查报告中保留问题，不做猜测。纠正完成后自动对 corrected 副本再执行一次只读标准检查。</p>
 <h3>与图元版本升级的边界</h3>
 <p>同一设备语义的 OLD → NEW 图元版本升级统一放在“基础处理 → 同类图元版本升级”。例如旧版 LBS → 新版 LBS 属于版本升级；SMART 图元误用到 NORMAL、NORMAL 图元误用到 SMART，以及已定义标准图元的连接锚点位置偏移，属于标准一致性问题，可在本模块检查并按 ACTIVE 标准纠正。吉达馈线批处理仍保持原有独立流程，本次新增纠正能力不会改变其步骤或算法。</p>
-<h3>版本与安全</h3>
-<p>标准变化时重新扫描会产生新的 ACTIVE 版本，旧版本保留为 ARCHIVED，可追溯和恢复。待检查文件绝不会被自动学习进标准，避免错误图元反向污染标准。</p>
+<h3>运行结果与安全</h3>
+<p>标准图元/Profile 属于长期资产，保存于版本独立的用户数据目录；workspace/runs 中的处理 G、HTML/CSV 报告和日志属于临时运行结果，现有机制自动清理超过 30 天的运行记录。清理运行结果不会删除标准图元或 Profile。</p>
 """,
     ),
     "small_elements": (
@@ -61,12 +63,14 @@ APP_HELP: dict[str, tuple[str, str]] = {
     "rmu": (
         "环网柜处理帮助",
         """
+<h3>RMU 基础识别与汇总（必需）</h3>
+<p>RMU 基础识别是本页面所有后续功能的共同前置能力，固定识别全部有效 RMU 且不可关闭，并强制生成 RMU 汇总 CSV / HTML 报告。界面不再提供“智能/非智能识别范围”开关；用户只需要配置柜名可能位置、柜名排除字符串，以及“智能 RMU 标记字符”。智能标记默认 SMART / SMR，可扩展 NEWSMART、SMART-SE 等任意完整 Text；程序全图扫描这些标记并唯一归属最近的有效 RMU，同时自动把这些标记从柜名候选中排除。</p>
 <h3>环网柜图元处理</h3>
 <p>环网柜页面可选择“不处理”或“组合所有环网柜”。彻底取消图形组合已移动到“基础处理 → 图形组合处理”：该操作删除整个 G 文件 Layer 中全部 &lt;Merge&gt;，并将识别到的 RMU 外框置于设备底层；除 XML 顺序外不修改设备属性、坐标、ID 或引用。</p>
-<p>SMART/SMR 外框改色、channel_status 状态点位置以及带 Bus 外框处理均沿用原基础处理中的既有算法；另外可单独启用“将已识别的环网柜名称统一改成白色”，该功能复用既有柜名识别结果，只修改最终选中的柜名 Text 颜色。</p>
+<p>SMART/SMR 外框改色和 channel_status 状态点位置均沿用原基础处理中的既有算法；另外可单独启用“将已识别的环网柜名称统一改成白色”。Poke 跳转已经从本页面完全抽离到左侧独立“Poke 跳转处理”模块；该模块仍直接调用这里同一个 identify_rmus() 识别器和同一组柜名方向、排除项、智能标记设置，因此后续公共 RMU 识别规则升级会自动同步到 Poke。</p>
 <p>“图元标准检查”是独立通用工具：检查模式只读；需要时可按 ACTIVE 标准在 workspace 生成纠正副本，用于纠正标准中已定义图元的变体/devref及可可靠拟合的连接锚点位置。SMR 等现场特殊柜不参与通用 NORMAL 学习；该工具不改变原“开始环网柜处理”流程。</p>
-<h3>RMU 信息汇总</h3>
-<p>直接解析 G 文件，不使用 OCR。柜名可多选“上方/下方/左侧/右侧”搜索；所选方向为硬约束，未勾选方向绝不参与兜底。单候选直接使用，最近组存在多个候选时才优先绿色文字。柜型优先按 Y/Q 名称统计，必要时回退设备 devref；SMART 与 SMR 统一归类为智能环网柜，并保留识别来源。识别结果导出 .rmu.csv 与 .rmu.html。</p>
+<h3>RMU 识别规则</h3>
+<p>直接解析 G 文件，不使用 OCR。柜名可多选“上方/下方/左侧/右侧”搜索；所选方向为硬约束，未勾选方向绝不参与兜底。单候选直接使用，最近组存在多个候选时才优先绿色文字。柜型优先按 Y/Q 名称统计，必要时回退设备 devref；用户配置的智能标记统一归类为智能环网柜：默认 SMART / SMR，也可扩展 NEWSMART、SMART-SE 等；全图扫描标记并归属到最近的有效 RMU，每个标记只允许属于一个 RMU，且标记无需完全位于柜框内部；同时保留识别来源。识别结果导出 .rmu.csv 与 .rmu.html。</p>
 """,
     ),
     "basic": (
@@ -87,8 +91,6 @@ APP_HELP: dict[str, tuple[str, str]] = {
 <p>勾选“将馈线名称移动到母线上方”后，程序只根据有效水平 &lt;Bus&gt; 的几何、&lt;Text&gt; 的内容、字号和局部位置识别馈线名称；不读取 key_name 或 keyid。上下平行且范围重叠的双母线按一组处理。纯数字、括号数字、Y1/Q1/SMART 等设备标签、单位和说明文字会被排除；候选不唯一时跳过。识别成功后只修改目标 Text 的 x、y，使其位于最上方母线正上方并水平居中。</p>
 <h3>同类图元版本升级</h3>
 <p>用于同一设备语义、同一主体 XML 类型的旧版图元 → 新版图元升级。OLD/NEW 文件名可以不同，可自动配对或手工指定；程序读取 w/h、AlignCenter、pin 并保持电气锚点绝对位置。SMART/NORMAL 用错等“图元类型/变体使用错误”不属于版本升级，应先由“图元标准检查”发现并告警，再走对应纠正流程。</p>
-<h3>连接点修复（复选框）</h3>
-<p>勾选“修复连接点（补齐 node_area / link）”后，再点击“开始基础处理”，程序采用保守增量方式：冻结原有端口编号与连接引用，只对验证通过的正半像素设备沿 X 方向吸附，并补齐缺失的 node_area/link；不修改连接线坐标。候选不唯一或验证失败时跳过。不勾选时完全跳过。</p>
 <h3>线路与母线样式</h3>
 <p>可分别调整 &lt;FeedLine&gt;、&lt;ConnectLine&gt;、&lt;BusDis&gt; 和 &lt;Bus&gt; 的颜色与线型。颜色同步写入 lc/lcc；线型使用 ls：实线=1、虚线=2，选择“保持原样”时不修改 ls。颜色与线型可独立设置，不修改填充色、线宽 lw、坐标、ID 或引用。</p>
 <h3>输出冲突</h3>
@@ -229,9 +231,9 @@ APP_HELP_EN: dict[str, tuple[str, str]] = {
 <p>This page only orchestrates existing processing capabilities. It does not replace or rewrite the algorithms of the existing Small Element, RMU, feeder-title, or ID modules. Jeddah-specific parameters use a separate settings namespace and do not overwrite other module settings.</p>
 """,
     ),
-    "site_profile": ("Symbol Standard Check Help", """<h3>Purpose</h3><p>This is a generic, versioned symbol-standard workspace. The first six rows preserve the existing SMART/NORMAL RMU LBS, Circuit Breaker and grounding-switch rules, and users may add any other device symbol as a custom standard.</p><h3>Scanning and properties</h3><p>Scanning a main G builds a devref catalog with XML element type, body ID, width/height, observed rotations and p_NameString/key_name examples. When raw symbol-definition G files are included, the scanner also reads AlignCenter, pin(cx,cy) and pin IDs and stores rotation-specific geometry templates.</p><h3>Custom device symbols</h3><p>Add a row manually or bulk-add scanned but unmapped devrefs. Each custom rule defines scope (ANY/SMART/NORMAL), device role, XML element, standard devref, and a matcher for the current/old business element using devref, XML element, p_NameString or key_name. Only symbols explicitly covered by the current ACTIVE standard are eligible for automatic correction.</p><h3>Check and correct</h3><p>Check Symbol Standard is fully read-only. Correct Standard Issues explicitly creates corrected G copies under the managed workspace and never overwrites source G files. For a standard-managed symbol with reliable electrical pin / ConnectLine mapping, the engine keeps ConnectLine absolute endpoints fixed and recomputes symbol x/y/w/h from the standard geometry and rotation. Custom XML element types use the same generic anchor engine. Ambiguous or unsafe mappings are not guessed and remain visible in the automatic post-check report.</p><h3>Boundary</h3><p>Same-class OLD→NEW symbol version upgrades remain under Basic Processing. The Jeddah Batch pipeline is unchanged by this correction feature.</p>"""),
+    "site_profile": ("Symbol Standard Check Help", """<h3>Purpose</h3><p>The standard source and business G files are fully separated. Users must first upload real symbol-definition G files and build a complete ACTIVE standard before business drawings can be checked.</p><h3>Authoritative standard library</h3><p>Use Standard Management → Upload Standard Symbol G to select one or more icon-definition G files. Every file must expose a valid symbol body, size, AlignCenter and pin definition. Business SLD G files are rejected as standards. Saved standard files are copied into the version-independent user data directory, so application upgrades do not remove them. SHA256 hashes and a Profile standard fingerprint are stored and checked before execution.</p><h3>Versions and roles</h3><p>The six built-in RMU roles must all be assigned. One ACTIVE Profile version can bind only one standard file per device role. Replacing a symbol creates a new ACTIVE version while the previous version remains archived. The last ACTIVE Profile is restored on the next application start.</p><h3>Business drawings</h3><p>Business G files are check targets only. Newly discovered devrefs may be reported or ignored, but they cannot be promoted directly into the standard; the corresponding real symbol G must be uploaded first.</p><h3>Check and correct</h3><p>Check Symbol Standard is read-only. Correct Standard Issues creates corrected copies only under the managed workspace and never overwrites source G. Reports/logs under workspace/runs are disposable runtime output and are automatically expired by the existing retention mechanism; persistent standards are stored elsewhere and are never deleted by run cleanup.</p>"""),
     "small_elements": ("Abnormal Small Element Detection Help", """<h3>Purpose</h3><p>Scans &lt;ConnectLine&gt;, &lt;FeedLine&gt;, &lt;Bus&gt; and &lt;BusDis&gt; independently. An element is reported when both w and h are below the user threshold (default 10). Bus orientation is not restricted.</p><h3>Reports and deletion</h3><p>Each scan exports CSV and HTML details including file, element type, XML ID, x/y/w/h and keyid. Select one or more findings using the first-column checkboxes, then process them together. If a selected element has a non-empty keyid, deletion requires explicit confirmation.</p><h3>Relation to feeder merge</h3><p>Main-bus merge no longer applies a special w&lt;10 filter. Suspicious short Bus elements are handled in this module.</p>"""),
-    "rmu": ("RMU Processing Help", """<h3>RMU graphic processing</h3><p>The RMU page can leave grouping unchanged or group all recognized RMUs. Whole-file ungrouping is available under Basic Processing → Graphic Group Processing; it removes every &lt;Merge&gt; and sends recognized RMU frames behind devices without changing device attributes, coordinates, IDs or references.</p><p>Site RMU Device Profile is an independent tool: the user assigns standard samples to a site, scans them to learn SMART LBS / Circuit Breaker devrefs, saves the profile, and can then run a standalone SMART-device consistency check. It does not participate in the existing Start RMU Processing flow.</p><h3>RMU summary</h3><p>G files are parsed directly without OCR. Name search directions are strict constraints. Cabinet type is primarily derived from Y/Q names with devref as fallback when required. SMART and SMR are classified as intelligent RMUs while preserving the recognition source.</p>"""),
+    "rmu": ("RMU Processing Help", """<h3>RMU graphic processing</h3><p>The RMU page can leave grouping unchanged or group all recognized RMUs. Whole-file ungrouping is available under Basic Processing → Graphic Group Processing; it removes every &lt;Merge&gt; and sends recognized RMU frames behind devices without changing device attributes, coordinates, IDs or references.</p><p>Poke jump processing has been removed from this page and moved to the standalone Poke Jump Processing module. That module still calls the exact same identify_rmus() engine and reads the same RMU name-direction, exclusion and smart-marker settings, so future shared RMU-recognition updates are inherited automatically.</p><p>Site RMU Device Profile is an independent tool: the user assigns standard samples to a site, scans them to learn SMART LBS / Circuit Breaker devrefs, saves the profile, and can then run a standalone SMART-device consistency check. It does not participate in the existing Start RMU Processing flow.</p><h3>RMU summary</h3><p>G files are parsed directly without OCR. Name search directions are strict constraints. Cabinet type is primarily derived from Y/Q names with devref as fallback when required. SMART and SMR are classified as intelligent RMUs while preserving the recognition source.</p>"""),
     "basic": ("Basic Processing Help", """<h3>Input</h3><p>Basic Processing supports one G file or a directory of G files.</p><h3>Rule-based processing</h3><p>General attribute replacement and element deletion operate only on direct children of the root Layer. They do not recursively modify internal symbol children.</p><h3>Feeder title positioning</h3><p>When enabled, feeder titles are identified from valid horizontal &lt;Bus&gt; geometry and nearby &lt;Text&gt; content. key_name and keyid are not used. Only the target Text x/y position is changed.</p><h3>Connection repair</h3><p>Uses conservative incremental repair. Existing port numbers and references are preserved; ambiguous or invalid candidates are skipped.</p><h3>Line and bus styles</h3><p>Color changes only lc/lcc. Line style changes only ls: solid=1 and dashed=2. Fill, lw, coordinates, IDs and references are not modified.</p><h3>Output conflicts</h3><p>Safe overwrite writes to a temporary file and validates it before replacing the destination.</p>"""),
     "id_rules": ("Element ID Rule Template Help", """<h3>Single source of rules</h3><p>This module manages XML element ID rules. Each element type uses a manually confirmed fixed numeric prefix and fixed total length.</p><h3>Scan current G</h3><p>New element types require explicit user confirmation before a candidate rule is added. Existing types with nonconforming IDs produce warnings and do not silently change templates.</p><h3>Duplicate ID repair</h3><p>The first duplicate ID is preserved. Later duplicates receive IDs from the confirmed template, starting after the current maximum valid ID of the same type. Historical gaps are not filled. Unknown, disabled or unconfirmed types cannot generate new IDs.</p>"""),
     "merge": ("Feeder Diagram Merge Help", """<h3>Files and order</h3><p>Input files must end with .sln.pic.g. The user-defined list order is the merge order; the first row is the baseline. Built-in G File Studio frames are removed from in-memory copies before merge, while unknown/customer frames are blocked.</p><h3>Vertical alignment</h3><p>Only non-zero horizontal &lt;Bus&gt; elements are used. &lt;BusDis&gt; does not participate. The topmost Bus is selected; if no Bus exists, the highest graphic element is used.</p><h3>Main-bus processing</h3><p>Supports single- and double-bus processing with manual bus groups. Files in one group must be contiguous. Upper and lower buses remain separate in double-bus mode. Output IDs are validated against confirmed global ID templates.</p>"""),
@@ -256,3 +258,41 @@ FIELD_HELP_EN: dict[str, str] = {
     "approve": "Built-in template only. The date defaults to today and can be changed with the calendar button.",
     "issue": "Built-in template only. The date defaults to today and can be changed with the calendar button.",
 }
+
+# v2.18.90 standalone Poke processing help.
+APP_HELP["poke"] = (
+    "Poke 跳转处理帮助",
+    """
+<h3>用途</h3>
+<p>Poke 跳转已从“环网柜处理”独立出来，统一复用公共 Oracle 数据库和公共 RMU 识别能力。</p>
+<h3>前置条件</h3>
+<p>不再要求 G 根节点 facID。facID 为空也可以执行两类 Poke；它只作为报告中的可选源文件信息保留。</p>
+<h3>RMU Poke</h3>
+<p>严格调用与“环网柜处理”相同的 identify_rmus()，并读取同一组柜名方向、名称排除项和智能标记设置。识别出智能 RMU 柜名后，数据库按 DMS_COMBINED_DEVICE.NAME → FEEDER_ID → DMS_FEEDER_DEVICE.NAME/ST_ID → SUBSTATION.NAME/SUBAREA_ID → SUBCONTROLAREA.NAME，为每个 RMU 独立得到所属馈线完整业务名，再追加该 RMU 名。因此同一张变电站馈线总图即使包含多条馈线，也不会被根节点 facID 限制。GRAPH_NAME 不参与命名。</p>
+<h3>站点跳转 Poke</h3>
+<p>例如 DHN-40 只提取 DHN；40 以及附近的 (14858) 等数字都不参与目标。程序按 SUBSTATION.NAME=DHN → SUBAREA_ID → SUBCONTROLAREA.NAME 得到 JED-CTL-DHN，并生成 JED-CTL-DHN.sln.pic.g；该目标图定义为“对端变电站馈线总图”，即对端变电站下多条馈线集中展示的站级总图。</p>
+<p>识别不依赖固定背景色：优先复用覆盖标签的既有非 RMU Poke；没有 Poke 时结合 FeedLine/ConnectLine 末端位置或紧凑背景图形兜底。任何候选都必须通过数据库唯一匹配才允许修改。多个相关 Poke 删除多余项仅保留一个；没有则新增。</p>
+<h3>样式</h3>
+<p>RMU Poke 继续使用既有蓝色/Invisible 属性规则。站点跳转 Poke 则统一使用用户提供的 JM2-J2 参考 Poke 属性模板：除每个对象自己的 id、x/y/w/h、ahref 及 G File Studio 跟踪元数据外，其余 Poke 属性完全复制参考对象；已有站点 Poke 也会按该模板规范化。</p>
+<h3>处理报告</h3>
+<p>每次成功执行都会在本次运行目录生成 CSV/HTML Poke 报告。报告汇总公共 RMU 识别数量、智能 RMU 数、新增/更新 RMU Poke、站点跳转候选与成功解析数量、新增/更新站点跳转 Poke、重复 Poke 清理数量；明细会记录实际写入的 ahref，以及每个未加跳转候选的具体原因。</p>
+""",
+)
+APP_HELP_EN["poke"] = (
+    "Poke Jump Processing Help",
+    """
+<h3>Purpose</h3>
+<p>Poke jump processing is independent from RMU Processing and reuses the shared Oracle service and shared RMU recognition engine.</p>
+<h3>Requirement</h3>
+<p>A root facID is no longer required. Blank facID does not block either Poke branch; it is kept only as optional source metadata in the report.</p>
+<h3>RMU Poke</h3>
+<p>The module calls the same identify_rmus() used by RMU Processing and reads the same name-direction, exclusion and smart-marker settings. Each recognized smart RMU name independently resolves DMS_COMBINED_DEVICE.NAME → FEEDER_ID → DMS_FEEDER_DEVICE.NAME/ST_ID → SUBSTATION.NAME/SUBAREA_ID → SUBCONTROLAREA.NAME. This allows one station overview drawing to contain RMUs from multiple feeders without relying on the root facID. GRAPH_NAME is not used.</p>
+<h3>Station-jump Poke</h3>
+<p>For DHN-40 only DHN is used. The suffix 40 and nearby values such as (14858) are ignored. SUBSTATION.NAME=DHN → SUBAREA_ID → SUBCONTROLAREA.NAME produces JED-CTL-DHN and therefore JED-CTL-DHN.sln.pic.g. This target is the remote substation feeder overview, i.e. the station-level drawing that brings multiple feeders of that substation together.</p>
+<p>Recognition does not require a fixed background color. Existing overlapping non-RMU Pokes are preferred; otherwise nearby FeedLine/ConnectLine endpoints or compact background geometry are fallback structural cues. Every candidate must resolve uniquely in Oracle. Duplicate related Pokes are removed, and a missing Poke is created.</p>
+<h3>Style</h3>
+<p>RMU Pokes keep the existing blue/Invisible property rule. Station-jump Pokes use the user-provided JM2-J2 reference Poke as their canonical property template: every non-geometric Poke property is copied from the reference, while id, x/y/w/h, ahref and G File Studio tracking metadata remain target-specific.</p>
+<h3>Processing Report</h3>
+<p>Each successful run writes CSV/HTML Poke reports to the run directory. The report summarizes shared RMU recognition, smart RMUs, added/updated RMU Pokes, station-jump candidates/resolutions, added/updated station Pokes, duplicate cleanup, the exact written ahref, and the specific reason for every candidate whose jump was not added.</p>
+""",
+)

@@ -143,10 +143,9 @@ def test_basic_processor_checkbox_executes_conservative_alignment(tmp_path: Path
     assert output["34000041"].get("d") == original["34000041"].get("d")
 
 
-def test_ui_explains_conservative_alignment_but_keeps_checkbox_workflow():
+def test_basic_page_removes_legacy_connection_repair_workflow():
     source = (ROOT / "g_file_studio/ui/pages/basic_page.py").read_text(encoding="utf-8")
-    assert 'QCheckBox("修复连接点（补齐 node_area / link）")' in source
-    assert "保守增量模式" in source
-    assert "不修改任何连接线坐标" in source
-    assert "原有连接不会被删除或改号" in source
-    assert "不勾选时完全跳过" in source
+    assert 'QGroupBox("连接点修复")' not in source
+    assert 'QCheckBox("修复连接点（补齐 node_area / link）")' not in source
+    assert "self.repair_connection_points" not in source
+    assert "图元及电气 Pin 的标准检查/纠正统一在“图元标准检查”模块执行" in source

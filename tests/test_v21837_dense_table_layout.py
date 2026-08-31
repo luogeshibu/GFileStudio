@@ -9,7 +9,7 @@ def test_dense_table_layout_is_presentation_only_and_reused():
 
     assert 'ScrollBarAlwaysOn' in helper
     assert 'resizeColumnsToContents' in helper
-    assert 'configure_known_dense_table(self.profile_table)' in site
+    assert 'self.profile_table' not in site
     assert 'configure_known_dense_table(self.standard_table)' in site
     assert 'configure_known_dense_table(widget)' in i18n
     # Golden/protected ID feature source remains the legacy table implementation.
@@ -17,5 +17,5 @@ def test_dense_table_layout_is_presentation_only_and_reused():
 
 
 def test_release_version_21837():
-    assert '__version__ = "2.18.55"' in Path('g_file_studio/__init__.py').read_text(encoding='utf-8')
-    assert 'version = "2.18.55"' in Path('pyproject.toml').read_text(encoding='utf-8')
+    assert '__version__ = "2.18.97"' in Path('g_file_studio/__init__.py').read_text(encoding='utf-8')
+    assert 'version = "2.18.97"' in Path('pyproject.toml').read_text(encoding='utf-8')

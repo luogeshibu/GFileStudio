@@ -4,15 +4,16 @@ import csv
 import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from g_file_studio.engines.color_engine import ColorRule, apply_line_colors
 from g_file_studio.engines.connection_engine import repair_tree_connections
 from g_file_studio.engines.feeder_title_engine import move_feeder_titles_above_buses
 from g_file_studio.engines.icon_upgrade_engine import analyze_icon_mappings, analyze_icon_pairs, apply_icon_upgrade
 from g_file_studio.engines.rmu_group_engine import enhance_rmu_tree, group_rmu_tree, remove_all_graphic_merges, ungroup_rmu_tree
-from g_file_studio.engines.rmu_identification_engine import identify_rmus, parse_name_exclusions
+from g_file_studio.engines.rmu_identification_engine import identify_rmus, parse_intelligent_markers, parse_name_exclusions
 from g_file_studio.engines.rmu_name_style_engine import apply_rmu_name_white_to_tree
+from g_file_studio.engines.rmu_poke_engine import apply_smart_rmu_pokes
 from g_file_studio.models import (
     BasicOutputConflictAction,
     BasicSettings,
@@ -267,6 +268,10 @@ def _validate_rules(settings: BasicSettings) -> None:
         settings.rmu_name_top, settings.rmu_name_bottom, settings.rmu_name_left, settings.rmu_name_right
     )):
         raise ValueError("启用环网柜名称改白后，柜名位置至少选择一个方向。")
+    if settings.add_smart_rmu_poke and not any((
+        settings.rmu_name_top, settings.rmu_name_bottom, settings.rmu_name_left, settings.rmu_name_right
+    )):
+        raise ValueError("启用智能 RMU Poke 跳转后，柜名位置至少选择一个方向。")
 
     if settings.compare_rmu_ledger and not settings.identify_rmu_name_and_type:
         raise ValueError("启用 RMU 台账对比前，必须先启用 RMU 信息汇总。")
@@ -583,6 +588,8 @@ def process_basic(
     settings: BasicSettings,
     log: LogCallback = print,
     progress: ProgressCallback | None = None,
+    *,
+    database_service: Any | None = None,
 ) -> ProcessingResult:
     """统一执行基础处理页面选择的全部操作。"""
     _validate_rules(settings)
@@ -637,6 +644,11 @@ def process_basic(
     total_smr_frames_changed = 0
     total_rmu_name_white_matched = 0
     total_rmu_name_white_changed = 0
+    total_smart_rmu_poke_candidates = 0
+    total_smart_rmu_poke_added = 0
+    total_smart_rmu_poke_updated = 0
+    total_smart_rmu_poke_unchanged = 0
+    total_smart_rmu_poke_skipped = 0
     smr_report_rows: list[dict[str, object]] = []
     total_channel_status_rects = 0
     total_channel_status_found = 0
@@ -718,6 +730,7 @@ def process_basic(
                     name_positions=positions,
                     smart_in_type=settings.rmu_smart_in_type,
                     excluded_name_values=parse_name_exclusions(settings.rmu_name_exclusions),
+                    intelligent_marker_values=parse_intelligent_markers(settings.rmu_intelligent_markers),
                 )
                 total_rmu_identified += rmu_identification.cabinet_count
                 total_rmu_named += rmu_identification.named_count
@@ -758,6 +771,36 @@ def process_basic(
                         ))
                 for warning in rmu_identification.warnings:
                     log(f"[环网柜识别告警] {input_path.name}：{warning}")
+
+            # SMART RMU Poke uses exactly the same RMU identification engine as the
+            # summary module.  It is intentionally identified BEFORE grouping,
+            # because grouping moves cabinet devices under <Merge>.
+            poke_identification = None
+            if settings.add_smart_rmu_poke:
+                positions = tuple(
+                    key for key, enabled in (
+                        ("top", settings.rmu_name_top),
+                        ("bottom", settings.rmu_name_bottom),
+                        ("left", settings.rmu_name_left),
+                        ("right", settings.rmu_name_right),
+                    ) if enabled
+                )
+                if rmu_identification is not None and settings.rmu_smart_in_type:
+                    poke_identification = rmu_identification
+                else:
+                    poke_identification = identify_rmus(
+                        tree,
+                        input_path,
+                        name_positions=positions,
+                        smart_in_type=True,
+                        excluded_name_values=parse_name_exclusions(settings.rmu_name_exclusions),
+                        intelligent_marker_values=parse_intelligent_markers(settings.rmu_intelligent_markers),
+                    )
+                poke_smart_count = sum(1 for item in poke_identification.items if item.smart_count)
+                log(
+                    f"[智能RMU Poke识别] {input_path.name}：完全复用 RMU 信息汇总识别器，"
+                    f"识别 RMU {poke_identification.cabinet_count} 个，其中智能 RMU {poke_smart_count} 个。"
+                )
 
             for layer in layers:
                 one_replaced, one_deleted_attributes, one_removed, one_removed_ids = _process_layer(layer, settings)
@@ -825,8 +868,81 @@ def process_basic(
             }
             rmu_processing_warnings: list[str] = []
 
+            # v2.18.59: 独立“环网柜处理 -> 组合所有环网柜”不再自行判断哪些 rect 是 RMU。
+            # 直接复用“RMU 信息汇总”的 identify_rmus() 结果作为唯一柜体集合。
+            # 即使用户没有勾选“启用 RMU 信息汇总”，组合动作也会在内存中执行一次只读识别；
+            # 不额外生成汇总报告，也不改变信息汇总本身的开关语义。
+            grouping_rmu_rect_ids: set[str] | None = None
+            if rmu_action == RmuAction.GROUP and settings.reset_existing_merges_before_rmu_group:
+                grouping_identification = rmu_identification or poke_identification
+                if grouping_identification is None:
+                    grouping_positions = tuple(
+                        key for key, enabled in (
+                            ("top", settings.rmu_name_top),
+                            ("bottom", settings.rmu_name_bottom),
+                            ("left", settings.rmu_name_left),
+                            ("right", settings.rmu_name_right),
+                        ) if enabled
+                    ) or ("top",)
+                    grouping_identification = identify_rmus(
+                        tree,
+                        input_path,
+                        name_positions=grouping_positions,
+                        smart_in_type=settings.rmu_smart_in_type,
+                        excluded_name_values=parse_name_exclusions(settings.rmu_name_exclusions),
+                        intelligent_marker_values=parse_intelligent_markers(settings.rmu_intelligent_markers),
+                    )
+                grouping_rmu_rect_ids = {
+                    item.rect_id
+                    for item in grouping_identification.items
+                    if item.rect_id
+                }
+                log(
+                    f"[环网柜组合识别] {input_path.name}：直接复用 RMU 信息汇总识别器，"
+                    f"确认 RMU {grouping_identification.cabinet_count} 个，可用于组合的 rect ID "
+                    f"{len(grouping_rmu_rect_ids)} 个。"
+                )
+                if grouping_identification.cabinet_count and len(grouping_rmu_rect_ids) != grouping_identification.cabinet_count:
+                    raise ValueError(
+                        f"文件 {input_path.name} 的 RMU 信息汇总识别到 "
+                        f"{grouping_identification.cabinet_count} 个柜体，但仅有 "
+                        f"{len(grouping_rmu_rect_ids)} 个有效 rect ID；为避免误组合，已停止处理。"
+                    )
+
             if rmu_action == RmuAction.GROUP:
-                grouping = group_rmu_tree(tree, input_path)
+                # 独立“环网柜处理”页面的安全重建模式：仅当当前文件确实已有
+                # Layer 直属 Merge 时，先复用“彻底取消图形组合”能力删除全部旧 Merge，
+                # 再根据当前图元几何重新组合。默认关闭，因此基础处理等其他调用不变。
+                if settings.reset_existing_merges_before_rmu_group:
+                    existing_merge_count = sum(
+                        1
+                        for layer in layers
+                        for element in list(layer)
+                        if _local_name(element.tag) == "Merge"
+                    )
+                    if existing_merge_count:
+                        cleanup = remove_all_graphic_merges(
+                            tree,
+                            input_path,
+                            lower_rmu_rects=True,
+                            rmu_rect_ids=grouping_rmu_rect_ids,
+                        )
+                        total_graphic_merges_removed += cleanup.removed_merge_count
+                        total_graphic_merge_cleanup_rmu_rects += cleanup.rmu_rect_count
+                        total_graphic_merge_cleanup_lowered_rects += cleanup.lowered_rect_count
+                        log(
+                            f"[环网柜组合预清理] {input_path.name}：检测到旧 Merge "
+                            f"{existing_merge_count} 个，已先彻底取消图形组合；删除 "
+                            f"{cleanup.removed_merge_count} 个，剩余 {cleanup.remaining_merge_count} 个，"
+                            f"RMU 外框置底 {cleanup.lowered_rect_count} 个。随后按当前图元重新组合。"
+                        )
+
+                grouping = group_rmu_tree(
+                    tree,
+                    input_path,
+                    validated_rmu_only=False,
+                    validated_rmu_rect_ids=grouping_rmu_rect_ids,
+                )
                 total_rects += grouping.rect_count
                 total_rmu_groups += grouping.rebuilt_group_count
                 total_rmu_members += grouping.grouped_member_count
@@ -880,6 +996,43 @@ def process_basic(
                 or settings.reposition_channel_status
                 or settings.remove_bus_rmu_frame_and_reposition_title
             ):
+                smart_frame_rmu_rect_ids: set[str] | None = None
+                if settings.change_smart_rmu_frame_color:
+                    # SMART frame coloring must use the same authoritative RMU
+                    # recognition as RMU Summary instead of re-testing whether
+                    # the whole SMART Text box is geometrically inside the rect.
+                    smart_frame_identification = None
+                    if poke_identification is not None:
+                        smart_frame_identification = poke_identification
+                    elif rmu_identification is not None and settings.rmu_smart_in_type:
+                        smart_frame_identification = rmu_identification
+                    else:
+                        smart_positions = tuple(
+                            key for key, enabled in (
+                                ("top", settings.rmu_name_top),
+                                ("bottom", settings.rmu_name_bottom),
+                                ("left", settings.rmu_name_left),
+                                ("right", settings.rmu_name_right),
+                            ) if enabled
+                        ) or ("top",)
+                        smart_frame_identification = identify_rmus(
+                            tree,
+                            input_path,
+                            name_positions=smart_positions,
+                            smart_in_type=True,
+                            excluded_name_values=parse_name_exclusions(settings.rmu_name_exclusions),
+                            intelligent_marker_values=parse_intelligent_markers(settings.rmu_intelligent_markers),
+                        )
+                    smart_frame_rmu_rect_ids = {
+                        item.rect_id
+                        for item in smart_frame_identification.items
+                        if item.rect_id and bool(item.smart_count)
+                    }
+                    log(
+                        f"[智能环网柜外框识别] {input_path.name}：复用 RMU 信息汇总识别结果，"
+                        f"确认智能 RMU {len(smart_frame_rmu_rect_ids)} 个。"
+                    )
+
                 enhancement = enhance_rmu_tree(
                     tree,
                     input_path,
@@ -893,6 +1046,7 @@ def process_basic(
                     remove_bus_frame_and_reposition_title=(
                         settings.remove_bus_rmu_frame_and_reposition_title
                     ),
+                    smart_rmu_rect_ids=smart_frame_rmu_rect_ids,
                 )
                 total_smart_rmu_rects += enhancement.smart_rmu_rect_count
                 total_smart_rmu_frames_changed += enhancement.smart_frame_color_changed
@@ -919,10 +1073,10 @@ def process_basic(
                 rmu_processing_warnings.extend(enhancement.warnings)
                 if settings.change_smart_rmu_frame_color:
                     log(
-                        f"[SMART环网柜外框颜色] {input_path.name}：识别框内含 SMART 的环网柜 "
+                        f"[智能环网柜外框颜色] {input_path.name}：识别为智能的环网柜 "
                         f"{enhancement.smart_rmu_rect_count} 个，仅修改外框 "
                         f"{enhancement.smart_frame_color_changed} 个，颜色 "
-                        f"{settings.smart_rmu_frame_color.upper()}；SMART 字体未修改。"
+                        f"{settings.smart_rmu_frame_color.upper()}；智能标记文字未修改。"
                     )
                 if settings.change_smr_rmu_frame_color:
                     log(f"[SMR环网柜外框颜色] {input_path.name}：SMR Text {enhancement.smr_text_count} 个，匹配外框 {enhancement.smr_matched_rect_count} 个，改色 {enhancement.smr_frame_color_changed} 个；SMR Text 未修改。")
@@ -958,7 +1112,9 @@ def process_basic(
                     tree,
                     input_path,
                     name_positions=name_positions,
-                    name_exclusions=settings.rmu_name_exclusions,
+                    name_exclusions=", ".join(
+                        value for value in (settings.rmu_name_exclusions, settings.rmu_intelligent_markers) if value.strip()
+                    ),
                 )
                 total_rmu_name_white_matched += name_color.matched_name_text_count
                 total_rmu_name_white_changed += name_color.changed_name_text_count
@@ -972,6 +1128,73 @@ def process_basic(
                 )
                 for warning in name_color.warnings:
                     log(f"[RMU柜名白色告警] {warning}")
+
+            if settings.add_smart_rmu_poke and poke_identification is not None:
+                smart_count = sum(1 for item in poke_identification.items if item.smart_count)
+                total_smart_rmu_poke_candidates += smart_count
+                if smart_count == 0:
+                    fac_id = ""
+                else:
+                    root = tree.getroot()
+                    fac_id = (root.get("facID") or "").strip()
+                if smart_count == 0:
+                    pass
+                elif not fac_id:
+                    total_smart_rmu_poke_skipped += smart_count
+                    log(
+                        f"[智能RMU Poke跳转告警] {input_path.name}：当前 G 文件 facID 为空，"
+                        "无法自动查询馈线/变电站信息。请先关联馈线，再执行智能环网柜 Poke 跳转。"
+                    )
+                else:
+                    try:
+                        if database_service is None:
+                            from g_file_studio.services.database_service import OracleDatabaseService
+                            from g_file_studio.services.user_settings_service import UserSettingsService
+                            database_service = OracleDatabaseService(UserSettingsService())
+                        context = database_service.resolve_g_file_context(fac_id)
+                        g_fac_name = (root.get("facName") or "").strip()
+                        log(
+                            f"[智能RMU Poke数据库] {input_path.name}：facID={fac_id} → "
+                            f"区域={context.subcontrolarea_name}，变电站={context.station_name}，"
+                            f"馈线={context.feeder_name}，完整馈线名={context.feeder_full_name}。"
+                        )
+                        if g_fac_name and g_fac_name.casefold() != context.feeder_name.casefold():
+                            log(
+                                f"[智能RMU Poke跳转告警] {input_path.name}：G.facName={g_fac_name!r} 与 "
+                                f"DMS_FEEDER_DEVICE.NAME={context.feeder_name!r} 不一致；"
+                                "Poke 以数据库 NAME 为准。"
+                            )
+                        poke_result = apply_smart_rmu_pokes(
+                            tree, input_path, poke_identification,
+                            naming_mode="database_prefix",
+                            naming_rule=context.feeder_full_name,
+                        )
+                        # candidates were counted before the database lookup.
+                        total_smart_rmu_poke_added += poke_result.added_count
+                        total_smart_rmu_poke_updated += poke_result.updated_count
+                        total_smart_rmu_poke_unchanged += poke_result.unchanged_count
+                        total_smart_rmu_poke_skipped += poke_result.skipped_count
+                        log(
+                            f"[智能RMU Poke跳转] {input_path.name}：数据库自动前缀 {context.feeder_full_name}；"
+                            f"智能 RMU {poke_result.intelligent_rmu_count} 个，可安全生成 {poke_result.eligible_rmu_count} 个；"
+                            f"新增 Poke {poke_result.added_count} 个，更新 {poke_result.updated_count} 个，"
+                            f"已符合 {poke_result.unchanged_count} 个，跳过 {poke_result.skipped_count} 个。"
+                        )
+                        for change in poke_result.changes:
+                            action_label = {"added": "新增", "updated": "更新", "unchanged": "已符合"}.get(change.action, change.action)
+                            log(
+                                f"  - RMU {change.rmu_name} / rect {change.rect_id}：{action_label} Poke {change.poke_id}，"
+                                f"范围 ({change.x:g}, {change.y:g}, {change.w:g}, {change.h:g})，"
+                                f"跳转 {change.target_file}。"
+                            )
+                        for warning in poke_result.warnings:
+                            log(f"[智能RMU Poke跳转告警] {input_path.name}：{warning}")
+                    except Exception as exc:
+                        total_smart_rmu_poke_skipped += smart_count
+                        log(
+                            f"[智能RMU Poke跳转告警] {input_path.name}：数据库无法解析 facID={fac_id}：{exc}。"
+                            "本文件仅跳过 Poke，其他环网柜处理继续执行。"
+                        )
 
             if (
                 rmu_action != RmuAction.NONE
@@ -1140,7 +1363,9 @@ def process_basic(
         f"{total_rmu_groups} 个，取消组合 {total_rmu_ungrouped} 个，外框下移 "
         f"{total_rmu_lowered_rects} 个；识别含 SMART 环网柜 {total_smart_rmu_rects} 个，"
         f"SMART 环网柜外框改色 {total_smart_rmu_frames_changed} 个；SMR Text {total_smr_texts} 个，匹配环网柜 {total_smr_matched_rects} 个，SMR 外框改色 {total_smr_frames_changed} 个；"
-        f"RMU 柜名匹配 {total_rmu_name_white_matched} 个、改白 {total_rmu_name_white_changed} 个；channel_status 状态点"
+        f"RMU 柜名匹配 {total_rmu_name_white_matched} 个、改白 {total_rmu_name_white_changed} 个；"
+        f"智能 RMU Poke 候选 {total_smart_rmu_poke_candidates} 个、新增 {total_smart_rmu_poke_added} 个、"
+        f"更新 {total_smart_rmu_poke_updated} 个、已符合 {total_smart_rmu_poke_unchanged} 个、跳过 {total_smart_rmu_poke_skipped} 个；channel_status 状态点"
         f"找到 {total_channel_status_found} 个、移动 {total_channel_status_moved} 个、"
         f"未找到 {total_channel_status_missing} 个，带 Bus 外框删除 "
         f"{total_bus_rect_removed} 个，标题上移 {total_bus_title_moved} 个；"
@@ -1150,6 +1375,11 @@ def process_basic(
         summary += (
             f"；彻底取消图形组合删除 Merge {total_graphic_merges_removed} 个，"
             f"识别 RMU 外框 {total_graphic_merge_cleanup_rmu_rects} 个、置底 {total_graphic_merge_cleanup_lowered_rects} 个"
+        )
+    elif settings.reset_existing_merges_before_rmu_group:
+        summary += (
+            f"；环网柜重组前清理旧 Merge {total_graphic_merges_removed} 个，"
+            f"RMU 外框置底 {total_graphic_merge_cleanup_lowered_rects} 个"
         )
     if settings.identify_rmu_name_and_type:
         summary += (
@@ -1219,6 +1449,12 @@ def process_basic(
             "rmu_name_text_white_enabled": settings.set_rmu_name_text_white,
             "rmu_name_text_white_matched_count": total_rmu_name_white_matched,
             "rmu_name_text_white_changed_count": total_rmu_name_white_changed,
+            "smart_rmu_poke_enabled": settings.add_smart_rmu_poke,
+            "smart_rmu_poke_candidate_count": total_smart_rmu_poke_candidates,
+            "smart_rmu_poke_added_count": total_smart_rmu_poke_added,
+            "smart_rmu_poke_updated_count": total_smart_rmu_poke_updated,
+            "smart_rmu_poke_unchanged_count": total_smart_rmu_poke_unchanged,
+            "smart_rmu_poke_skipped_count": total_smart_rmu_poke_skipped,
             "channel_status_rmu_rect_count": total_channel_status_rects,
             "channel_status_found_count": total_channel_status_found,
             "channel_status_moved_count": total_channel_status_moved,

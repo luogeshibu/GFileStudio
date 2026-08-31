@@ -12,7 +12,7 @@ def _profile() -> SiteSmartProfile:
     )
 
 
-def test_symbol_standard_page_is_check_first_and_low_frequency_editor_is_collapsed():
+def test_symbol_standard_page_is_check_first_and_uses_one_standard_table():
     source = Path("g_file_studio/ui/pages/site_profile_page.py").read_text(encoding="utf-8")
     assert 'self.check_button = QPushButton("检查图元标准")' in source
     assert 'self.open_report_button = QPushButton("查看检查报告")' in source
@@ -20,9 +20,11 @@ def test_symbol_standard_page_is_check_first_and_low_frequency_editor_is_collaps
     assert 'self.task.buttons_layout.insertWidget(1, self.correct_button)' in source
     assert 'self.task.buttons_layout.insertWidget(2, self.open_report_button)' in source
     assert 'self.task.open_button.setText("打开结果目录")' in source
-    assert 'self.editor_box.setVisible(False)' in source
+    assert 'QGroupBox("图元标准")' in source
+    assert 'self.profile_selector = WheelSafeComboBox()' in source
+    assert 'self.profile_table' not in source
+    assert 'self.editor_box' not in source
     assert 'self.task.log_view.setVisible(False)' in source
-    assert 'self.edit_standard_button = QPushButton("编辑标准")' in source
 
 
 def test_discovery_queue_is_persistent_without_version_bump(tmp_path):

@@ -62,8 +62,8 @@ class RmuPage(BasePage):
         )
         self.layout.addWidget(
             InfoBanner(
-                "本页面负责环网柜组合、SMART/SMR 外框改色、RMU 柜名改白、"
-                "channel_status 状态点、带 Bus 外框处理，以及柜名/柜型识别；新增样式操作复用既有识别结果，不改变原识别算法。"
+                "本页面负责 RMU 基础识别、环网柜组合、智能 RMU 外框改色、RMU 柜名改白、"
+                "channel_status 状态点，以及柜名/柜型识别；Poke 跳转已独立到左侧“Poke 跳转处理”模块。"
             )
         )
 
@@ -97,8 +97,9 @@ class RmuPage(BasePage):
         io_layout.addLayout(row)
         self.layout.addWidget(io_box)
 
-        self._build_rmu_options()
+        # RMU 基础识别是本页所有后续功能的共同前置能力，必须最先配置且始终启用。
         self._build_rmu_identification_options()
+        self._build_rmu_options()
         self._build_rmu_ledger_options()
         self._restore_options()
 
@@ -106,23 +107,17 @@ class RmuPage(BasePage):
         self.task.run_button.setText("开始环网柜处理")
         self.task.run_button.clicked.connect(self.run)
 
-        self.rmu_graphic_report_button = QPushButton("打开图元处理报告")
         self.rmu_summary_report_button = QPushButton("打开 RMU 汇总报告")
         self.rmu_ledger_report_button = QPushButton("打开台账对比报告")
         for button in (
-            self.rmu_graphic_report_button,
             self.rmu_summary_report_button,
             self.rmu_ledger_report_button,
         ):
             set_secondary(button)
             button.setVisible(False)
             button.setEnabled(False)
-        self.task.buttons_layout.insertWidget(1, self.rmu_graphic_report_button)
-        self.task.buttons_layout.insertWidget(2, self.rmu_summary_report_button)
-        self.task.buttons_layout.insertWidget(3, self.rmu_ledger_report_button)
-        self.rmu_graphic_report_button.clicked.connect(
-            lambda: self._open_report("rmu-graphic-processing-report.html", "环网柜图元处理")
-        )
+        self.task.buttons_layout.insertWidget(1, self.rmu_summary_report_button)
+        self.task.buttons_layout.insertWidget(2, self.rmu_ledger_report_button)
         self.rmu_summary_report_button.clicked.connect(
             lambda: self._open_report("rmu-summary-report.html", "RMU 信息汇总")
         )
@@ -140,9 +135,12 @@ class RmuPage(BasePage):
         layout.setContentsMargins(16, 18, 16, 14)
         layout.setSpacing(10)
         description = QLabel(
-            "“组合所有环网柜”会将每个直属 <rect> 作为环网柜外框，只组合完整位于矩形框内部的直属图元；"
+            "“组合所有环网柜”直接复用页面最前方“RMU 基础识别与汇总”的现有识别算法来确认真正的 RMU 外框；组合模块本身不再另写一套柜体判断。"
+            "只有 RMU 基础识别识别到的 rect 才会建立 Merge，并且只组合完整位于柜框内部的直属图元；图框标题栏/信息栏等辅助 rect 不参与环网柜组合；"
             "任何部分位于框外的连接线、状态图标和文字都不会进入组合。"
-            "彻底取消图形组合已经移动到“基础处理 → 图形组合处理”，因为该操作会删除整个 G 文件中的全部 <Merge>，不再属于 RMU 专用功能。"
+            "为避免历史 Merge 的范围、成员或 mergesize 与当前图元不一致，选择组合时如果当前文件已存在任何 <Merge>，"
+            "会先复用“基础处理 → 图形组合处理”的彻底取消组合逻辑删除全部旧 Merge，再按当前图元重新组合；"
+            "如果文件没有 Merge，则不会额外执行取消组合。"
         )
         description.setWordWrap(True)
         description.setObjectName("mutedText")
@@ -165,12 +163,17 @@ class RmuPage(BasePage):
         title.setObjectName("sectionCaption")
         layout.addWidget(title)
 
-        self.rmu_smart_frame_color = ColorRuleRow("含 SMART 的环网柜外框", "rect + Text[ts=SMART]", "#00A651")
-        self.rmu_smart_frame_color.enabled_box.setText("修改含 SMART 的环网柜外框颜色")
+        self.rmu_smart_frame_color = ColorRuleRow("智能环网柜外框", "RMU 基础识别 → 智能标记唯一归属", "#00A651")
+        self.rmu_smart_frame_color.enabled_box.setText("修改智能环网柜外框颜色")
+        # RMU 外框增强仅支持颜色修改；线型功能从未接入 RMU 执行参数，避免展示无效控件。
+        self.rmu_smart_frame_color.line_style_label.hide()
+        self.rmu_smart_frame_color.line_style_combo.hide()
         layout.addWidget(self.rmu_smart_frame_color)
 
         self.rmu_smr_frame_color = ColorRuleRow("含 SMR 的最近环网柜外框", "Text[ts=SMR] → 最近有效 RMU rect", "#FF0000")
         self.rmu_smr_frame_color.enabled_box.setText("修改含 SMR 的环网柜外框颜色")
+        self.rmu_smr_frame_color.line_style_label.hide()
+        self.rmu_smr_frame_color.line_style_combo.hide()
         layout.addWidget(self.rmu_smr_frame_color)
 
         self.rmu_name_white = QCheckBox("将已识别的环网柜名称统一改成白色")
@@ -202,30 +205,22 @@ class RmuPage(BasePage):
         self.rmu_reposition_channel_status.toggled.connect(self.rmu_channel_status_position.setEnabled)
         self.rmu_reposition_channel_status.toggled.connect(self.rmu_channel_status_margin.setEnabled)
 
-        self.rmu_remove_bus_frame = QCheckBox("删除带 Bus 的环网柜外框，并将最近标题放到母线上方")
-        self.rmu_remove_bus_frame.setProperty("optionChoice", True)
-        layout.addWidget(self.rmu_remove_bus_frame)
         self.layout.addWidget(box)
 
     def _build_rmu_identification_options(self) -> None:
-        box = QGroupBox("RMU 信息汇总")
+        box = QGroupBox("RMU 基础识别与汇总（必需）")
         layout = QVBoxLayout(box)
         layout.setContentsMargins(16, 18, 16, 14)
         layout.setSpacing(10)
+
         description = QLabel(
-            "直接解析 G 文件，不使用 OCR。只有 rect 框内同时存在 BusDis、CBreakerDis 和 ZhaiWaiJieDiDaoZha 才认定为环网柜；"
-            "柜名优先严格只在用户勾选方向中寻找：单候选直接使用；同一最近文字组存在多个候选时才优先绿色文字。"
-            "常规几何匹配失败时，仅当柜内 BusDis.key_name 唯一候选与所选方向附近同名 Text 完全一致时回退。"
-            "柜名排除字符串按完整文本匹配过滤。柜型优先按 Y1/Y2/... 与 Q1/Q2/... 名称计数，名称无法判断时才回退到设备 devref。"
-            "SMART 与 SMR 统一统计为“智能环网柜”，并保留识别来源。"
+            "每次运行固定识别全部有效 RMU 并生成 RMU 汇总 CSV / HTML，不提供关闭或识别范围开关。"
+            "只有 rect 框内同时存在 BusDis、CBreakerDis 和 ZhaiWaiJieDiDaoZha 才认定为 RMU；"
+            "后续组合、外框、柜名处理和台账对比统一复用这份基础识别结果；独立 Poke 模块也直接调用同一个识别器。"
         )
         description.setWordWrap(True)
         description.setObjectName("mutedText")
         layout.addWidget(description)
-
-        self.identify_rmu = QCheckBox("启用 RMU 信息汇总")
-        self.identify_rmu.setProperty("optionChoice", True)
-        layout.addWidget(self.identify_rmu)
 
         name_row = QHBoxLayout()
         name_row.addWidget(QLabel("柜名可能位置："))
@@ -239,43 +234,45 @@ class RmuPage(BasePage):
         name_row.addStretch(1)
         layout.addLayout(name_row)
 
+        marker_row = QHBoxLayout()
+        marker_row.addWidget(QLabel("智能 RMU 标记字符："))
+        self.rmu_intelligent_markers = QLineEdit()
+        self.rmu_intelligent_markers.setPlaceholderText("例如：SMART, SMR, NEWSMART, SMART-SE")
+        self.rmu_intelligent_markers.setToolTip(
+            "多个标记使用逗号、分号或换行分隔，按完整 Text 匹配并忽略大小写。"
+            "程序会全图扫描这些标记，每一个标记只允许唯一归属最近的有效 RMU；"
+            "这些标记同时自动从柜名候选中排除，避免 NEWSMART / SMART-SE 被误识别成柜名。"
+        )
+        marker_row.addWidget(self.rmu_intelligent_markers, 1)
+        layout.addLayout(marker_row)
+
         exclude_row = QHBoxLayout()
         exclude_row.addWidget(QLabel("柜名排除字符串："))
         self.rmu_name_exclusions = QLineEdit()
         self.rmu_name_exclusions.setPlaceholderText("例如：NOP, DAS/OK, SFI")
         self.rmu_name_exclusions.setToolTip(
-            "多个字符串使用逗号或分号分隔。按完整字符串匹配，忽略大小写和首尾空白；"
-            "不会使用包含关系，例如排除 SFI 不会排除 SFI-1201。"
+            "多个字符串使用逗号、分号或换行分隔。按完整字符串匹配，忽略大小写和首尾空白；"
+            "你指定的字符绝不会作为 RMU 柜名候选。不会使用包含关系，例如排除 SFI 不会排除 SFI-1201。"
         )
         exclude_row.addWidget(self.rmu_name_exclusions, 1)
         layout.addLayout(exclude_row)
 
-        self.rmu_smart_in_type = QCheckBox("启用智能环网柜分类（SMART / SMR）")
-        self.rmu_smart_in_type.setProperty("optionChoice", True)
-        self.rmu_smart_in_type.setToolTip(
-            "RMU 信息汇总始终统计全部有效环网柜。勾选后额外将 SMART/SMR 统一归类为智能环网柜；"
-            "不勾选时仅汇总 RMU 名称、柜型、重复和识别异常，不进行智能/普通分类。"
+        note = QLabel(
+            "默认智能标记为 SMART, SMR；以后现场改成 NEWSMART、SMART-SE 或其他文字时，直接在“智能 RMU 标记字符”中维护即可，"
+            "无需修改识别代码。无论是否智能，所有有效 RMU 都始终进入基础汇总报告。"
         )
-        layout.addWidget(self.rmu_smart_in_type)
-        classify_note = QLabel(
-            "无论是否启用智能分类，都会统计全部有效 RMU，并检查重复名称/ID、柜名或柜型未识别、"
-            "中低置信度等异常；这些信息会在 RMU 汇总 HTML 报告中重点提示。"
-        )
-        classify_note.setWordWrap(True)
-        classify_note.setObjectName("mutedText")
-        layout.addWidget(classify_note)
-        self.identify_rmu.toggled.connect(self._refresh_rmu_name_controls)
-        self.rmu_name_white.toggled.connect(self._refresh_rmu_name_controls)
+        note.setWordWrap(True)
+        note.setObjectName("mutedText")
+        layout.addWidget(note)
         self.layout.addWidget(box)
 
     def _refresh_rmu_name_controls(self) -> None:
-        name_enabled = self.identify_rmu.isChecked() or self.rmu_name_white.isChecked()
+        # RMU 基础识别始终开启；这里只维护可配置的识别输入项。
         for item in (
             self.rmu_name_top, self.rmu_name_bottom, self.rmu_name_left,
-            self.rmu_name_right, self.rmu_name_exclusions,
+            self.rmu_name_right, self.rmu_name_exclusions, self.rmu_intelligent_markers,
         ):
-            item.setEnabled(name_enabled)
-        self.rmu_smart_in_type.setEnabled(self.identify_rmu.isChecked())
+            item.setEnabled(True)
 
     def _build_rmu_ledger_options(self) -> None:
         box = QGroupBox("现有 RMU 台账对比（可选）")
@@ -285,7 +282,7 @@ class RmuPage(BasePage):
 
         description = QLabel(
             "将用户现有 RMU 台账与 G 文件识别结果进行对比。RMU 名称为必填匹配键；柜型、是否智能为可选字段。"
-            "SMART 与 SMR 在对比时统一视为“智能环网柜”。原有 G 图形识别算法不因启用台账对比而改变。"
+            "基础识别中命中任一“智能 RMU 标记字符”的柜体统一视为智能环网柜；台账对比不会改变 RMU 识别结果。"
         )
         description.setWordWrap(True)
         description.setObjectName("mutedText")
@@ -338,21 +335,10 @@ class RmuPage(BasePage):
         layout.addWidget(note)
 
         self.compare_rmu_ledger.toggled.connect(self._refresh_ledger_controls)
-        self.compare_rmu_ledger.toggled.connect(lambda checked: self.identify_rmu.setChecked(True) if checked else None)
-        self.compare_rmu_ledger.toggled.connect(lambda checked: self.rmu_smart_in_type.setChecked(True) if checked else None)
         self.rmu_ledger_file_mode.toggled.connect(self._refresh_ledger_controls)
         self.rmu_ledger_paste_mode.toggled.connect(self._refresh_ledger_controls)
         self.rmu_ledger_names_mode.toggled.connect(self._refresh_ledger_controls)
         self.layout.addWidget(box)
-
-    def _graphic_processing_enabled(self) -> bool:
-        return (
-            self._selected_rmu_action() != RmuAction.NONE
-            or self.rmu_smart_frame_color.is_enabled()
-            or self.rmu_smr_frame_color.is_enabled()
-            or self.rmu_reposition_channel_status.isChecked()
-            or self.rmu_remove_bus_frame.isChecked()
-        )
 
     def _connect_report_button_linkage(self) -> None:
         for button in (self.rmu_none, self.rmu_group):
@@ -360,15 +346,12 @@ class RmuPage(BasePage):
         self.rmu_smart_frame_color.enabled_box.toggled.connect(self._refresh_report_buttons)
         self.rmu_smr_frame_color.enabled_box.toggled.connect(self._refresh_report_buttons)
         self.rmu_reposition_channel_status.toggled.connect(self._refresh_report_buttons)
-        self.rmu_remove_bus_frame.toggled.connect(self._refresh_report_buttons)
-        self.identify_rmu.toggled.connect(self._refresh_report_buttons)
         self.compare_rmu_ledger.toggled.connect(self._refresh_report_buttons)
 
     def _refresh_report_buttons(self) -> None:
         output_dir = self.output_path.path()
         mapping = (
-            (self.rmu_graphic_report_button, self._graphic_processing_enabled(), "rmu-graphic-processing-report.html"),
-            (self.rmu_summary_report_button, self.identify_rmu.isChecked(), "rmu-summary-report.html"),
+            (self.rmu_summary_report_button, True, "rmu-summary-report.html"),
             (self.rmu_ledger_report_button, self.compare_rmu_ledger.isChecked(), "rmu-ledger-comparison.html"),
         )
         for button, visible, file_name in mapping:
@@ -420,15 +403,16 @@ class RmuPage(BasePage):
         self.rmu_channel_status_margin.setValue(self.user_settings.get_int("basic/rmu/channel_status_inner_margin", 5))
         self.rmu_channel_status_position.setEnabled(self.rmu_reposition_channel_status.isChecked())
         self.rmu_channel_status_margin.setEnabled(self.rmu_reposition_channel_status.isChecked())
-        self.rmu_remove_bus_frame.setChecked(self.user_settings.get_bool("basic/rmu/remove_bus_frame", False))
         self.rmu_name_white.setChecked(self.user_settings.get_bool("basic/rmu/name_text_white", False))
-        self.identify_rmu.setChecked(self.user_settings.get_bool("basic/rmu/identify_name_type", False))
+        # RMU 基础识别固定开启；只恢复柜名方向、排除项与智能标记配置。
         self.rmu_name_top.setChecked(self.user_settings.get_bool("basic/rmu/name_top", True))
         self.rmu_name_bottom.setChecked(self.user_settings.get_bool("basic/rmu/name_bottom", False))
         self.rmu_name_left.setChecked(self.user_settings.get_bool("basic/rmu/name_left", False))
         self.rmu_name_right.setChecked(self.user_settings.get_bool("basic/rmu/name_right", False))
         self.rmu_name_exclusions.setText(self.user_settings.get_value("basic/rmu/name_exclusions", ""))
-        self.rmu_smart_in_type.setChecked(self.user_settings.get_bool("basic/rmu/smart_in_type", False))
+        self.rmu_intelligent_markers.setText(
+            self.user_settings.get_value("basic/rmu/intelligent_markers", "SMART, SMR") or "SMART, SMR"
+        )
         self.compare_rmu_ledger.setChecked(self.user_settings.get_bool("rmu/ledger/compare_enabled", False))
         ledger_mode = self.user_settings.get_value("rmu/ledger/input_mode", RmuLedgerInputMode.FILE.value)
         {
@@ -449,15 +433,15 @@ class RmuPage(BasePage):
         self.user_settings.set_value("basic/rmu/reposition_channel_status", self.rmu_reposition_channel_status.isChecked())
         self.user_settings.set_value("basic/rmu/channel_status_position", self.rmu_channel_status_position.currentData())
         self.user_settings.set_value("basic/rmu/channel_status_inner_margin", self.rmu_channel_status_margin.value())
-        self.user_settings.set_value("basic/rmu/remove_bus_frame", self.rmu_remove_bus_frame.isChecked())
         self.user_settings.set_value("basic/rmu/name_text_white", self.rmu_name_white.isChecked())
-        self.user_settings.set_value("basic/rmu/identify_name_type", self.identify_rmu.isChecked())
+        self.user_settings.set_value("basic/rmu/identify_name_type", True)
         self.user_settings.set_value("basic/rmu/name_top", self.rmu_name_top.isChecked())
         self.user_settings.set_value("basic/rmu/name_bottom", self.rmu_name_bottom.isChecked())
         self.user_settings.set_value("basic/rmu/name_left", self.rmu_name_left.isChecked())
         self.user_settings.set_value("basic/rmu/name_right", self.rmu_name_right.isChecked())
         self.user_settings.set_value("basic/rmu/name_exclusions", self.rmu_name_exclusions.text().strip())
-        self.user_settings.set_value("basic/rmu/smart_in_type", self.rmu_smart_in_type.isChecked())
+        self.user_settings.set_value("basic/rmu/intelligent_markers", self.rmu_intelligent_markers.text().strip())
+        self.user_settings.set_value("basic/rmu/smart_in_type", True)
         self.user_settings.set_value("rmu/ledger/compare_enabled", self.compare_rmu_ledger.isChecked())
         self.user_settings.set_value("rmu/ledger/input_mode", self._selected_ledger_mode().value)
         self.user_settings.set_value("rmu/ledger/text", self.rmu_ledger_text.toPlainText())
@@ -473,13 +457,10 @@ class RmuPage(BasePage):
         output_dir = self.output_path.path()
         if not validate_existing_directory(self, output_dir, "环网柜处理输出目录"):
             return
-        if (self.identify_rmu.isChecked() or self.rmu_name_white.isChecked()) and not any((self.rmu_name_top.isChecked(), self.rmu_name_bottom.isChecked(), self.rmu_name_left.isChecked(), self.rmu_name_right.isChecked())):
+        if not any((self.rmu_name_top.isChecked(), self.rmu_name_bottom.isChecked(), self.rmu_name_left.isChecked(), self.rmu_name_right.isChecked())):
             QMessageBox.warning(self, "RMU 柜名设置", "柜名位置至少选择上方、下方、左侧或右侧中的一个。")
             return
         if self.compare_rmu_ledger.isChecked():
-            if not self.identify_rmu.isChecked():
-                QMessageBox.warning(self, "RMU 台账设置", "启用台账对比时必须启用 RMU 信息汇总。")
-                return
             if self._selected_ledger_mode() == RmuLedgerInputMode.FILE and not self.rmu_ledger_file.path().is_file():
                 QMessageBox.warning(self, "RMU 台账设置", "请选择有效的 Excel / CSV 台账文件。")
                 return
@@ -500,6 +481,7 @@ class RmuPage(BasePage):
             input_mode=self.source.mode(),
             output_dir=output_dir,
             rmu_action=self._selected_rmu_action(),
+            reset_existing_merges_before_rmu_group=(self._selected_rmu_action() == RmuAction.GROUP),
             change_smart_rmu_frame_color=self.rmu_smart_frame_color.is_enabled(),
             smart_rmu_frame_color=self.rmu_smart_frame_color.color(),
             change_smr_rmu_frame_color=self.rmu_smr_frame_color.is_enabled(),
@@ -507,15 +489,17 @@ class RmuPage(BasePage):
             reposition_channel_status=self.rmu_reposition_channel_status.isChecked(),
             channel_status_position=RmuStatusPosition(self.rmu_channel_status_position.currentData()),
             channel_status_inner_margin=self.rmu_channel_status_margin.value(),
-            remove_bus_rmu_frame_and_reposition_title=self.rmu_remove_bus_frame.isChecked(),
             set_rmu_name_text_white=self.rmu_name_white.isChecked(),
-            identify_rmu_name_and_type=self.identify_rmu.isChecked(),
+            add_smart_rmu_poke=False,  # Poke 已独立到 Poke 跳转处理模块。
+            smart_rmu_poke_ahref_template="",
+            identify_rmu_name_and_type=True,
             rmu_name_top=self.rmu_name_top.isChecked(),
             rmu_name_bottom=self.rmu_name_bottom.isChecked(),
             rmu_name_left=self.rmu_name_left.isChecked(),
             rmu_name_right=self.rmu_name_right.isChecked(),
             rmu_name_exclusions=self.rmu_name_exclusions.text().strip(),
-            rmu_smart_in_type=(self.rmu_smart_in_type.isChecked() or self.compare_rmu_ledger.isChecked()),
+            rmu_intelligent_markers=self.rmu_intelligent_markers.text().strip() or "SMART, SMR",
+            rmu_smart_in_type=True,
             export_rmu_identification_csv=True,
             compare_rmu_ledger=self.compare_rmu_ledger.isChecked(),
             rmu_ledger_input_mode=self._selected_ledger_mode(),
@@ -524,7 +508,10 @@ class RmuPage(BasePage):
             output_conflict_action=action,
             task_timestamp=timestamp,
         )
-        self.task.start(lambda log, progress: process_basic(settings, log, progress), output_dir)
+        self.task.start(
+            lambda log, progress: process_basic(settings, log, progress),
+            output_dir,
+        )
 
     def save_state(self) -> None:
         self.source.persist_all_text()
