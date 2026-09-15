@@ -12,6 +12,7 @@ from g_file_studio.engines.frame_engine import (
     Box,
     FrameError,
     GFS_FRAME_COMPONENT_ATTRIBUTE,
+    GFS_FRAME_ROLE_ATTRIBUTE,
     GFS_FRAME_TEMPLATE_ATTRIBUTE,
     GFS_FRAME_TYPE_ATTRIBUTE,
     GFS_FRAME_TYPE_BUILTIN,
@@ -50,6 +51,18 @@ class ExistingFrame:
 
 
 @dataclass(frozen=True)
+class FrameRemovalResult:
+    """Result of removing an already-present drawing frame before replacement."""
+
+    removed_count: int = 0
+    detection_modes: tuple[str, ...] = ()
+
+    @property
+    def had_existing_frame(self) -> bool:
+        return self.removed_count > 0
+
+
+@dataclass(frozen=True)
 class MarginAdjustmentResult:
     output_path: Path
     had_existing_frame: bool
@@ -66,6 +79,8 @@ class MarginAdjustmentResult:
     frame_right_margin: float | None = None
     frame_bottom_margin: float | None = None
     frame_detection_mode: str | None = None
+    removed_existing_frame_count: int = 0
+    removed_existing_frame_modes: tuple[str, ...] = ()
 
 
 def _local_name(tag: object) -> str:
@@ -500,6 +515,202 @@ def detect_existing_frame(
     )
 
 
+
+
+_FRAME_DECORATION_TAGS = {"line", "rect", "text", "poke", "image"}
+
+
+def _box_inside(box: Box, outer: Box, tolerance: float = 0.0) -> bool:
+    return (
+        box.left >= outer.left - tolerance
+        and box.top >= outer.top - tolerance
+        and box.right <= outer.right + tolerance
+        and box.bottom <= outer.bottom + tolerance
+    )
+
+
+def _box_near_outer_edge(box: Box, outer: Box, tolerance: float) -> bool:
+    if not _box_inside(box, outer, tolerance=tolerance):
+        return False
+    return min(
+        abs(box.left - outer.left),
+        abs(box.top - outer.top),
+        abs(outer.right - box.right),
+        abs(outer.bottom - box.bottom),
+    ) <= tolerance
+
+
+def _unknown_outer_frame_components(
+    layer: ET.Element,
+    canvas_width: int,
+    canvas_height: int,
+) -> tuple[tuple[ET.Element, ...], str] | None:
+    """Best-effort identification of an unmarked outer drawing frame.
+
+    This path is intentionally used only by explicit frame *replacement* workflows.
+    It never runs in ordinary margin adjustment.  Electrical tags are not candidates;
+    only generic drawing-decoration tags near a canvas-scale outer frame are removed.
+    """
+
+    elements = list(layer)
+    frame_box: Box | None = None
+    seeds: list[ET.Element] = []
+    mode = ""
+
+    try:
+        outer_lines, candidate_box = identify_outer_frame_lines(
+            elements,
+            canvas_width,
+            canvas_height,
+        )
+    except (FrameError, ValueError):
+        outer_lines = {}
+        candidate_box = None
+    if candidate_box is not None and _frame_is_canvas_outer(
+        candidate_box,
+        canvas_width,
+        canvas_height,
+    ):
+        frame_box = candidate_box
+        seeds.extend(outer_lines.values())
+        mode = "unknown_outer_lines"
+
+    if frame_box is None:
+        rect_candidates: list[tuple[float, ET.Element, Box]] = []
+        for element in elements:
+            if _local_name(element.tag).lower() != "rect":
+                continue
+            box = subtree_box(element)
+            if box is None or not _frame_is_canvas_outer(box, canvas_width, canvas_height):
+                continue
+            rect_candidates.append((box.width * box.height, element, box))
+        if rect_candidates:
+            _, outer_rect, frame_box = max(rect_candidates, key=lambda item: item[0])
+            seeds.append(outer_rect)
+            mode = "unknown_outer_rect"
+
+    if frame_box is None:
+        return None
+
+    edge_tolerance = max(30.0, min(frame_box.width, frame_box.height) * 0.035)
+    selected_ids = {id(element) for element in seeds}
+
+    # First select peripheral generic rectangles that look like title/info blocks.
+    peripheral_rects: list[tuple[ET.Element, Box]] = []
+    for element in elements:
+        if id(element) in selected_ids or _local_name(element.tag).lower() != "rect":
+            continue
+        box = subtree_box(element)
+        if box is None or not _box_inside(box, frame_box, tolerance=edge_tolerance):
+            continue
+        if box.width >= frame_box.width * 0.9 and box.height >= frame_box.height * 0.9:
+            continue
+        aspect = max(box.width, box.height) / max(1.0, min(box.width, box.height))
+        if aspect < 1.8:
+            continue
+        if _box_near_outer_edge(box, frame_box, edge_tolerance):
+            peripheral_rects.append((element, box))
+            selected_ids.add(id(element))
+
+    # Pull in generic drawing furniture that belongs to those peripheral blocks or
+    # sits immediately on the frame edge.  FeedLine/ConnectLine/BusDis/device tags
+    # are deliberately excluded from this fallback to avoid deleting live topology.
+    for element in elements:
+        if id(element) in selected_ids:
+            continue
+        tag = _local_name(element.tag).lower()
+        if tag not in _FRAME_DECORATION_TAGS:
+            continue
+        box = subtree_box(element)
+        if box is None or not _box_inside(box, frame_box, tolerance=edge_tolerance):
+            continue
+        inside_peripheral_block = any(
+            _center_inside(box, rect_box, tolerance=6.0)
+            or boxes_intersect(box, rect_box, tolerance=4.0)
+            for _, rect_box in peripheral_rects
+        )
+        if inside_peripheral_block:
+            selected_ids.add(id(element))
+        elif tag != "text" and _box_near_outer_edge(box, frame_box, edge_tolerance):
+            selected_ids.add(id(element))
+
+    selected = tuple(element for element in elements if id(element) in selected_ids)
+    return (selected, mode) if selected else None
+
+
+def remove_existing_frame_for_replacement(
+    root: ET.Element,
+    layer: ET.Element,
+    canvas_width: int,
+    canvas_height: int,
+) -> FrameRemovalResult:
+    """Remove any detected existing frame so the selected template can be authoritative.
+
+    The caller has already made an explicit frame-template choice.  Therefore marked
+    G File Studio frames, legacy built-in frames, and detectable unmarked canvas-scale
+    frames are removed without prompting.  Ordinary margin adjustment remains
+    conservative unless it explicitly opts into this helper.
+    """
+
+    removed_ids: set[int] = set()
+    modes: list[str] = []
+
+    # G File Studio writes these attributes onto every inserted component.  Include
+    # component/role markers as recovery paths for partially edited files.
+    marked = [
+        element
+        for element in list(layer)
+        if element.get(GFS_FRAME_TYPE_ATTRIBUTE, "").strip().lower()
+        in {GFS_FRAME_TYPE_BUILTIN, GFS_FRAME_TYPE_CUSTOM}
+        or element.get(GFS_FRAME_COMPONENT_ATTRIBUTE) not in (None, "")
+        or element.get(GFS_FRAME_ROLE_ATTRIBUTE) not in (None, "")
+    ]
+    if marked:
+        modes.append("gfs_marked")
+        removed_ids.update(id(element) for element in marked)
+
+    # If markers are absent (old versions), use the strict legacy built-in fingerprint.
+    if not removed_ids:
+        try:
+            legacy = _detect_legacy_builtin_frame(layer, canvas_width, canvas_height)
+        except (MarginAdjustmentError, FrameError, ValueError):
+            legacy = None
+        if legacy is not None:
+            modes.append(legacy.detection_mode)
+            removed_ids.update(id(element) for element in legacy.components)
+
+    # Unknown/customer frames are allowed only on explicit replacement paths.  Use a
+    # conservative decoration-only fallback around a canvas-scale outer border.
+    remaining_layer = ET.Element("Layer")
+    for element in list(layer):
+        if id(element) not in removed_ids:
+            remaining_layer.append(element)
+    unknown = _unknown_outer_frame_components(
+        remaining_layer,
+        canvas_width,
+        canvas_height,
+    )
+    if unknown is not None:
+        components, mode = unknown
+        if components:
+            modes.append(mode)
+            removed_ids.update(id(element) for element in components)
+
+    if removed_ids:
+        for element in list(layer):
+            if id(element) in removed_ids:
+                layer.remove(element)
+
+    # Never leave stale frame identity on the root; the replacement stage will set it.
+    root.attrib.pop(GFS_FRAME_TYPE_ATTRIBUTE, None)
+    root.attrib.pop(GFS_FRAME_TEMPLATE_ATTRIBUTE, None)
+
+    return FrameRemovalResult(
+        removed_count=len(removed_ids),
+        detection_modes=tuple(dict.fromkeys(modes)),
+    )
+
+
 def _has_canvas_outer_frame(
     root: ET.Element,
     layer: ET.Element,
@@ -634,8 +845,13 @@ def adjust_one_file(
     right_margin: int = 500,
     bottom_margin: int = 500,
     preserve_existing_frame: bool = True,
+    force_remove_existing_frame: bool = False,
 ) -> MarginAdjustmentResult:
-    """调整主体图形边距；只对可确认的内置图框执行自动同步调整。"""
+    """调整主体图形边距。
+
+    默认仍只对可确认的内置图框执行自动同步调整；显式 replacement 工作流
+    可通过 force_remove_existing_frame=True 先删除旧图框，再仅按主体图形计算边距。
+    """
     try:
         tree = ET.parse(input_path)
     except ET.ParseError as exc:
@@ -647,18 +863,32 @@ def adjust_one_file(
 
     layer = require_single_direct_layer(root, input_path.name)
     old_width, old_height = read_canvas_size(root, input_path.name)
+    removal_result = FrameRemovalResult()
+    if force_remove_existing_frame:
+        removal_result = remove_existing_frame_for_replacement(
+            root,
+            layer,
+            old_width,
+            old_height,
+        )
+
     direct_elements = list(layer)
 
     existing_frame = (
         detect_existing_frame(layer, old_width, old_height)
-        if preserve_existing_frame
+        if preserve_existing_frame and not force_remove_existing_frame
         else None
     )
-    if preserve_existing_frame and existing_frame is None and _has_canvas_outer_frame(
-        root,
-        layer,
-        old_width,
-        old_height,
+    if (
+        preserve_existing_frame
+        and not force_remove_existing_frame
+        and existing_frame is None
+        and _has_canvas_outer_frame(
+            root,
+            layer,
+            old_width,
+            old_height,
+        )
     ):
         raise UnsupportedExistingFrameError(
             "检测到已有图框，但该图框不是 G File Studio 内置图框，"
@@ -780,6 +1010,8 @@ def adjust_one_file(
         frame_right_margin=frame_margins[2] if frame_margins else None,
         frame_bottom_margin=frame_margins[3] if frame_margins else None,
         frame_detection_mode=existing_frame.detection_mode if existing_frame else None,
+        removed_existing_frame_count=removal_result.removed_count,
+        removed_existing_frame_modes=removal_result.detection_modes,
     )
 
 

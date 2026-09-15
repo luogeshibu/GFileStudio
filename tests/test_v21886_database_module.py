@@ -44,7 +44,8 @@ def test_database_page_is_public_module_and_oracle_dependency_is_packaged():
     page = Path("g_file_studio/ui/pages/database_page.py").read_text(encoding="utf-8")
     req = Path("requirements.txt").read_text(encoding="utf-8")
     assert "DatabasePage(self.user_settings)" in main
-    assert '("数据库",' in main
+    assert '("数据库",' not in main
+    assert 'self.connection_button = QPushButton("连接与环境")' in main
     assert "测试数据库连接" in page
     assert "保存数据库配置" in page
     assert "oracledb" in req
@@ -60,5 +61,5 @@ def test_symbol_standard_scope_remains_isolated():
 
 
 def test_release_version_21888():
-    assert '__version__ = "2.18.97"' in Path("g_file_studio/__init__.py").read_text(encoding="utf-8")
-    assert 'version = "2.18.97"' in Path("pyproject.toml").read_text(encoding="utf-8")
+    assert '__version__ = "2.18.148"' in Path("g_file_studio/__init__.py").read_text(encoding="utf-8")
+    assert 'version = "2.18.148"' in Path("pyproject.toml").read_text(encoding="utf-8")

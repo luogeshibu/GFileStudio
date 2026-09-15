@@ -7,10 +7,8 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QFileDialog,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -33,13 +31,21 @@ from g_file_studio.services.remote_g_source import (
 )
 from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.widgets.help_widgets import set_secondary
+from g_file_studio.ui.widgets.wheel_safe_line_edit import WheelSafeLineEdit
 
 
 class RemoteGSourceWidget(QWidget):
-    """统一 SSH/SFTP 只读 G 文件源。可多选并下载本地副本。"""
+    """Unified read-only SSH/SFTP G source using the global connection environment.
+
+    Connection credentials are intentionally not edited on business pages anymore.
+    The hidden compatibility editors keep the long-standing API used by existing
+    processing code, while visible UI shows only the active environment/source and
+    delegates changes to the global “连接与环境” page.
+    """
 
     selectionChanged = Signal()
     prepared = Signal(str)
+    connectionSettingsRequested = Signal()
 
     def __init__(
         self,
@@ -58,44 +64,68 @@ class RemoteGSourceWidget(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
 
-        form = QFormLayout()
-        self.host = QLineEdit(self._saved("host", DEFAULT_SSH_HOST))
-        self.port = QLineEdit(self._saved("port", str(DEFAULT_SSH_PORT)))
-        self.username = QLineEdit(self._saved("username", DEFAULT_SSH_USERNAME))
-        self.password = QLineEdit(self._saved("password", DEFAULT_SSH_PASSWORD))
-        self.password.setEchoMode(QLineEdit.EchoMode.Password)
-        self.remote_dir = QLineEdit(self._saved("remote_directory", DEFAULT_SSH_REMOTE_DIRECTORY))
-        form.addRow("IP / 主机", self.host)
-        form.addRow("端口", self.port)
-        form.addRow("用户名", self.username)
-        form.addRow("密码", self.password)
-        form.addRow("远程目录", self.remote_dir)
-        root.addLayout(form)
+        # Compatibility editors are no longer presented in business modules. They
+        # mirror the global shared settings and feed the unchanged read-only runtime.
+        self.host = WheelSafeLineEdit(self._saved("host", DEFAULT_SSH_HOST))
+        self.port = WheelSafeLineEdit(self._saved("port", str(DEFAULT_SSH_PORT)))
+        self.username = WheelSafeLineEdit(self._saved("username", DEFAULT_SSH_USERNAME))
+        self.password = WheelSafeLineEdit(self._saved("password", DEFAULT_SSH_PASSWORD))
+        self.password.setEchoMode(WheelSafeLineEdit.EchoMode.Password)
+        self.remote_dir = WheelSafeLineEdit(self._saved("remote_directory", DEFAULT_SSH_REMOTE_DIRECTORY))
+        for editor in (self.host, self.port, self.username, self.password, self.remote_dir):
+            editor.setVisible(False)
+            editor.editingFinished.connect(self._persist_silently)
+
+        source_card = QWidget()
+        source_card.setObjectName("remoteSourceSummary")
+        source_layout = QVBoxLayout(source_card)
+        source_layout.setContentsMargins(12, 10, 12, 10)
+        source_layout.setSpacing(6)
+        top_row = QHBoxLayout()
+        self.environment_label = QLabel()
+        self.environment_label.setObjectName("sectionCaption")
+        top_row.addWidget(self.environment_label, 1)
+        self.connection_settings_button = QPushButton("连接设置")
+        set_secondary(self.connection_settings_button)
+        self.connection_settings_button.clicked.connect(self.connectionSettingsRequested.emit)
+        top_row.addWidget(self.connection_settings_button)
+        source_layout.addLayout(top_row)
+        self.connection_summary = QLabel()
+        self.connection_summary.setObjectName("mutedText")
+        self.connection_summary.setWordWrap(True)
+        source_layout.addWidget(self.connection_summary)
+        self.directory_summary = QLabel()
+        self.directory_summary.setObjectName("mutedText")
+        self.directory_summary.setWordWrap(True)
+        source_layout.addWidget(self.directory_summary)
+        root.addWidget(source_card)
 
         actions = QHBoxLayout()
+        # Retain these compatibility controls but keep credential management out of
+        # business-page layout. Existing callers/tests may still invoke their slots.
         self.test_button = QPushButton("测试 SSH 连接")
-        self.refresh_button = QPushButton("刷新 G 文件列表")
         self.save_button = QPushButton("保存 SSH 设置")
+        self.test_button.clicked.connect(self.test_connection)
+        self.save_button.clicked.connect(self.save_settings)
+        self.test_button.setVisible(False)
+        self.save_button.setVisible(False)
+        self.refresh_button = QPushButton("刷新 G 文件列表")
         self.download_button = QPushButton("下载所选到本地…")
-        set_secondary(self.test_button)
         set_secondary(self.refresh_button)
-        set_secondary(self.save_button)
         set_secondary(self.download_button)
-        actions.addWidget(self.test_button)
         actions.addWidget(self.refresh_button)
-        actions.addWidget(self.save_button)
         actions.addWidget(self.download_button)
         actions.addStretch(1)
         root.addLayout(actions)
 
-        self.status = QLabel("尚未测试 SSH/SFTP 连接。")
+        self.status = QLabel("尚未加载远程文件。")
         self.status.setWordWrap(True)
         self.status.setObjectName("mutedText")
         root.addWidget(self.status)
 
         notice = QLabel(
             "SSH 服务器严格只读：仅列目录、读取文件属性和下载 G 文件；"
-            "G File Studio 不提供上传、覆盖、重命名、删除或修改服务器文件的接口。"
+            "G File Studio 不提供上传、覆盖、重命名、删除、移动、新建或修改服务器内容的接口。"
         )
         notice.setWordWrap(True)
         notice.setObjectName("infoBanner")
@@ -103,7 +133,7 @@ class RemoteGSourceWidget(QWidget):
 
         search_row = QHBoxLayout()
         search_row.addWidget(QLabel("搜索 G 文件"))
-        self.search = QLineEdit()
+        self.search = WheelSafeLineEdit()
         self.search.setPlaceholderText("例如：ABH-06、JED-NTH、B412")
         search_row.addWidget(self.search, 1)
         self.count_label = QLabel("尚未加载远程文件")
@@ -129,20 +159,13 @@ class RemoteGSourceWidget(QWidget):
         self.table.setMinimumHeight(230)
         root.addWidget(self.table)
 
-        self.test_button.clicked.connect(self.test_connection)
-        self.save_button.clicked.connect(self.save_settings)
         self.refresh_button.clicked.connect(self.refresh_files)
         self.download_button.clicked.connect(self.download_selected_to_local)
         self.search.textChanged.connect(self._apply_filter)
         self.select_visible.clicked.connect(lambda: self._set_visible_checked(True))
         self.clear_selection.clicked.connect(self._clear_all)
         self.table.itemChanged.connect(self._item_changed)
-
-        # SSH 连接参数是全局共享设置：任一模块修改后，其他使用 SSH 文件源的
-        # 模块在再次显示时都会读取同一组最后输入值。字段结束编辑时自动保存，
-        # 同时保留显式“保存 SSH 设置”按钮，避免必须先测试连接才会记住输入。
-        for editor in (self.host, self.port, self.username, self.password, self.remote_dir):
-            editor.editingFinished.connect(self._persist_silently)
+        self.refresh_shared_settings()
 
     def _key(self, suffix: str) -> str:
         return f"remote_g_source/{suffix}"
@@ -158,21 +181,19 @@ class RemoteGSourceWidget(QWidget):
         self.settings_service.set_value(self._key("remote_directory"), self.remote_dir.text().strip())
 
     def _persist_silently(self) -> None:
-        """保存最后一次 SSH 输入，不弹窗、不发起网络连接。"""
         self.persist()
 
     def save_settings(self) -> None:
-        """显式保存 SSH/SFTP 参数；只写本机用户配置，不访问服务器。"""
+        """Backward-compatible explicit save; global UI should normally own edits."""
         try:
-            # 先校验端口格式，避免把明显无效的连接参数保存成当前配置。
             self.config()
             self.persist()
             self.status.setText("SSH 设置已保存；所有使用 SSH 文件源的模块将复用这组最后输入。")
+            self.refresh_shared_settings()
         except Exception as exc:
             QMessageBox.warning(self, "保存 SSH 设置失败", str(exc))
 
     def _restore_shared_settings(self) -> None:
-        """从全局 SSH 设置恢复字段，供模块切换后同步其他页面的最新输入。"""
         values = (
             (self.host, self._saved("host", DEFAULT_SSH_HOST)),
             (self.port, self._saved("port", str(DEFAULT_SSH_PORT))),
@@ -184,10 +205,20 @@ class RemoteGSourceWidget(QWidget):
             if not editor.hasFocus() and editor.text() != value:
                 editor.setText(value)
 
-    def showEvent(self, event) -> None:  # noqa: N802 - Qt API naming
-        # MainWindow 会预先创建各页面，因此切换到另一个模块时重新读取共享 SSH
-        # 配置，确保所有模块看到的是用户最近一次保存/结束编辑后的参数。
+    def refresh_shared_settings(self) -> None:
         self._restore_shared_settings()
+        environment = self.settings_service.get_value(
+            "connection_environment/active_name", "Jeddah Site / Production"
+        ).strip() or "Jeddah Site / Production"
+        cfg = self.config()
+        self.environment_label.setText(f"当前环境：{environment}")
+        self.connection_summary.setText(
+            f"文件服务器：{cfg['host']}:{cfg['port']} · 用户 {cfg['username']} · 严格只读"
+        )
+        self.directory_summary.setText(f"业务 G 根目录：{cfg['remote_directory']}")
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API naming
+        self.refresh_shared_settings()
         super().showEvent(event)
 
     def config(self) -> dict[str, object]:
@@ -210,13 +241,11 @@ class RemoteGSourceWidget(QWidget):
     def test_connection(self) -> bool:
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            self.persist()
+            self._restore_shared_settings()
             with self._client() as client:
                 client.test_connection()
             cfg = self.config()
-            self.status.setText(
-                f"SSH/SFTP 连接正常：{cfg['host']}:{cfg['port']}；远程文件源为只读。"
-            )
+            self.status.setText(f"SSH/SFTP 连接正常：{cfg['host']}:{cfg['port']}；远程文件源为只读。")
             return True
         except Exception as exc:
             self.status.setText(f"SSH/SFTP 连接失败：{exc}")
@@ -228,15 +257,13 @@ class RemoteGSourceWidget(QWidget):
     def refresh_files(self) -> bool:
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            self.persist()
+            self._restore_shared_settings()
             cfg = self.config()
             with self._client() as client:
                 files = client.list_g_files(str(cfg["remote_directory"]))
             self._files = files
             self._rebuild_table()
-            self.status.setText(
-                f"SSH/SFTP 连接正常；远程文件源只读。已加载 {len(files)} 个 .g 文件。"
-            )
+            self.status.setText(f"SSH/SFTP 连接正常；远程文件源只读。已加载 {len(files)} 个 .g 文件。")
             return True
         except Exception as exc:
             self.status.setText(f"读取远程 G 文件列表失败：{exc}")
@@ -295,7 +322,6 @@ class RemoteGSourceWidget(QWidget):
         self.selectionChanged.emit()
 
     def _clear_all(self) -> None:
-        """清空全部勾选，并清空搜索关键字。"""
         self.search.blockSignals(True)
         self.search.clear()
         self.search.blockSignals(False)
@@ -321,33 +347,23 @@ class RemoteGSourceWidget(QWidget):
         return self._prepared_dir
 
     def _processing_snapshot_dir(self) -> Path:
-        """Return the local workspace directory used for automatic SSH processing snapshots.
-
-        Automatic processing must never point at the remote server path.  Every selected
-        server G file is first downloaded through SFTP GET into workspace/remote_input/<module>.
-        All business engines then receive only these local Path objects.
-        """
         workspace_root = default_workspace().resolve()
         prepared = self._prepared_dir.resolve()
         try:
             prepared.relative_to(workspace_root)
         except ValueError as exc:
-            raise RuntimeError(
-                f"SSH 处理快照目录必须位于本地 workspace 中：{prepared}"
-            ) from exc
+            raise RuntimeError(f"SSH 处理快照目录必须位于本地 workspace 中：{prepared}") from exc
         return prepared
 
     def prepare_selected(self, *, log=None) -> Path:
         selected = self.selected_files()
         if not selected:
             raise ValueError("请先在 SSH G 文件列表中选择一个或多个文件。")
-        self.persist()
+        self._restore_shared_settings()
         cfg = self.config()
         snapshot_dir = self._processing_snapshot_dir()
         if log is not None:
-            log(
-                f"[SSH只读] 将 {len(selected)} 个服务器 G 文件下载为本地处理快照：{snapshot_dir}"
-            )
+            log(f"[SSH只读] 将 {len(selected)} 个服务器 G 文件下载为本地处理快照：{snapshot_dir}")
             log("[SSH只读] 后续扫描/处理仅使用 workspace 本地快照，不会修改服务器文件。")
         download_stable_files(
             host=str(cfg["host"]),
@@ -371,7 +387,7 @@ class RemoteGSourceWidget(QWidget):
             return
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            self.persist()
+            self._restore_shared_settings()
             cfg = self.config()
             outputs = download_stable_files(
                 host=str(cfg["host"]),
@@ -382,11 +398,7 @@ class RemoteGSourceWidget(QWidget):
                 target_dir=Path(destination),
                 clear_target=False,
             )
-            QMessageBox.information(
-                self,
-                "下载完成",
-                f"已下载 {len(outputs)} 个 G 文件到：\n{destination}",
-            )
+            QMessageBox.information(self, "下载完成", f"已下载 {len(outputs)} 个 G 文件到：\n{destination}")
         except Exception as exc:
             QMessageBox.warning(self, "下载失败", str(exc))
         finally:

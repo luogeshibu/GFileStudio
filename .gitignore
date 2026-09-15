@@ -1,14 +1,18 @@
 # ============================================================
-# Python virtual environments
+# G File Studio - Git ignore policy
 # ============================================================
+
+# ------------------------------------------------------------
+# Python virtual environments
+# ------------------------------------------------------------
 .venv/
 venv/
 env/
 ENV/
 
-# ============================================================
+# ------------------------------------------------------------
 # Python bytecode and caches
-# ============================================================
+# ------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *$py.class
@@ -18,29 +22,33 @@ __pycache__/
 .pyright/
 .cache/
 
-# ============================================================
+# ------------------------------------------------------------
 # Test and coverage output
-# ============================================================
+# ------------------------------------------------------------
 .coverage
 .coverage.*
 htmlcov/
 coverage.xml
 pytest-report.xml
 
-# ============================================================
+# ------------------------------------------------------------
 # Packaging / PyInstaller output
-# ============================================================
+# build_exe.ps1 generates build/, dist/ and release/ locally.
+# They are deliverables/runtime artifacts, not source code.
+# ------------------------------------------------------------
 build/
 dist/
+release/
+releases/
 *.spec
 *.egg-info/
 .eggs/
 *.egg
 pip-wheel-metadata/
 
-# ============================================================
+# ------------------------------------------------------------
 # IDE and editor files
-# ============================================================
+# ------------------------------------------------------------
 .vscode/
 .idea/
 *.code-workspace
@@ -48,16 +56,16 @@ pip-wheel-metadata/
 *.swo
 *~
 
-# ============================================================
+# ------------------------------------------------------------
 # Operating-system files
-# ============================================================
+# ------------------------------------------------------------
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# ============================================================
+# ------------------------------------------------------------
 # Logs, temporary files and backup files
-# ============================================================
+# ------------------------------------------------------------
 *.log
 *.tmp
 *.temp
@@ -69,11 +77,18 @@ desktop.ini
 *.g.tmp
 *.tmp.g
 
-# ============================================================
-# G File Studio runtime data
-# Keep the directory structure through .gitkeep files, but do
-# not commit project input, intermediate output or generated files.
-# ============================================================
+# ------------------------------------------------------------
+# G File Studio runtime workspace
+# IMPORTANT: workspace/runs/ may contain very large generated HTML/Excel
+# reports (100 MB+). Never commit it to Git.
+# ------------------------------------------------------------
+workspace/runs/
+workspace/temp/
+workspace/tmp/
+workspace/cache/
+workspace/downloads/
+
+# Legacy/other managed runtime folders. Preserve optional .gitkeep only.
 workspace/input/*
 !workspace/input/.gitkeep
 
@@ -95,11 +110,33 @@ workspace/output/*
 workspace/logs/*
 !workspace/logs/.gitkeep
 
-# ============================================================
+# Defense in depth for generated reports, even if output location changes.
+**/g-content-analysis-report.html
+**/g-content-inventory.xlsx
+**/g-content-analysis*.xlsx
+
+# ------------------------------------------------------------
+# Local release archives
+# Keep source ZIPs outside the repository or publish binaries through
+# GitHub Releases. Do not commit packaged Windows distributions.
+# ------------------------------------------------------------
+GFileStudio_v*_Windows_x64.zip
+
+# ------------------------------------------------------------
 # User-specific runtime configuration
 # The default drawing_frame_config.json remains tracked.
-# ============================================================
+# ------------------------------------------------------------
 config/user_settings.json
 config/recent_projects.json
 config/session.json
 config/app_state.json
+
+# ------------------------------------------------------------
+# Environment / secrets
+# ------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.local.json
+*.local.yaml
+*.local.yml

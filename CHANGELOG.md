@@ -1,3 +1,24 @@
+# v2.18.148
+
+- Repository hygiene hotfix: protect runtime/build/release outputs from Git tracking.
+- Explicitly ignore `workspace/runs/` and `release/`, including the large generated content-analysis report that can exceed GitHub's 100 MB hard limit.
+- Business algorithms are unchanged from v2.18.147.
+
+## v2.18.112
+
+- 图元标准表左侧显示连续序号 1..N，并在表格上方实时汇总总图元数、当前显示、已上传标准、待上传标准以及业务 G 扫描实例总数。
+- “扫描图形 G 发现图元”的进度条移动到扫描按钮正下方，点击后立即进入可见工作状态。
+- SSH 远程扫描不再在 UI 线程同步执行 SFTP 下载；远程文件快照下载进入 FunctionWorker 后台线程，下载阶段显示 busy 动画，完成后切换为图元 XML 解析的 0~100% 百分比进度。
+- 保持 SSH 严格只读和标准来源规则不变；未修改受保护的远程下载服务及既有 G 业务处理算法。
+
+## v2.18.111
+
+- 修复侧栏分组大标题在高 DPI / Windows 显示缩放下被裁切、下边框显示不全的问题。
+- 分组标题行高调整为 74px，标题按钮保持 40px；移除分组容器额外垂直 margin，避免与 QListWidget item padding 重复占用高度。
+- 分组标题字号提升到 14px，导航间距调整为 2px。
+- 顶部“G 文件处理工具”固定 32px 高并提升显示字号。
+- 仅修改侧栏展示，不改变任何页面索引、折叠状态、业务处理器或黄金基线逻辑。
+
 # v2.17.60
 
 - 将“彻底取消图形组合”从 RMU 专用语义调整为基础处理中的通用“图形组合处理”。

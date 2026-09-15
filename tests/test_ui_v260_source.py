@@ -11,8 +11,8 @@ def test_navigation_and_page_names_are_updated():
     main = _read("g_file_studio/ui/main_window.py")
     merge = _read("g_file_studio/ui/pages/merge_page.py")
     frame = _read("g_file_studio/ui/pages/frame_page.py")
-    assert '("馈线图合并"' in main
-    assert '("图框添加"' in main
+    assert '"馈线图合并"' in main
+    assert '"图框添加"' in main
     assert '"馈线图合并"' in merge
     assert '"图框添加"' in frame
 

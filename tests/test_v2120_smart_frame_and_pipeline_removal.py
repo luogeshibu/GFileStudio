@@ -11,7 +11,7 @@ def test_one_click_page_and_backend_are_removed():
     assert "PipelinePage" not in main
     assert "一键处理" not in main
     assert 'help_index = next((i for i, page in enumerate(self.pages) if isinstance(page, HelpPage)), 0)' in main
-    assert 'action.triggered.connect(lambda: self.nav.setCurrentRow(help_index))' in main
+    assert 'action.triggered.connect(lambda: self._select_page(help_index))' in main
 
 
 def test_basic_ui_only_exposes_smart_rmu_frame_color():

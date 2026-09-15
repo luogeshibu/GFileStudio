@@ -41,7 +41,8 @@ class FramePage(BasePage):
             parent,
         )
         self.banner = InfoBanner(
-            "输入可以是单个 G 文件，也可以是 G 文件目录。输出文件保持源文件名不变并写入输出目录；默认使用程序内置模板。"
+            "输入可以是单个 G 文件，也可以是 G 文件目录。输出文件保持源文件名不变并写入输出目录；"
+            "当前选择模板作为最终权威图框，检测到已有图框时直接删除并重新添加，不叠加、不再要求人工先删除。"
         )
         self.layout.addWidget(self.banner)
 
@@ -132,11 +133,13 @@ class FramePage(BasePage):
         self.title_box.setEnabled(builtin)
         if builtin:
             self.banner.set_text(
-                "内置模板会按四边距调整外框，并修改左上标题和 Draw/Approve/Issue 信息。输出保持源文件名不变。"
+                "内置模板会按四边距调整外框，并修改左上标题和 Draw/Approve/Issue 信息。"
+                "如果源 G 已有图框，会先强制删除旧图框再用当前内置模板覆盖。输出保持源文件名不变。"
             )
         else:
             self.banner.set_text(
-                "客户自定义模板会按四边距调整外框长度和组件位置，但不会修改任何文字、姓名、日期、字体、颜色或表格内容。输出保持源文件名不变。"
+                "客户自定义模板会按四边距调整外框长度和组件位置，但不会修改任何文字、姓名、日期、字体、颜色或表格内容。"
+                "如果源 G 已有图框，会先强制删除旧图框再用当前选择模板覆盖。输出保持源文件名不变。"
             )
 
     def settings(self) -> FrameSettings:

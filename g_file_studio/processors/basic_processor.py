@@ -260,18 +260,22 @@ def _validate_rules(settings: BasicSettings) -> None:
         if not settings.delete_target_attribute.strip():
             raise ValueError("启用‘删除匹配元素’后，属性名不能为空。")
 
-    if settings.identify_rmu_name_and_type and not any((
-        settings.rmu_name_top, settings.rmu_name_bottom, settings.rmu_name_left, settings.rmu_name_right
-    )):
-        raise ValueError("启用环网柜名称与柜型识别后，柜名位置至少选择一个方向。")
-    if settings.set_rmu_name_text_white and not any((
-        settings.rmu_name_top, settings.rmu_name_bottom, settings.rmu_name_left, settings.rmu_name_right
-    )):
-        raise ValueError("启用环网柜名称改白后，柜名位置至少选择一个方向。")
-    if settings.add_smart_rmu_poke and not any((
-        settings.rmu_name_top, settings.rmu_name_bottom, settings.rmu_name_left, settings.rmu_name_right
-    )):
-        raise ValueError("启用智能 RMU Poke 跳转后，柜名位置至少选择一个方向。")
+    rmu_name_mode = (settings.rmu_name_resolution_mode or "selected_direction").strip().lower()
+    if rmu_name_mode not in {"selected_direction", "auto_cluster"}:
+        raise ValueError(f"未知 RMU 柜名识别模式：{settings.rmu_name_resolution_mode}")
+    if rmu_name_mode == "selected_direction":
+        if settings.identify_rmu_name_and_type and not any((
+            settings.rmu_name_top, settings.rmu_name_bottom, settings.rmu_name_left, settings.rmu_name_right
+        )):
+            raise ValueError("启用环网柜名称与柜型识别后，柜名位置至少选择一个方向。")
+        if settings.set_rmu_name_text_white and not any((
+            settings.rmu_name_top, settings.rmu_name_bottom, settings.rmu_name_left, settings.rmu_name_right
+        )):
+            raise ValueError("启用环网柜名称改白后，柜名位置至少选择一个方向。")
+        if settings.add_smart_rmu_poke and not any((
+            settings.rmu_name_top, settings.rmu_name_bottom, settings.rmu_name_left, settings.rmu_name_right
+        )):
+            raise ValueError("启用智能 RMU Poke 跳转后，柜名位置至少选择一个方向。")
 
     if settings.compare_rmu_ledger and not settings.identify_rmu_name_and_type:
         raise ValueError("启用 RMU 台账对比前，必须先启用 RMU 信息汇总。")
@@ -731,6 +735,7 @@ def process_basic(
                     smart_in_type=settings.rmu_smart_in_type,
                     excluded_name_values=parse_name_exclusions(settings.rmu_name_exclusions),
                     intelligent_marker_values=parse_intelligent_markers(settings.rmu_intelligent_markers),
+                    name_resolution_mode=settings.rmu_name_resolution_mode,
                 )
                 total_rmu_identified += rmu_identification.cabinet_count
                 total_rmu_named += rmu_identification.named_count
@@ -795,6 +800,7 @@ def process_basic(
                         smart_in_type=True,
                         excluded_name_values=parse_name_exclusions(settings.rmu_name_exclusions),
                         intelligent_marker_values=parse_intelligent_markers(settings.rmu_intelligent_markers),
+                        name_resolution_mode=settings.rmu_name_resolution_mode,
                     )
                 poke_smart_count = sum(1 for item in poke_identification.items if item.smart_count)
                 log(
@@ -891,6 +897,7 @@ def process_basic(
                         smart_in_type=settings.rmu_smart_in_type,
                         excluded_name_values=parse_name_exclusions(settings.rmu_name_exclusions),
                         intelligent_marker_values=parse_intelligent_markers(settings.rmu_intelligent_markers),
+                        name_resolution_mode=settings.rmu_name_resolution_mode,
                     )
                 grouping_rmu_rect_ids = {
                     item.rect_id
@@ -1022,6 +1029,7 @@ def process_basic(
                             smart_in_type=True,
                             excluded_name_values=parse_name_exclusions(settings.rmu_name_exclusions),
                             intelligent_marker_values=parse_intelligent_markers(settings.rmu_intelligent_markers),
+                            name_resolution_mode=settings.rmu_name_resolution_mode,
                         )
                     smart_frame_rmu_rect_ids = {
                         item.rect_id
@@ -1115,6 +1123,7 @@ def process_basic(
                     name_exclusions=", ".join(
                         value for value in (settings.rmu_name_exclusions, settings.rmu_intelligent_markers) if value.strip()
                     ),
+                    name_resolution_mode=settings.rmu_name_resolution_mode,
                 )
                 total_rmu_name_white_matched += name_color.matched_name_text_count
                 total_rmu_name_white_changed += name_color.changed_name_text_count

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from platformdirs import user_data_dir
 from g_file_studio.services.user_settings_service import UserSettingsService
+from g_file_studio.services.symbol_standard_repository import SymbolStandardRepository, relative_path_from_record
 
 
 def _standard_library_root() -> Path:
@@ -170,6 +171,101 @@ class SiteSmartProfile:
         ))
 
 
+def resolve_jeddah_role_devrefs(profile: SiteSmartProfile | None) -> dict[str, str]:
+    """Resolve the six Jeddah RMU electrical roles from the generic standard table.
+
+    v2.18.105 removed the six privileged UI rows and stores authoritative standards
+    as generic ``custom_symbols``.  Jeddah batch still needs SMART/NORMAL LBS,
+    Circuit Breaker and grounding-switch devrefs, so derive those roles from the
+    user-confirmed generic metadata.  Explicit SMART/NORMAL rows win; an ANY row is
+    only used as a fallback for both scopes.  Legacy fixed fields remain supported.
+    """
+    empty = {
+        "smart_lbs": "", "smart_breaker": "", "smart_ground": "",
+        "normal_lbs": "", "normal_breaker": "", "normal_ground": "",
+    }
+    if profile is None:
+        return empty
+
+    result = dict(empty)
+    # Legacy profiles keep working without migration.
+    result.update({
+        "smart_lbs": str(profile.smart_lbs_devref or "").strip(),
+        "smart_breaker": str(profile.smart_breaker_devref or "").strip(),
+        "smart_ground": str(profile.smart_ground_devref or "").strip(),
+        "normal_lbs": str(profile.normal_lbs_devref or "").strip(),
+        "normal_breaker": str(profile.normal_breaker_devref or "").strip(),
+        "normal_ground": str(profile.normal_ground_devref or "").strip(),
+    })
+
+    file_by_devref = {
+        str(row.get("devref", "")).strip().casefold(): str(row.get("original_name", "") or "").strip()
+        for row in _normalize_managed_standard_files(profile.managed_standard_files)
+        if str(row.get("devref", "")).strip()
+    }
+    any_fallback: dict[str, str] = {}
+
+    for row in _normalize_custom_symbols(profile.custom_symbols):
+        if not bool(row.get("enabled", True)):
+            continue
+        devref = str(row.get("standard_devref", "") or "").strip()
+        if not devref:
+            continue
+        scope = str(row.get("scope", "ANY") or "ANY").strip().upper()
+        tag = str(row.get("element_tag", "") or "").strip()
+        source_file = file_by_devref.get(devref.casefold(), str(row.get("source_file", "") or "").strip())
+        seed = re.sub(
+            r"[^A-Z0-9]+", "_",
+            " ".join((
+                str(row.get("device_type", "") or ""),
+                str(row.get("role", "") or ""),
+                tag,
+                source_file,
+                devref,
+            )).upper(),
+        ).strip("_")
+
+        kind = ""
+        if tag == "ZhaiWaiJieDiDaoZha" or any(token in seed for token in ("GROUND_DISCONNECTOR", "GROUNDDISCONNECTOR", "JIEDIDAOZHA")):
+            kind = "ground"
+        elif tag == "CBreakerDis":
+            if any(token in seed for token in ("LOAD_BREAKER_SWITCH", "LOADBREAKERSWITCH", "RMU_LBS")) or re.search(r"(?:^|_)LBS(?:_|$)", seed):
+                kind = "lbs"
+            elif "CIRCUIT_BREAKER" in seed or "CIRCUITBREAKER" in seed or re.search(r"(?:^|_)BREAKER(?:_|$)", seed):
+                kind = "breaker"
+        if not kind:
+            continue
+
+        if scope == "SMART":
+            result[f"smart_{kind}"] = devref
+        elif scope == "NORMAL":
+            result[f"normal_{kind}"] = devref
+        else:
+            any_fallback.setdefault(kind, devref)
+
+    for kind, devref in any_fallback.items():
+        result.setdefault(f"smart_{kind}", "")
+        result.setdefault(f"normal_{kind}", "")
+        if not result[f"smart_{kind}"]:
+            result[f"smart_{kind}"] = devref
+        if not result[f"normal_{kind}"]:
+            result[f"normal_{kind}"] = devref
+    return result
+
+
+def jeddah_role_issues(profile: SiteSmartProfile | None) -> list[str]:
+    roles = resolve_jeddah_role_devrefs(profile)
+    labels = (
+        ("smart_lbs", "SMART LBS"),
+        ("smart_breaker", "SMART Circuit Breaker"),
+        ("smart_ground", "SMART 接地刀闸"),
+        ("normal_lbs", "NORMAL LBS"),
+        ("normal_breaker", "NORMAL Circuit Breaker"),
+        ("normal_ground", "NORMAL 接地刀闸"),
+    )
+    return [label for key, label in labels if not str(roles.get(key, "")).strip()]
+
+
 def infer_builtin_standard_role(record: dict[str, object]) -> tuple[str, str]:
     """Infer SMART/NORMAL + device role from one uploaded icon definition.
 
@@ -314,19 +410,55 @@ def _normalize_custom_symbols(value: object) -> list[dict[str, object]]:
         match_attr = str(raw.get("match_attr", "devref")).strip() or "devref"
         if match_attr not in {"XML元素", "devref", "p_NameString", "key_name"}:
             match_attr = "devref"
-        match_value = str(raw.get("match_value", "")).strip()
+        observed_devref = str(raw.get("observed_devref", "")).strip()
+        match_value = str(raw.get("match_value", "")).strip() or observed_devref or standard_devref
         if not role and not element_tag and not standard_devref:
             continue
+        symbol_usage = str(raw.get("symbol_usage", "")).strip()
+        if symbol_usage not in {"设备", "设备组成图元", "状态图元", "标签/辅助图元", "测量/信号", "Poke/跳转", "其他"}:
+            source_hint = str(raw.get("source_file", "") or "").lower()
+            role_hint = f"{role} {element_tag}".upper()
+            if ".zt.icn.g" in source_hint or "STATUS" in role_hint or "状态" in role_hint:
+                symbol_usage = "状态图元"
+            elif "POKE" in role_hint:
+                symbol_usage = "Poke/跳转"
+            elif any(token in role_hint for token in ("MEASURE", "ANALOG", "SIGNAL", "测量", "信号")):
+                symbol_usage = "测量/信号"
+            else:
+                symbol_usage = "设备"
+        device_type = str(raw.get("device_type", "")).strip() or role
+        device_subtype = str(raw.get("device_subtype", "")).strip()
+        device_level = str(raw.get("device_level", "")).strip()
+        if device_level not in {"独立设备", "组合设备", "设备内部部件", "辅助关联", "不计入设备"}:
+            if symbol_usage == "设备":
+                device_level = "独立设备"
+            elif symbol_usage == "设备组成图元":
+                device_level = "设备内部部件"
+            elif symbol_usage in {"状态图元", "标签/辅助图元", "测量/信号", "Poke/跳转"}:
+                device_level = "辅助关联"
+            else:
+                device_level = "不计入设备"
         result.append({
             "uid": uid,
             "scope": scope,
             "role": role,
+            "device_type": device_type,
+            "device_subtype": device_subtype,
+            "device_level": device_level,
+            "symbol_usage": symbol_usage,
             "element_tag": element_tag,
             "standard_devref": standard_devref,
             "match_attr": match_attr,
             "match_value": match_value,
             "enabled": bool(raw.get("enabled", True)),
             "source_file": str(raw.get("source_file", "")).strip(),
+            # Optional business-G discovery evidence. These fields are informational
+            # only and never override the authoritative uploaded standard file.
+            "observed_devref": observed_devref,
+            "observed_symbol_file": str(raw.get("observed_symbol_file", "")).strip(),
+            "observed_count": max(0, int(raw.get("observed_count", 0) or 0)),
+            "observed_files": [str(item) for item in raw.get("observed_files", []) if str(item).strip()] if isinstance(raw.get("observed_files", []), list) else [],
+            "observed_examples": [dict(item) for item in raw.get("observed_examples", []) if isinstance(item, dict)] if isinstance(raw.get("observed_examples", []), list) else [],
         })
     return result
 
@@ -410,6 +542,7 @@ def _normalize_managed_standard_files(value: object) -> list[dict[str, object]]:
             "original_name": str(row.get("original_name", "")).strip(),
             "original_source": str(row.get("original_source", "")).strip(),
             "managed_path": str(row.get("managed_path", "")).strip(),
+            "relative_path": relative_path_from_record(row),
             "element_tag": str(row.get("element_tag", "")).strip(),
             "element_id": str(row.get("element_id", "")).strip(),
             "width": float(row.get("width", 0.0) or 0.0),
@@ -418,6 +551,14 @@ def _normalize_managed_standard_files(value: object) -> list[dict[str, object]]:
             "pins": list(row.get("pins", [])) if isinstance(row.get("pins", []), list) else [],
             "pin_ids": [str(item) for item in row.get("pin_ids", [])] if isinstance(row.get("pin_ids", []), list) else [],
             "pin_indices": [str(item) for item in row.get("pin_indices", [])] if isinstance(row.get("pin_indices", []), list) else [],
+            "standard_source": str(row.get("standard_source", "manual") or "manual").strip().lower(),
+            "remote_host": str(row.get("remote_host", "")).strip(),
+            "remote_root": str(row.get("remote_root", "")).strip(),
+            "remote_path": str(row.get("remote_path", "")).strip(),
+            "remote_size": int(row.get("remote_size", 0) or 0),
+            "remote_mtime": int(row.get("remote_mtime", 0) or 0),
+            "cache_path": str(row.get("cache_path", "")).strip(),
+            "synced_at": str(row.get("synced_at", "")).strip(),
         })
     result.sort(key=lambda row: (str(row.get("devref", "")).casefold(), str(row.get("sha256", ""))))
     return result
@@ -447,6 +588,15 @@ def _symbol_catalog_from_managed_standard_files(records: object) -> dict[str, di
             "count": 1,
             "sha256": str(row.get("sha256", "")).strip(),
             "managed_path": str(row.get("managed_path", "")).strip(),
+            "relative_path": relative_path_from_record(row),
+            "standard_source": str(row.get("standard_source", "manual") or "manual").strip().lower(),
+            "remote_host": str(row.get("remote_host", "")).strip(),
+            "remote_root": str(row.get("remote_root", "")).strip(),
+            "remote_path": str(row.get("remote_path", "")).strip(),
+            "remote_size": int(row.get("remote_size", 0) or 0),
+            "remote_mtime": int(row.get("remote_mtime", 0) or 0),
+            "cache_path": str(row.get("cache_path", "")).strip(),
+            "synced_at": str(row.get("synced_at", "")).strip(),
         }
     return catalog
 
@@ -540,6 +690,9 @@ class SiteProfileService:
             path = settings.ini_path.parent / "site_smart_profiles.json"
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # v2.18.119: Git-style immutable symbol repository.  The repository is
+        # local-only; it never writes to the remote server.
+        self.repository = SymbolStandardRepository(_standard_library_root().parent / "SymbolRepository")
 
     @staticmethod
     def _file_sha256(path: Path) -> str:
@@ -598,6 +751,7 @@ class SiteProfileService:
                 "pins": [[float(x), float(y)] for x, y in definition.pins],
                 "pin_ids": [str(item) for item in definition.pin_ids],
                 "pin_indices": [str(item) for item in definition.pin_indices],
+                "standard_source": "manual",
             })
         if failures:
             raise ValueError(
@@ -639,16 +793,54 @@ class SiteProfileService:
                 raise ValueError(f"标准图元文件内容已变化，拒绝保存：{target.name}")
             item = dict(row)
             item["managed_path"] = str(target.resolve(strict=False))
+            item["relative_path"] = relative_path_from_record(item)
             materialized.append(item)
         profile.managed_standard_files = _normalize_managed_standard_files(materialized)
         profile.standard_fingerprint = _profile_standard_fingerprint(profile)
         return profile
 
+    def _freeze_repository_version(self, profile: SiteSmartProfile) -> SiteSmartProfile:
+        """Commit every standard G as an immutable local blob + version manifest.
+
+        A formal version is not allowed to exist unless all referenced symbol bytes
+        have been frozen and SHA256-verified locally.  This is independent of the
+        read-only server and makes historical versions recoverable offline.
+        """
+        self.repository.commit_profile(profile)
+        profile.managed_standard_files = _normalize_managed_standard_files(
+            self.repository.hydrate_records(profile)
+        )
+        profile.standard_fingerprint = _profile_standard_fingerprint(profile)
+        return profile
+
+    def verify_version_repository(self, profile_name: str, version: int):
+        profile = self.get_profile_version(profile_name, version)
+        if profile is None:
+            raise ValueError(f"Profile {profile_name} 不存在 V{version}。")
+        return self.repository.verify_profile(profile, parse_metadata=True)
+
+    def version_repository_details(self, profile_name: str, version: int) -> dict[str, object]:
+        profile = self.get_profile_version(profile_name, version)
+        if profile is None:
+            raise ValueError(f"Profile {profile_name} 不存在 V{version}。")
+        return self.repository.version_details(profile)
+
+    def export_version_element(
+        self, profile_name: str, version: int, destination: str | Path, *, zip_output: bool = False
+    ) -> Path:
+        profile = self.get_profile_version(profile_name, version)
+        if profile is None:
+            raise ValueError(f"Profile {profile_name} 不存在 V{version}。")
+        # Export is reconstructed solely from immutable local objects.  Never use
+        # the current server file with the same name as a historical substitute.
+        return self.repository.export_profile(profile, destination, zip_output=zip_output)
+
     def validate_authoritative_standard(self, profile: SiteSmartProfile | None) -> tuple[bool, list[str]]:
         if profile is None:
             return False, ["尚未选择 ACTIVE 图元标准。"]
         issues: list[str] = []
-        records = _normalize_managed_standard_files(profile.managed_standard_files)
+        records = _normalize_managed_standard_files(self.repository.hydrate_records(profile))
+        profile.managed_standard_files = records
         by_devref: dict[str, list[dict[str, object]]] = {}
         for row in records:
             by_devref.setdefault(str(row.get("devref", "")).casefold(), []).append(row)
@@ -690,30 +882,46 @@ class SiteProfileService:
             if not bool(entry.get("enabled", True)):
                 continue
             devref = str(entry.get("standard_devref", "")).strip()
-            role = str(entry.get("role", "自定义设备")).strip() or "自定义设备"
+            role = str(entry.get("role", "图元")).strip() or "图元"
             if not devref:
-                issues.append(f"自定义设备 {role}: 未指定标准图元。")
+                issues.append(f"图元 {role}: 未指定标准图元 G。")
                 continue
             configured += 1
             matches = by_devref.get(devref.casefold(), [])
             if len(matches) != 1:
-                issues.append(f"自定义设备 {role}: 必须且只能绑定 1 个用户上传的标准图元 G，当前 {len(matches)} 个。")
+                issues.append(f"图元 {role}: 必须且只能绑定 1 个用户上传的标准图元 G，当前 {len(matches)} 个。")
                 continue
+            row = matches[0]
+            managed = Path(str(row.get("managed_path") or ""))
+            if not managed.is_file():
+                issues.append(f"图元 {role}: 持久化标准文件不存在：{managed}")
+                continue
+            try:
+                current_hash = self._file_sha256(managed)
+            except OSError:
+                issues.append(f"图元 {role}: 无法读取标准文件：{managed}")
+                continue
+            if current_hash != str(row.get("sha256", "")):
+                issues.append(f"图元 {role}: 标准文件 SHA256 已变化，必须重新上传确认。")
 
         if configured == 0:
-            issues.append("当前标准尚未配置任何要检查的设备角色。")
+            issues.append("当前标准尚未配置任何要检查的图元。")
         expected_fingerprint = _profile_standard_fingerprint(profile)
         if records and profile.standard_fingerprint and expected_fingerprint != profile.standard_fingerprint:
             issues.append("标准图元库指纹与 Profile 记录不一致。")
         return not issues, issues
 
-    def load_profiles(self) -> dict[str, SiteSmartProfile]:
+    def _read_payload(self) -> dict[str, object]:
         if not self.path.is_file():
             return {}
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except Exception:
             return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def load_profiles(self) -> dict[str, SiteSmartProfile]:
+        payload = self._read_payload()
         raw_profiles = payload.get("profiles", {}) if isinstance(payload, dict) else {}
         profiles: dict[str, SiteSmartProfile] = {}
         if not isinstance(raw_profiles, dict):
@@ -729,9 +937,19 @@ class SiteProfileService:
                 profiles[profile.profile_name] = profile
         return profiles
 
-    def _write(self, profiles: dict[str, SiteSmartProfile]) -> None:
+    def _write(
+        self,
+        profiles: dict[str, SiteSmartProfile],
+        *,
+        global_selection: dict[str, object] | None = None,
+    ) -> None:
+        existing = self._read_payload()
+        if global_selection is None:
+            raw_selection = existing.get("global_selection", {})
+            global_selection = dict(raw_selection) if isinstance(raw_selection, dict) else {}
         payload = {
-            "version": 7,
+            "version": 9,
+            "global_selection": global_selection,
             "profiles": {
                 name: asdict(profile.normalized())
                 for name, profile in sorted(profiles.items(), key=lambda row: row[0].casefold())
@@ -740,6 +958,61 @@ class SiteProfileService:
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self.path)
+
+    def get_global_profile_selection(self, *, auto_initialize: bool = True) -> tuple[str, int | None]:
+        """Return the user-selected global execution standard.
+
+        The selection is independent from the newest/editable Profile head. Creating
+        V(N+1) therefore never silently switches downstream modules away from the
+        version the user explicitly selected.  Existing installations with no saved
+        selection are initialized once to the most recently saved current version.
+        """
+        payload = self._read_payload()
+        raw = payload.get("global_selection", {}) if isinstance(payload, dict) else {}
+        name = str(raw.get("profile_name", "") or "").strip() if isinstance(raw, dict) else ""
+        try:
+            version = int(raw.get("version")) if isinstance(raw, dict) and raw.get("version") is not None else None
+        except (TypeError, ValueError):
+            version = None
+        if name and version is not None and self.get_profile_version(name, version) is not None:
+            return name, version
+        if not auto_initialize:
+            return "", None
+        profiles = self.load_profiles()
+        if not profiles:
+            return "", None
+        name, profile = max(
+            profiles.items(),
+            key=lambda row: (str(getattr(row[1], "updated_at", "") or ""), row[0].casefold()),
+        )
+        version = int(profile.profile_version)
+        self.set_global_profile_version(name, version, validate=False)
+        return name, version
+
+    def get_global_profile(self, *, auto_initialize: bool = True) -> SiteSmartProfile | None:
+        name, version = self.get_global_profile_selection(auto_initialize=auto_initialize)
+        if not name or version is None:
+            return None
+        return self.get_profile_version(name, version)
+
+    def set_global_profile_version(self, profile_name: str, version: int, *, validate: bool = True) -> SiteSmartProfile:
+        name = str(profile_name or "").strip()
+        target = self.get_profile_version(name, int(version))
+        if target is None:
+            raise ValueError(f"Profile {name or '<空>'} 不存在 V{version}。")
+        if validate:
+            ready, issues = self.validate_authoritative_standard(target)
+            if not ready:
+                raise ValueError("该版本不能设为全局执行标准：" + "；".join(issues[:5]))
+        self._write(
+            self.load_profiles(),
+            global_selection={
+                "profile_name": name,
+                "version": int(target.profile_version),
+                "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            },
+        )
+        return target
 
     @staticmethod
     def _device_signature(profile: SiteSmartProfile) -> tuple[str, ...]:
@@ -854,6 +1127,7 @@ class SiteProfileService:
         versions.append(current)
         by_version: dict[int, SiteSmartProfile] = {}
         for item in versions:
+            item.managed_standard_files = _normalize_managed_standard_files(self.repository.hydrate_records(item))
             by_version[item.profile_version] = item
         return [by_version[key] for key in sorted(by_version)]
 
@@ -862,6 +1136,7 @@ class SiteProfileService:
         if current is None:
             return None
         if version is None or int(version) == current.profile_version:
+            current.managed_standard_files = _normalize_managed_standard_files(self.repository.hydrate_records(current))
             return current
         for item in self.load_profile_versions(profile_name):
             if item.profile_version == int(version):
@@ -916,22 +1191,180 @@ class SiteProfileService:
             if not profile.discovery_decisions:
                 profile.discovery_decisions = dict(old.discovery_decisions)
             if changed:
+                # Freeze the old ACTIVE before it becomes historical.
+                old = self._freeze_repository_version(old)
                 profile.history.append(self._history_snapshot(old))
                 profile.profile_version = old.profile_version + 1
             else:
                 profile.profile_version = old.profile_version
-            # Keep history bounded; a field library should not grow without limit.
-            profile.history = profile.history[-20:]
+            # v2.18.119: history is Git-like and intentionally unbounded; an old
+            # standard version must remain recoverable regardless of age.
         else:
             profile.profile_version = max(1, profile.profile_version)
-            profile.history = list(profile.history)[-20:]
+            profile.history = list(profile.history)
         profile.updated_at = now
         profile = self._materialize_standard_files(profile)
+        profile = self._freeze_repository_version(profile)
         profile = profile.normalized()
         profiles[profile.profile_name] = profile
         self._write(profiles)
         return profile
 
+
+    def save_as_next_version(self, profile: SiteSmartProfile) -> SiteSmartProfile:
+        """Persist an explicit fresh-rescan draft as V(N+1), even from a locked ACTIVE.
+
+        The caller has already built a local draft from read-only business-G/server
+        inputs.  This method never edits the saved current snapshot in place: it
+        archives the current ACTIVE exactly as-is, writes the draft as a new unlocked
+        ACTIVE version, and deliberately leaves the separately persisted GLOBAL
+        execution pointer unchanged.
+        """
+        profile = profile.normalized()
+        if not profile.profile_name:
+            raise ValueError("Profile Name 不能为空。")
+        if not profile.site_name:
+            raise ValueError("Site Name 不能为空。")
+        if not profile.authoritative_ready:
+            raise ValueError("请至少配置 1 个设备角色的标准图元 G。")
+
+        profiles = self.load_profiles()
+        current = profiles.get(profile.profile_name)
+        if current is None:
+            # No history exists yet; normal upsert is the correct first-version path.
+            return self.upsert(profile)
+
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        current = self._freeze_repository_version(current)
+        profile.profile_name = current.profile_name
+        profile.site_name = profile.site_name or current.site_name
+        profile.history = list(current.history)
+        profile.history.append(self._history_snapshot(current))
+        profile.profile_version = int(current.profile_version) + 1
+        profile.locked = False
+        profile.updated_at = now
+        profile = self._materialize_standard_files(profile)
+        profile = self._freeze_repository_version(profile)
+        profile = profile.normalized()
+        profiles[profile.profile_name] = profile
+        self._write(profiles)
+        return profile
+
+    def create_next_version_from_server_records(
+        self, profile_name: str, replacement_records: list[dict[str, object]]
+    ) -> SiteSmartProfile:
+        """Create V(N+1) from a locked/unlocked ACTIVE profile using server-cached symbols.
+
+        This is the explicit safe path for a locked standard: the current locked
+        ACTIVE version is first archived exactly as-is, then matching symbol files
+        are replaced by basename in a new unlocked ACTIVE version. The remote server
+        is never modified.
+        """
+        name = str(profile_name).strip()
+        profiles = self.load_profiles()
+        current = profiles.get(name)
+        if current is None:
+            raise ValueError("Profile 不存在。")
+        replacements = _normalize_managed_standard_files(replacement_records)
+        if not replacements:
+            raise ValueError("没有可用于创建新版本的服务器标准图元。")
+        replacement_by_name = {
+            Path(str(row.get("original_name", "")).strip()).name.casefold(): dict(row)
+            for row in replacements
+            if Path(str(row.get("original_name", "")).strip()).name
+        }
+        if not replacement_by_name:
+            raise ValueError("服务器标准图元缺少有效文件名。")
+
+        current_records = [dict(row) for row in current.managed_standard_files]
+        current_by_devref = {str(row.get("devref", "")).strip().casefold(): dict(row) for row in current_records}
+        material_records: list[dict[str, object]] = []
+        changed = False
+        used_names: set[str] = set()
+        old_to_new_devref: dict[str, str] = {}
+        for row in current_records:
+            key = Path(str(row.get("original_name", "")).strip()).name.casefold()
+            replacement = replacement_by_name.get(key)
+            if replacement is None:
+                material_records.append(row)
+                continue
+            used_names.add(key)
+            material_records.append(dict(replacement))
+            old_devref = str(row.get("devref", "")).strip()
+            new_devref = str(replacement.get("devref", "")).strip()
+            if old_devref and new_devref:
+                old_to_new_devref[old_devref.casefold()] = new_devref
+            if str(row.get("sha256", "")).strip().lower() != str(replacement.get("sha256", "")).strip().lower():
+                changed = True
+
+        # A server-backed candidate may have been discovered after the old version
+        # was saved. Add it only when an existing generic row explicitly references
+        # that observed symbol filename.
+        custom_symbols = [dict(row) for row in current.custom_symbols]
+        referenced_names = {
+            Path(str(row.get("observed_symbol_file", "")).strip()).name.casefold()
+            for row in custom_symbols
+            if Path(str(row.get("observed_symbol_file", "")).strip()).name
+        }
+        for key, replacement in replacement_by_name.items():
+            if key not in used_names and key in referenced_names:
+                material_records.append(dict(replacement))
+                used_names.add(key)
+                changed = True
+
+        # Rebind generic rows to the replacement devref using observed filename first,
+        # then the old standard devref for migrated legacy rows.
+        for entry in custom_symbols:
+            observed_name = Path(str(entry.get("observed_symbol_file", "")).strip()).name.casefold()
+            replacement = replacement_by_name.get(observed_name) if observed_name else None
+            if replacement is None:
+                old_devref = str(entry.get("standard_devref", "")).strip()
+                old_record = current_by_devref.get(old_devref.casefold()) if old_devref else None
+                old_name = Path(str(old_record.get("original_name", "")).strip()).name.casefold() if old_record else ""
+                replacement = replacement_by_name.get(old_name) if old_name else None
+            if replacement is not None:
+                new_devref = str(replacement.get("devref", "")).strip()
+                if new_devref and new_devref != str(entry.get("standard_devref", "")).strip():
+                    changed = True
+                if new_devref:
+                    entry["standard_devref"] = new_devref
+                    entry["source_file"] = str(replacement.get("original_name", "")).strip()
+
+        if not changed:
+            raise ValueError("服务器图元与当前 ACTIVE 标准内容一致，无需创建新版本。")
+
+        import copy
+        next_profile = copy.deepcopy(current)
+        current = self._freeze_repository_version(current)
+        next_profile.history = list(current.history) + [self._history_snapshot(current)]
+        next_profile.profile_version = current.profile_version + 1
+        next_profile.locked = False
+        next_profile.managed_standard_files = _normalize_managed_standard_files(material_records)
+        next_profile.custom_symbols = _normalize_custom_symbols(custom_symbols)
+        next_profile.symbol_catalog = _symbol_catalog_from_managed_standard_files(next_profile.managed_standard_files)
+        next_profile.geometry_templates = {}
+
+        def replace_role(value: str) -> str:
+            text = str(value or "").strip()
+            return old_to_new_devref.get(text.casefold(), text) if text else ""
+
+        next_profile.smart_lbs_devref = replace_role(next_profile.smart_lbs_devref)
+        next_profile.smart_breaker_devref = replace_role(next_profile.smart_breaker_devref)
+        next_profile.normal_lbs_devref = replace_role(next_profile.normal_lbs_devref)
+        next_profile.normal_breaker_devref = replace_role(next_profile.normal_breaker_devref)
+        next_profile.smart_ground_devref = replace_role(next_profile.smart_ground_devref)
+        next_profile.normal_ground_devref = replace_role(next_profile.normal_ground_devref)
+        next_profile.sample_files = [
+            str(row.get("original_name", "")).strip()
+            for row in next_profile.managed_standard_files
+            if str(row.get("original_name", "")).strip()
+        ]
+        next_profile.updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        next_profile = self._materialize_standard_files(next_profile.normalized())
+        next_profile = self._freeze_repository_version(next_profile).normalized()
+        profiles[name] = next_profile
+        self._write(profiles)
+        return next_profile
 
     def set_locked(self, profile_name: str, locked: bool) -> SiteSmartProfile:
         """Lock/unlock the current ACTIVE version without creating a new version."""
@@ -972,6 +1405,57 @@ class SiteProfileService:
         # Discovery acknowledgement is UI metadata; it must not change the standard's last-saved timestamp.
         profiles[name] = profile.normalized()
         self._write(profiles)
+        return profiles[name]
+
+    def delete_archived_version(self, profile_name: str, version: int) -> SiteSmartProfile:
+        """Delete exactly one ARCHIVED version while preserving every other version.
+
+        ACTIVE and GLOBAL versions are protected. The selected historical snapshot
+        is removed from reachable Profile history and its Manifest is moved to the
+        repository deletion archive. Content-addressed objects are never garbage
+        collected automatically.
+        """
+        name = str(profile_name or "").strip()
+        target_version = int(version)
+        profiles = self.load_profiles()
+        current = profiles.get(name)
+        if current is None:
+            raise ValueError("Profile 不存在。")
+        if target_version == int(current.profile_version):
+            raise ValueError("当前 ACTIVE 版本不能作为历史版本删除。请先创建/恢复新的 ACTIVE 版本。")
+        global_name, global_version = self.get_global_profile_selection(auto_initialize=False)
+        if name == global_name and global_version == target_version:
+            raise ValueError("当前 GLOBAL 全局执行版本不能删除。请先将其他版本设为全局版本。")
+
+        original_history = list(current.history)
+        kept: list[dict[str, object]] = []
+        found = False
+        for snapshot in original_history:
+            if not isinstance(snapshot, dict):
+                kept.append(snapshot)
+                continue
+            raw_version = snapshot.get("version", snapshot.get("profile_version", 0))
+            try:
+                snapshot_version = int(raw_version or 0)
+            except (TypeError, ValueError):
+                snapshot_version = 0
+            if snapshot_version == target_version:
+                found = True
+                continue
+            kept.append(snapshot)
+        if not found:
+            raise ValueError(f"Profile {name} 不存在 ARCHIVED V{target_version}。")
+
+        current.history = kept
+        profiles[name] = current.normalized()
+        self._write(profiles)
+        try:
+            self.repository.archive_deleted_manifest(name, target_version)
+        except Exception as exc:
+            current.history = original_history
+            profiles[name] = current.normalized()
+            self._write(profiles)
+            raise ValueError(f"删除历史版本失败，已自动回滚：{exc}") from exc
         return profiles[name]
 
     def remove(self, profile_name: str) -> None:

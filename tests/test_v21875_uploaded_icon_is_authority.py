@@ -101,7 +101,7 @@ def test_ui_and_processor_make_uploaded_g_the_explicit_authority():
     page = Path("g_file_studio/ui/pages/site_profile_page.py").read_text(encoding="utf-8")
     processor = Path("g_file_studio/processors/smart_profile_processor.py").read_text(encoding="utf-8")
     engine = Path("g_file_studio/engines/smart_profile_engine.py").read_text(encoding="utf-8")
-    assert 'QPushButton("为选中角色上传 / 更新标准 G")' in page
+    assert 'QPushButton("为选中图元上传 / 更新标准 G")' in page
     assert '"标准来源", "状态"' in page
     assert "业务单线图不会参与 devref、尺寸、AlignCenter 或 pin 标准的生成" in page
     assert "authoritative_geometry_templates(profile)" in processor

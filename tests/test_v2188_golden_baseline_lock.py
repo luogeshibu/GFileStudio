@@ -43,6 +43,8 @@ def test_user_approved_rmu_feature_exceptions_are_exactly_locked():
         "g_file_studio/ui/pages/basic_page.py",
         "g_file_studio/ui/pages/rmu_page.py",
         "g_file_studio/ui/widgets/icon_upgrade_editor.py",
+        "g_file_studio/processors/merge_processor.py",
+        "g_file_studio/ui/pages/merge_page.py",
     }
     assert set(exceptions) == expected
     for relative, meta in exceptions.items():
@@ -73,4 +75,19 @@ def test_user_approved_infrastructure_exceptions_are_exactly_locked():
     for relative, meta in exceptions.items():
         actual = hashlib.sha256((root / relative).read_bytes()).hexdigest()
         assert actual == meta["release_sha256"], f"Approved infrastructure exception changed unexpectedly: {relative}"
+
+def test_user_approved_frame_replacement_exceptions_are_exactly_locked():
+    root = Path(__file__).resolve().parents[1]
+    data = json.loads((root / "config/golden_v21760_logic_sha256.json").read_text(encoding="utf-8"))
+    exceptions = data.get("approved_frame_replacement_exceptions", {})
+    expected = {
+        "g_file_studio/engines/frame_engine.py",
+        "g_file_studio/engines/margin_engine.py",
+        "g_file_studio/processors/margin_processor.py",
+        "g_file_studio/ui/pages/frame_page.py",
+    }
+    assert set(exceptions) == expected
+    for relative, meta in exceptions.items():
+        actual = hashlib.sha256((root / relative).read_bytes()).hexdigest()
+        assert actual == meta["release_sha256"], f"Approved frame replacement exception changed unexpectedly: {relative}"
 

@@ -24,6 +24,7 @@ from g_file_studio.ui.widgets import (
     PathRow,
     TaskPanel,
     RemoteGSourceWidget,
+    TemplateSelector,
     WheelSafeComboBox,
 )
 
@@ -151,6 +152,31 @@ class MergePage(BasePage):
         settings_form.addRow(HelpLabel("下边距", FIELD_HELP["merge_margin"]), self.bottom)
         self.layout.addWidget(settings_box)
 
+        post_box = QGroupBox("合并后处理")
+        post_layout = QVBoxLayout(post_box)
+        post_layout.setContentsMargins(12, 18, 12, 12)
+        post_layout.setSpacing(9)
+        self.add_frame_after_merge = QCheckBox("合并完成后自动添加图框")
+        self.add_frame_after_merge.setProperty("optionChoice", True)
+        self.add_frame_after_merge.setChecked(
+            self.user_settings.get_bool("merge/add_frame_after_merge", False)
+        )
+        self.add_frame_after_merge.setToolTip(
+            "默认关闭。开启后先完成馈线合并，再复用现有“图框添加”处理器对最终合并结果添加图框；不会改变原馈线合并算法。"
+        )
+        post_layout.addWidget(self.add_frame_after_merge)
+        self.merge_frame_selector = TemplateSelector(
+            settings_prefix="merge/frame",
+            settings_service=self.user_settings,
+        )
+        self.merge_frame_selector.setEnabled(self.add_frame_after_merge.isChecked())
+        post_layout.addWidget(self.merge_frame_selector)
+        frame_note = InfoBanner(
+            "图框为可选后处理：关闭时只输出原合并结果；开启时使用所选模板，图框四边距沿用图框添加模块默认值 50。"
+        )
+        post_layout.addWidget(frame_note)
+        self.layout.addWidget(post_box)
+
         output_name_box = QGroupBox("输出文件")
         output_name_form = QFormLayout(output_name_box)
         output_name_form.setHorizontalSpacing(16)
@@ -167,6 +193,7 @@ class MergePage(BasePage):
         self.input_mode_combo.currentIndexChanged.connect(self._input_mode_changed)
         self.remote_source.prepared.connect(lambda path: self.file_order.set_input_dir(path))
         self.merge_main_bus.toggled.connect(self._on_merge_main_bus_toggled)
+        self.add_frame_after_merge.toggled.connect(self.merge_frame_selector.setEnabled)
         self._configure_merge_source_mode()
         self._wrap_file_order_actions_for_remote()
 
@@ -437,6 +464,18 @@ class MergePage(BasePage):
             top_margin=self.top.value(),
             right_margin=self.right.value(),
             bottom_margin=self.bottom.value(),
+            add_frame_after_merge=self.add_frame_after_merge.isChecked(),
+            frame_template_file=(
+                self.merge_frame_selector.resolved_template_path()
+                if self.add_frame_after_merge.isChecked()
+                else None
+            ),
+            frame_template_mode=self.merge_frame_selector.mode(),
+            frame_builtin_template_id=self.merge_frame_selector.builtin_template_id(),
+            frame_left=50,
+            frame_top=50,
+            frame_right=50,
+            frame_bottom=50,
         )
 
     def save_state(self) -> None:
@@ -444,6 +483,8 @@ class MergePage(BasePage):
         self.remote_source.persist()
         self.user_settings.set_value("merge/input_source_mode", "ssh" if self._is_remote_input() else "local")
         self.output_path.persist_current_text()
+        self.user_settings.set_value("merge/add_frame_after_merge", self.add_frame_after_merge.isChecked())
+        self.merge_frame_selector.persist_current()
 
     def run(self) -> None:
         if self._is_remote_input():
@@ -456,6 +497,9 @@ class MergePage(BasePage):
         if not validate_existing_directory(self, self.output_path.path(), "馈线图合并输出目录"):
             return
         self.remote_source.persist()
+        if self.add_frame_after_merge.isChecked() and not self.merge_frame_selector.validate_selection():
+            return
+        self.user_settings.set_value("merge/add_frame_after_merge", self.add_frame_after_merge.isChecked())
         run_dir = begin_managed_run(self.output_path, "merge", "merge")
         self.file_order.set_input_dir(self._active_input_dir())
         if not self.file_order.ensure_ready():

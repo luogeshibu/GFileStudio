@@ -54,11 +54,13 @@ def test_real_normal_cb_28x28_to_34x38_maps_top_to_top_bottom_to_bottom(tmp_path
     assert rule.new.pin_ids == old_def.pin_ids
 
 
-def test_jeddah_pipeline_sources_are_not_changed_by_v21855() -> None:
+def test_jeddah_pipeline_sources_match_latest_user_approved_jeddah_feature_lock() -> None:
     root = Path(__file__).resolve().parents[1]
+    # v2.18.147 explicitly makes the selected drawing frame authoritative in the
+    # Jeddah workflow, so the Jeddah source lock advances to these exact hashes.
     expected = {
-        "g_file_studio/jeddah/batch_processor.py": "969d32c050391356784806c3c41745e23f63f8c84eeae4ba92b9a95739c748f7",
-        "g_file_studio/ui/pages/jeddah_batch_page.py": "b93c270bb2f8f9644472ed36524b7113fd177d2ed61305e49ae6218090716480",
+        "g_file_studio/jeddah/batch_processor.py": "cf16c67662c38851a00140cf4f5ae182c7810973c8bdbab2ff0d4b032b1ce91e",
+        "g_file_studio/ui/pages/jeddah_batch_page.py": "a185caecaaddabbd2f7498e6f98c479d84642a354855c37f05c129e12751d191",
     }
     for relative, digest in expected.items():
         assert hashlib.sha256((root / relative).read_bytes()).hexdigest() == digest

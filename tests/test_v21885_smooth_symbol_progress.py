@@ -21,5 +21,5 @@ def test_task_panel_smoothing_is_target_driven_and_monotonic():
 
 
 def test_release_version_is_21885():
-    assert '__version__ = "2.18.97"' in Path("g_file_studio/__init__.py").read_text(encoding="utf-8")
-    assert 'version = "2.18.97"' in Path("pyproject.toml").read_text(encoding="utf-8")
+    assert '__version__ = "2.18.148"' in Path("g_file_studio/__init__.py").read_text(encoding="utf-8")
+    assert 'version = "2.18.148"' in Path("pyproject.toml").read_text(encoding="utf-8")

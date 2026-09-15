@@ -7,7 +7,7 @@ def test_site_profile_separates_authoritative_standard_upload_from_business_inpu
     # are uploaded separately for the selected role and cannot reuse business G.
     assert source.count("self.source = InputSourceSelector(") == 1
     assert "待检查 G 文件" in source
-    assert "为选中角色上传标准图元 G" in source
+    assert "为选中图元上传标准图元 G" in source
     assert 'QFileDialog.getOpenFileName(' in source
     assert 'prepare_standard_file_records([path])' in source
     assert 'QPushButton("查看检查报告")' in source

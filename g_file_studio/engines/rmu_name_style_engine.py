@@ -173,6 +173,7 @@ def apply_rmu_name_white_to_tree(
     *,
     name_positions: tuple[str, ...],
     name_exclusions: str = "",
+    name_resolution_mode: str = "selected_direction",
 ) -> RmuNameColorResult:
     """Set only the Text selected as an RMU name to white in the supplied tree.
 
@@ -187,6 +188,7 @@ def apply_rmu_name_white_to_tree(
         name_positions=name_positions,
         smart_in_type=True,
         excluded_name_values=parse_name_exclusions(name_exclusions),
+        name_resolution_mode=name_resolution_mode,
     )
     result = RmuNameColorResult(
         file_path=file_path,
@@ -197,6 +199,7 @@ def apply_rmu_name_white_to_tree(
     elements = direct_layer_elements(tree.getroot())
     texts = [element for element in elements if local_name(element.tag) in {"Text", "DText"}]
     used_text_keys: set[str] = set()
+    effective_positions = ("top", "bottom", "left", "right") if (name_resolution_mode or "").strip().lower() == "auto_cluster" else name_positions
 
     for item in identification.items:
         if not item.name:
@@ -212,7 +215,7 @@ def apply_rmu_name_white_to_tree(
             name=item.name,
             rect_box=rect_box,
             preferred_position=item.name_position,
-            allowed_positions=name_positions,
+            allowed_positions=effective_positions,
             used_text_keys=used_text_keys,
         )
         if text is None:
@@ -233,6 +236,7 @@ def apply_rmu_name_white(
     *,
     name_positions: tuple[str, ...],
     name_exclusions: str = "",
+    name_resolution_mode: str = "selected_direction",
 ) -> RmuNameColorResult:
     """File wrapper for apply_rmu_name_white_to_tree()."""
 
@@ -246,6 +250,7 @@ def apply_rmu_name_white(
         source_path,
         name_positions=name_positions,
         name_exclusions=name_exclusions,
+        name_resolution_mode=name_resolution_mode,
     )
 
     if result.changed_name_text_count:

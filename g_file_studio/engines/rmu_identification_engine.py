@@ -377,6 +377,401 @@ def _assign_names_globally(
     return result
 
 
+
+
+_AUTO_NAME_POSITIONS = ("top", "right", "bottom", "left")
+
+
+@dataclass(frozen=True)
+class _AutoNameCandidate:
+    rect_id: str
+    text_key: str
+    value: str
+    position: str
+    gap: float
+    axis_offset: float
+    pattern: str
+    color: str
+    green: bool
+
+    @property
+    def geometry_score(self) -> float:
+        return self.gap + self.axis_offset * 0.08
+
+
+def _auto_name_pattern(value: str) -> str:
+    """Return a compact lexical style signature for cluster learning.
+
+    Examples: ``29521 -> #``, ``AK-900841 -> AK-#``, ``K-00018 -> K-#``.
+    The signature is deliberately learned from the current cluster instead of
+    being hard-coded to a site/prefix.
+    """
+    compact = re.sub(r"\s+", "", (value or "").strip()).upper()
+    return re.sub(r"\d+", "#", compact)
+
+
+def _auto_color_key(text: ET.Element) -> str:
+    lcc = (text.get("lcc") or "").strip().lower()
+    if lcc:
+        return lcc
+    lc = re.sub(r"\s+", "", (text.get("lc") or "").strip())
+    return lc.lower()
+
+
+def _valid_auto_name_text(
+    element: ET.Element,
+    excluded_names: frozenset[str] = frozenset(),
+) -> bool:
+    """Stricter candidate filter used only by automatic RMU-name resolution.
+
+    Direction/color are not hard requirements.  We only remove labels that are
+    clearly internal/status annotations so a cluster can learn its own external
+    name style (numeric, AK-*, etc.).
+    """
+    if not _valid_name_text(element, excluded_names):
+        return False
+    value = (element.get("ts") or "").strip()
+    if re.fullmatch(r"\(\s*\d+\s*\)", value):
+        return False
+    compact = re.sub(r"\s+", "", value).upper()
+    alnum = re.sub(r"[^A-Z0-9]+", "", compact)
+    if alnum in {"NOP", "FC", "F", "SMART", "SMR", "BUS", "NORMAL", "EARTH"}:
+        return False
+    if re.fullmatch(r"[YQ]\d+D?", alnum):
+        return False
+    return True
+
+
+def _candidate_for_auto_position(
+    text: ET.Element,
+    rect: _Box,
+    position: str,
+) -> tuple[float, float] | None:
+    """All-direction RMU candidate geometry for auto-layout mode.
+
+    Unlike the legacy selected-direction matcher, this does not encode a site
+    direction.  The four sides are evaluated symmetrically, then a cabinet
+    cluster chooses the best repeated layout.
+    """
+    box = _box(text)
+    if box is None:
+        return None
+
+    base = max(rect.width, rect.height)
+    max_distance = max(160.0, min(320.0, base * 1.10))
+    projection_tolerance = max(60.0, min(140.0, base * 0.45))
+    edge_tolerance = 45.0
+
+    if position == "top":
+        gap = rect.top - box.bottom
+        if (
+            -edge_tolerance <= gap <= max_distance
+            and box.center_y < rect.top
+            and rect.left - projection_tolerance <= box.center_x <= rect.right + projection_tolerance
+        ):
+            return max(0.0, gap), abs(box.center_x - rect.center_x)
+    elif position == "bottom":
+        gap = box.top - rect.bottom
+        if (
+            -edge_tolerance <= gap <= max_distance
+            and box.center_y > rect.bottom
+            and rect.left - projection_tolerance <= box.center_x <= rect.right + projection_tolerance
+        ):
+            return max(0.0, gap), abs(box.center_x - rect.center_x)
+    elif position == "left":
+        gap = rect.left - box.right
+        if (
+            -edge_tolerance <= gap <= max_distance
+            and box.center_x < rect.left
+            and rect.top - projection_tolerance <= box.center_y <= rect.bottom + projection_tolerance
+        ):
+            return max(0.0, gap), abs(box.center_y - rect.center_y)
+    elif position == "right":
+        gap = box.left - rect.right
+        if (
+            -edge_tolerance <= gap <= max_distance
+            and box.center_x > rect.right
+            and rect.top - projection_tolerance <= box.center_y <= rect.bottom + projection_tolerance
+        ):
+            return max(0.0, gap), abs(box.center_y - rect.center_y)
+    return None
+
+
+def _auto_candidates_for_rect(
+    texts: list[ET.Element],
+    rect_id: str,
+    rect: _Box,
+    excluded_names: frozenset[str],
+) -> list[_AutoNameCandidate]:
+    candidates: list[_AutoNameCandidate] = []
+    for index, text in enumerate(texts):
+        if not _valid_auto_name_text(text, excluded_names):
+            continue
+        value = (text.get("ts") or "").strip()
+        text_id = (text.get("id") or "").strip()
+        text_key = text_id or f"__auto_text_{index}"
+        pattern = _auto_name_pattern(value)
+        color = _auto_color_key(text)
+        green = _is_green_name_text(text)
+        for position in _AUTO_NAME_POSITIONS:
+            metric = _candidate_for_auto_position(text, rect, position)
+            if metric is None:
+                continue
+            candidates.append(_AutoNameCandidate(
+                rect_id=rect_id,
+                text_key=text_key,
+                value=value,
+                position=position,
+                gap=metric[0],
+                axis_offset=metric[1],
+                pattern=pattern,
+                color=color,
+                green=green,
+            ))
+    return candidates
+
+
+def _median(values: list[float], default: float) -> float:
+    if not values:
+        return default
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
+def _axis_bands(
+    cabinets: list[tuple[str, _Box]],
+    axis: str,
+) -> list[tuple[list[str], float]]:
+    if not cabinets:
+        return []
+    if axis == "x":
+        coords = [(rect.center_x, rect_id) for rect_id, rect in cabinets]
+        size = _median([rect.width for _rect_id, rect in cabinets], 220.0)
+    else:
+        coords = [(rect.center_y, rect_id) for rect_id, rect in cabinets]
+        size = _median([rect.height for _rect_id, rect in cabinets], 220.0)
+    tolerance = max(35.0, min(110.0, size * 0.40))
+    coords.sort()
+    groups: list[list[tuple[float, str]]] = []
+    for coord, rect_id in coords:
+        if not groups:
+            groups.append([(coord, rect_id)])
+            continue
+        current_mean = sum(value for value, _rid in groups[-1]) / len(groups[-1])
+        if abs(coord - current_mean) <= tolerance:
+            groups[-1].append((coord, rect_id))
+        else:
+            groups.append([(coord, rect_id)])
+    result: list[tuple[list[str], float]] = []
+    for group in groups:
+        if len(group) < 2:
+            continue
+        vals = [value for value, _rid in group]
+        spread = max(vals) - min(vals)
+        result.append(([rid for _value, rid in group], spread))
+    return result
+
+
+def _auto_cluster_cabinets(cabinets: list[tuple[str, _Box]]) -> list[list[str]]:
+    """Create non-overlapping repeated-layout RMU clusters.
+
+    Long aligned columns beat shorter cross-rows (MAK sample); long aligned rows
+    beat incidental short columns (ABHA-style rows).  Remaining cabinets become
+    singletons and use the local all-direction fallback.
+    """
+    if len(cabinets) <= 1:
+        return [[rect_id] for rect_id, _rect in cabinets]
+
+    proposals: list[tuple[int, float, str, list[str]]] = []
+    for axis in ("x", "y"):
+        for ids, spread in _axis_bands(cabinets, axis):
+            proposals.append((len(ids), spread, axis, ids))
+    # Larger repeated patterns are stronger evidence; tighter alignment breaks ties.
+    proposals.sort(key=lambda row: (-row[0], row[1], row[2], tuple(row[3])))
+
+    assigned: set[str] = set()
+    clusters: list[list[str]] = []
+    for _size, _spread, _axis, ids in proposals:
+        remaining = [rid for rid in ids if rid not in assigned]
+        if len(remaining) < 2:
+            continue
+        clusters.append(remaining)
+        assigned.update(remaining)
+    for rect_id, _rect in cabinets:
+        if rect_id not in assigned:
+            clusters.append([rect_id])
+            assigned.add(rect_id)
+    return clusters
+
+
+def _style_rank(
+    style: tuple[str, str],
+    candidates: list[_AutoNameCandidate],
+    cluster_size: int,
+) -> tuple[int, int, int, float, float, str, str]:
+    pattern, color = style
+    matched = [item for item in candidates if item.pattern == pattern and item.color == color]
+    covered = {item.rect_id for item in matched}
+    pattern_covered = {item.rect_id for item in candidates if item.pattern == pattern}
+    green_bonus = 1 if any(item.green for item in matched) else 0
+    avg_gap = sum(item.gap for item in matched) / max(1, len(matched))
+    avg_axis = sum(item.axis_offset for item in matched) / max(1, len(matched))
+    # Coverage is authoritative.  When two repeated styles cover the same RMUs,
+    # green is a strong disambiguation signal (ABHA AK-* vs K-*/A-* labels), but
+    # it never overrides a better-coverage non-green style.
+    return (
+        len(covered),
+        green_bonus,
+        len(pattern_covered),
+        -avg_gap,
+        -avg_axis,
+        pattern,
+        color,
+    )
+
+
+def _dominant_style_for_direction(
+    candidates: list[_AutoNameCandidate],
+    cluster_size: int,
+) -> tuple[tuple[str, str] | None, tuple[int, int, int, float, float, str, str]]:
+    styles = {(item.pattern, item.color) for item in candidates if item.pattern}
+    if not styles:
+        return None, (0, 0, 0, float("-inf"), float("-inf"), "", "")
+    ranked = sorted(
+        ((_style_rank(style, candidates, cluster_size), style) for style in styles),
+        key=lambda row: row[0],
+        reverse=True,
+    )
+    return ranked[0][1], ranked[0][0]
+
+
+def _assign_cluster_direction(
+    cluster_ids: list[str],
+    all_candidates: dict[str, list[_AutoNameCandidate]],
+) -> tuple[str | None, tuple[str, str] | None, dict[str, _AutoNameCandidate], dict[str, int]]:
+    """Infer one repeated side/style and assign one Text to one RMU."""
+    cluster_size = len(cluster_ids)
+    direction_options: list[
+        tuple[tuple[int, int, int, float, float, str, str], str, tuple[str, str] | None, list[_AutoNameCandidate]]
+    ] = []
+    for position in _AUTO_NAME_POSITIONS:
+        directional = [
+            item
+            for rect_id in cluster_ids
+            for item in all_candidates.get(rect_id, [])
+            if item.position == position
+        ]
+        style, rank = _dominant_style_for_direction(directional, cluster_size)
+        direction_options.append((rank, position, style, directional))
+
+    direction_options.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    best_rank, position, dominant_style, directional = direction_options[0]
+    min_support = max(2, (cluster_size + 1) // 2)
+    if best_rank[0] < min_support:
+        return None, None, {}, {}
+
+    preferred_pattern = dominant_style[0] if dominant_style else ""
+    edges: list[tuple[int, float, str, str, _AutoNameCandidate]] = []
+    for item in directional:
+        if dominant_style and (item.pattern, item.color) == dominant_style:
+            fallback_level = 0
+        elif preferred_pattern and item.pattern == preferred_pattern:
+            fallback_level = 1
+        else:
+            fallback_level = 2
+        edges.append((fallback_level, item.geometry_score, item.rect_id, item.text_key, item))
+    edges.sort(key=lambda row: (row[0], row[1], row[2], row[3]))
+
+    assigned_rects: set[str] = set()
+    assigned_texts: set[str] = set()
+    assigned: dict[str, _AutoNameCandidate] = {}
+    fallback_levels: dict[str, int] = {}
+    for fallback_level, _score, rect_id, text_key, item in edges:
+        if rect_id in assigned_rects or text_key in assigned_texts:
+            continue
+        assigned_rects.add(rect_id)
+        assigned_texts.add(text_key)
+        assigned[rect_id] = item
+        fallback_levels[rect_id] = fallback_level
+    return position, dominant_style, assigned, fallback_levels
+
+
+def _assign_singletons_auto(
+    rect_ids: list[str],
+    all_candidates: dict[str, list[_AutoNameCandidate]],
+    used_texts: set[str],
+) -> tuple[dict[str, _AutoNameCandidate], dict[str, str]]:
+    assigned: dict[str, _AutoNameCandidate] = {}
+    confidence: dict[str, str] = {}
+    for rect_id in rect_ids:
+        candidates = [item for item in all_candidates.get(rect_id, []) if item.text_key not in used_texts]
+        if not candidates:
+            continue
+        # No cluster style is available.  Green remains a useful weak signal for
+        # multi-line ABHA-style labels; otherwise pure geometry wins across all four sides.
+        greens = [item for item in candidates if item.green]
+        pool = greens if greens else candidates
+        pool.sort(key=lambda item: (item.geometry_score, item.position, item.value, item.text_key))
+        chosen = pool[0]
+        assigned[rect_id] = chosen
+        used_texts.add(chosen.text_key)
+        confidence[rect_id] = "中" if len(candidates) > 1 else "高"
+    return assigned, confidence
+
+
+def _assign_names_auto_cluster(
+    texts: list[ET.Element],
+    cabinets: list[tuple[str, _Box]],
+    excluded_names: frozenset[str] = frozenset(),
+) -> dict[str, tuple[str, str, str, list[str]]]:
+    """Automatic RMU name resolver used by G Graphic Content Analysis.
+
+    It learns repeated layout per RMU cluster (TOP/RIGHT/BOTTOM/LEFT), then learns
+    the dominant text style within that cluster and performs one-to-one matching.
+    No site direction is required.  Single/irregular cabinets fall back to an
+    all-direction local resolver.
+    """
+    all_candidates = {
+        rect_id: _auto_candidates_for_rect(texts, rect_id, rect, excluded_names)
+        for rect_id, rect in cabinets
+    }
+    result: dict[str, tuple[str, str, str, list[str]]] = {
+        rect_id: ("", "", "未识别", []) for rect_id, _rect in cabinets
+    }
+    used_texts: set[str] = set()
+    clusters = _auto_cluster_cabinets(cabinets)
+
+    # Strong repeated-layout clusters first; singletons/irregular remnants later.
+    for cluster_ids in [cluster for cluster in clusters if len(cluster) >= 2]:
+        position, _style, assigned, fallback_levels = _assign_cluster_direction(cluster_ids, all_candidates)
+        if position is None:
+            continue
+        for rect_id, item in assigned.items():
+            if item.text_key in used_texts:
+                continue
+            used_texts.add(item.text_key)
+            level = fallback_levels.get(rect_id, 2)
+            confidence = "高" if level == 0 else "中"
+            result[rect_id] = (item.value, position, confidence, [])
+
+    unresolved = [
+        rect_id
+        for rect_id, _rect in cabinets
+        if not result[rect_id][0]
+    ]
+    singleton_assigned, singleton_confidence = _assign_singletons_auto(unresolved, all_candidates, used_texts)
+    for rect_id, item in singleton_assigned.items():
+        result[rect_id] = (
+            item.value,
+            item.position,
+            singleton_confidence.get(rect_id, "中"),
+            [],
+        )
+    return result
+
 def _find_name(
     texts: list[ET.Element],
     rect: _Box,
@@ -496,26 +891,36 @@ def identify_rmus(
     file_path: Path,
     *,
     name_positions: tuple[str, ...] = ("top",),
+    name_resolution_mode: str = "selected_direction",
     smart_in_type: bool = False,
     excluded_name_values: tuple[str, ...] = (),
     intelligent_marker_values: tuple[str, ...] = ("SMART", "SMR"),
 ) -> RmuIdentificationResult:
     """识别环网柜名称、L/T 柜型及 SMART 状态，不修改 XML。
 
-    v2.17.11 规则：
+    名称识别支持两种模式：
+    - selected_direction（默认）：保持历史行为，只在用户指定方向内做一对一匹配；
+    - auto_cluster：供 G 图形内容解析使用。按重复 RMU 排列自动分 Cluster，四方向对称评估，
+      自动学习每个 Cluster 的名称方向与主导文字风格（颜色/文本模式仅作为组内证据），
+      然后整组一对一分配；孤立/不规则 RMU 才退化到全方向局部最近候选。
+
+    共同规则：
     1. 必须存在环网柜 rect，且框内同时具有 BusDis、CBreakerDis、ZhaiWaiJieDiDaoZha。
-    2. 柜名只在用户指定方向寻找并做全局一对一匹配；单候选直接使用，多候选时绿色优先。
-       指定方向的常规几何匹配失败时，仅当柜内 BusDis.key_name 唯一候选与所选方向附近同名 Text 完全一致时回退；不跨方向猜名。
+    2. BusDis.key_name 只作为保守回退，必须有附近完全同名 Text 确认，不接受纯 metadata 猜名。
     3. 柜型第一来源为框内 Y1/Y2/... 与 Q1/Q2/...：Y 数量=L，Q 数量=T，并检查序号连续性。
        第二来源仅按 CBreakerDis.devref 图元文件名：Load_Breaker*=L，Circuit_Breaker*=T。
-       两种来源同时存在时强制交叉校验；某一类 Y/Q 完全缺失时才用 devref 对应类别回退。
+       L/T 按类别分别交叉校验：已同时存在的类别计数不一致才 FAIL；某一类 Y/Q 完全缺失时
+       使用 devref 对应类别回退并标记 WARN（证据不完整），不再因为完整字符串如 2L0T/2L1T 不同而误判 FAIL。
     4. 柜型始终只输出 nLmT；用户配置的智能标记 Text 在统计层统一归类为“智能环网柜”，不追加到柜型字符串。
        智能标记在全图有效 RMU 集合中做最近归属，每个标记只允许归属一个 RMU；标记无需完全落在柜框内。
        默认标记为 SMART / SMR，可扩展为 NEWSMART、SMART-SE 等任意完整 Text。
 
     smart_in_type 参数为了兼容现有设置保留；现在表示是否统计智能环网柜。
     """
-    if not name_positions:
+    mode = (name_resolution_mode or "selected_direction").strip().lower()
+    if mode not in {"selected_direction", "auto_cluster"}:
+        raise ValueError(f"未知 RMU 柜名识别模式：{name_resolution_mode}")
+    if mode == "selected_direction" and not name_positions:
         raise ValueError("环网柜名称位置至少选择一个方向。")
 
     intelligent_markers = tuple(
@@ -558,7 +963,10 @@ def identify_rmus(
 
     cabinet_boxes = [((rect.get("id") or f"__rect_{index}"), rect_box)
                      for index, (rect, rect_box) in enumerate(valid_cabinets)]
-    name_assignments = _assign_names_globally(texts, cabinet_boxes, name_positions, excluded_names)
+    if mode == "auto_cluster":
+        name_assignments = _assign_names_auto_cluster(texts, cabinet_boxes, excluded_names)
+    else:
+        name_assignments = _assign_names_globally(texts, cabinet_boxes, name_positions, excluded_names)
 
     # User-configured intelligent markers are global RMU markers. They are not
     # required to be fully inside a cabinet frame: a label may sit on / slightly
@@ -645,23 +1053,69 @@ def identify_rmus(
         else:
             type_source = "UNKNOWN"
 
-        if text_yq_type and devref_type:
-            if text_yq_type == devref_type and y_sequence_ok and q_sequence_ok:
-                type_cross_check = "YES"
-                type_validation_status = "PASS"
-                type_cross_note = f"Y/Q={text_yq_type}，devref={devref_type}，两种识别结果一致"
-            else:
-                type_cross_check = "NO"
-                type_validation_status = "FAIL"
-                details: list[str] = []
-                if text_yq_type != devref_type:
-                    details.append(f"Y/Q={text_yq_type} 与 devref={devref_type} 不一致")
-                if not y_sequence_ok:
-                    details.append("Y 标签序号不连续")
-                if not q_sequence_ok:
-                    details.append("Q 标签序号不连续")
-                type_cross_note = "；".join(details) or "柜型交叉校验失败"
-                warnings.append(type_cross_note)
+        # v2.18.131: cross-check L/T per category instead of comparing the raw
+        # full type string when one Y/Q category is completely absent.  A missing
+        # category that is successfully filled from devref is incomplete evidence
+        # (WARN), not a genuine conflict (FAIL).  A category that is present in
+        # both sources but has different counts remains a hard FAIL.
+        has_text_y = y_count > 0
+        has_text_q = q_count > 0
+        has_devref_l = devref_l > 0
+        has_devref_t = devref_t > 0
+
+        comparable_categories: list[str] = []
+        mismatch_details: list[str] = []
+        fallback_details: list[str] = []
+        incomplete_details: list[str] = []
+
+        if has_text_y and has_devref_l:
+            comparable_categories.append("L")
+            if y_count != devref_l:
+                mismatch_details.append(f"Y={y_count}L 与 devref L={devref_l}L 不一致")
+        elif has_text_y and not has_devref_l:
+            incomplete_details.append(f"Y={y_count}L 缺少对应 devref L 证据")
+        elif not has_text_y and has_devref_l:
+            fallback_details.append(f"Y 缺失，L 使用 devref 回退 {devref_l}L")
+
+        if has_text_q and has_devref_t:
+            comparable_categories.append("T")
+            if q_count != devref_t:
+                mismatch_details.append(f"Q={q_count}T 与 devref T={devref_t}T 不一致")
+        elif has_text_q and not has_devref_t:
+            incomplete_details.append(f"Q={q_count}T 缺少对应 devref T 证据")
+        elif not has_text_q and has_devref_t:
+            fallback_details.append(f"Q 缺失，T 使用 devref 回退 {devref_t}T")
+
+        if not y_sequence_ok:
+            mismatch_details.append("Y 标签序号不连续")
+        if not q_sequence_ok:
+            mismatch_details.append("Q 标签序号不连续")
+
+        if mismatch_details:
+            type_cross_check = "NO"
+            type_validation_status = "FAIL"
+            type_cross_note = "；".join(mismatch_details)
+            warnings.append(type_cross_note)
+        elif has_text_y and has_text_q and has_devref_l and has_devref_t:
+            # Both categories have complete two-source evidence and agree.
+            type_cross_check = "YES"
+            type_validation_status = "PASS"
+            type_cross_note = f"Y/Q={text_yq_type}，devref={devref_type}，两种识别结果一致"
+        elif text_yq_type and devref_type:
+            # At least one Y/Q category is absent or one corresponding devref
+            # category is missing.  Keep the resolved final type, but explicitly
+            # report that only a partial cross-check was possible.
+            type_cross_check = "PARTIAL" if comparable_categories else "N/A"
+            type_validation_status = "WARN"
+            details = []
+            if comparable_categories:
+                details.append("已交叉校验 " + "/".join(comparable_categories) + " 类计数一致")
+            details.extend(fallback_details)
+            details.extend(incomplete_details)
+            type_cross_note = "；".join(details) or (
+                f"Y/Q={text_yq_type}，devref={devref_type}，仅能进行部分双源交叉校验"
+            )
+            warnings.append(type_cross_note)
         elif text_yq_type:
             type_cross_check = "N/A"
             type_validation_status = "WARN"
@@ -688,8 +1142,9 @@ def identify_rmus(
         # and does not alter cabinet/type detection.
         if not name:
             bus_name = _bus_key_name_candidate(inside_buses, excluded_names)
+            metadata_positions = _AUTO_NAME_POSITIONS if mode == "auto_cluster" else name_positions
             if bus_name and _metadata_name_confirmed_by_text(
-                texts, rect_box, name_positions, bus_name, excluded_names
+                texts, rect_box, metadata_positions, bus_name, excluded_names
             ):
                 name = bus_name
                 position = "BusDis.key_name+Text"
@@ -742,7 +1197,10 @@ def identify_rmus(
     result.ambiguous_name_count = sum(1 for item in result.items if item.confidence == "待确认")
     for item in result.items:
         if not item.name:
-            result.warnings.append(f"rect ID {item.rect_id or '<无ID>'} 未找到指定方向且距离足够近的柜名。")
+            if mode == "auto_cluster":
+                result.warnings.append(f"rect ID {item.rect_id or '<无ID>'} 自动布局未找到距离足够近的有效柜名。")
+            else:
+                result.warnings.append(f"rect ID {item.rect_id or '<无ID>'} 未找到指定方向且距离足够近的柜名。")
         for warning in item.warnings:
             result.warnings.append(f"rect ID {item.rect_id or '<无ID>'}：{warning}")
     return result

@@ -13,6 +13,7 @@ class _DenseTableProfile:
     minimum_widths: tuple[int, ...]
     maximum_widths: tuple[int | None, ...]
     minimum_row_height: int = 36
+    minimum_visible_rows: int | None = None
 
 
 # Canonical source labels are Chinese because feature pages keep Chinese as their
@@ -23,6 +24,7 @@ _DENSE_TABLE_PROFILES: tuple[_DenseTableProfile, ...] = (
         minimum_widths=(92, 150, 118, 86, 145, 260, 280),
         maximum_widths=(120, 240, 150, 100, 220, 380, 560),
         minimum_row_height=38,
+        minimum_visible_rows=6,
     ),
     _DenseTableProfile(
         headers=("现场", "Profile 名称", "版本", "状态", "SMART LBS", "SMART CB", "SMART 接地刀闸", "NORMAL LBS", "NORMAL CB", "NORMAL 接地刀闸", "样本", "置信度", "Profile 状态"),
@@ -95,6 +97,23 @@ def configure_known_dense_table(table: QTableWidget) -> bool:
     table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
     table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
     table.setTextElideMode(Qt.TextElideMode.ElideRight)
+
+    # The ID rule template is an operational reference table and three visible
+    # rows are too cramped for normal use.  Reserve enough vertical room for
+    # its profile-defined number of rows while keeping the table flexible: it
+    # may still grow when the page has more space, and scrolling remains intact.
+    if profile.minimum_visible_rows:
+        header_height = max(table.horizontalHeader().sizeHint().height(), 30)
+        scrollbar_height = max(table.horizontalScrollBar().sizeHint().height(), 16)
+        frame_height = table.frameWidth() * 2
+        viewport_margins = 6
+        table.setMinimumHeight(
+            header_height
+            + profile.minimum_visible_rows * profile.minimum_row_height
+            + scrollbar_height
+            + frame_height
+            + viewport_margins
+        )
 
     fit_known_dense_table(table)
     return True

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import os
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -43,6 +44,26 @@ class OracleConnectionConfig:
             raise ValueError("Oracle Service Name 不能为空。")
 
 
+
+
+
+
+@dataclass(frozen=True)
+class TopologyFeederAnchorContext:
+    """Database-backed feeder identity for one G topology anchor device.
+
+    Only the three authoritative DBI equipment tables are used by G content
+    inventory feeder analysis: BREAKER (407), DISCONNECTOR (408), and
+    GROUNDDISCONNECTOR (409).  ``bay_id`` is the business source of station and
+    feeder identity; no G-file facID/facName or spatial guess is involved.
+    """
+
+    table_name: str
+    device_id: str
+    device_name: str
+    bay_id: str
+    station_name: str
+    feeder_name: str
 
 
 @dataclass(frozen=True)
@@ -190,6 +211,10 @@ class OracleDatabaseService:
 
     def __init__(self, settings: UserSettingsService) -> None:
         self.settings = settings
+        # Last feeder-anchor lookup diagnostics.  This is intentionally runtime-only
+        # (never persisted) so the G inventory page can show exactly how many
+        # CBreaker/Disconnector/GroundDisconnector keyids were queried and matched.
+        self.last_topology_feeder_lookup_stats: dict[str, dict[str, object]] = {}
 
     def _has_saved_user_config(self) -> bool:
         """Return True once the user has persisted any Oracle connection setting.
@@ -600,6 +625,437 @@ class OracleDatabaseService:
             station_full_name=station_full_name,
         )
 
+
+    @staticmethod
+    def _parse_bay_id(value: object) -> tuple[str, str]:
+        """Return ``(station, feeder)`` from DBI BAY_ID.
+
+        Typical examples are ``JED-NTH ABH 13.8kV AH303`` and
+        ``JED-NTH ABH 13.8kV AH309_TR1_05``.  The station token immediately
+        precedes the voltage token; the feeder is the base bay token immediately
+        after it, with bay-detail suffixes removed.
+        """
+        text = re.sub(r"\s+", " ", str(value or "").strip())
+        if not text:
+            return "", ""
+        tokens = text.split(" ")
+        voltage_index = -1
+        for index, token in enumerate(tokens):
+            if re.fullmatch(r"(?i)\d+(?:\.\d+)?\s*kV", token):
+                voltage_index = index
+                break
+        if voltage_index <= 0 or voltage_index + 1 >= len(tokens):
+            return "", ""
+        station = tokens[voltage_index - 1].strip()
+        bay_token = tokens[voltage_index + 1].strip()
+        feeder = bay_token.split("_", 1)[0].strip()
+        return station, feeder
+
+    def resolve_topology_feeder_anchors(
+        self,
+        keyids_by_table: dict[str, Iterable[str]],
+        *,
+        config: OracleConnectionConfig | None = None,
+    ) -> tuple[dict[tuple[str, str], TopologyFeederAnchorContext], dict[tuple[str, str], str]]:
+        """Resolve feeder anchors through the authoritative DBI keyid chain.
+
+        Only three G XML elements participate in feeder-anchor lookup:
+
+        - ``CBreaker`` -> DBI table 407 -> ``breaker``
+        - ``Disconnector`` -> DBI table 408 -> ``disconnector``
+        - ``GroundDisconnector`` -> DBI table 409 -> ``grounddisconnector``
+
+        The G ``keyid`` is *not* a table primary key.  It is first decoded with the
+        same DBI functions used by the model-validation workflow::
+
+            long2_to_long1(keyid) -> device_id
+            get_tab_no(keyid)     -> table_id
+            get_col_no(keyid)     -> column_id (audit only)
+
+        ``SYS_TABLE_INFO`` then verifies the decoded table name.  The decoded
+        ``device_id`` is queried from the equipment table, its numeric ``BAY_ID``
+        is resolved through ``BAY``, and ``BAY.ST_ID`` is finally resolved through
+        ``SUBSTATION``.  Therefore the final business identity is sourced directly
+        from ``BAY.NAME`` (feeder) and ``SUBSTATION.NAME`` (station); no G-file
+        facID/facName, header text, filename, FeedLine text, or spatial guess is
+        involved.
+
+        Returned dictionaries remain keyed by ``(expected_table, original_keyid)``
+        because the topology layer works with the original G XML keyid.
+        """
+        table_specs: dict[str, tuple[int, str]] = {
+            "BREAKER": (407, "BREAKER"),
+            "DISCONNECTOR": (408, "DISCONNECTOR"),
+            "GROUNDDISCONNECTOR": (409, "GROUNDDISCONNECTOR"),
+        }
+        cfg = config or self.load_config()
+        resolved: dict[tuple[str, str], TopologyFeederAnchorContext] = {}
+        issues: dict[tuple[str, str], str] = {}
+        self.last_topology_feeder_lookup_stats = {}
+
+        def id_text(value: object) -> str:
+            if value is None:
+                return ""
+            text = str(value).strip()
+            # Some Oracle/Decimal renderers may expose an integral NUMBER as
+            # ``123.0``.  IDs are integer business keys, so normalize only that
+            # harmless representation and preserve every other character.
+            if re.fullmatch(r"[+-]?\d+\.0+", text):
+                text = text.split(".", 1)[0]
+            return text
+
+        def chunks(values: list[str], size: int = 300):
+            for start_index in range(0, len(values), size):
+                yield values[start_index:start_index + size]
+
+        requested_by_table: dict[str, list[str]] = {}
+        all_keyids: list[str] = []
+        seen_all: set[str] = set()
+        for raw_table, raw_ids in keyids_by_table.items():
+            table = str(raw_table or "").strip().upper()
+            if table not in table_specs:
+                raise ValueError(f"不允许用于馈线锚点查询的表：{raw_table!r}")
+            requested: list[str] = []
+            seen: set[str] = set()
+            for raw_id in raw_ids:
+                keyid = str(raw_id or "").strip()
+                if not keyid or keyid in seen:
+                    continue
+                seen.add(keyid)
+                requested.append(keyid)
+                if keyid not in seen_all:
+                    seen_all.add(keyid)
+                    all_keyids.append(keyid)
+            requested_by_table[table] = requested
+            self.last_topology_feeder_lookup_stats[table] = {
+                "requested": len(requested),
+                "decoded": 0,
+                "decode_failed": 0,
+                "table_valid": 0,
+                "table_mismatch": 0,
+                "matched": 0,             # compatibility: equipment row matched
+                "device_matched": 0,
+                "unmatched": 0,           # compatibility: unresolved final keyids
+                "valid_bay_id": 0,
+                "bay_matched": 0,
+                "station_matched": 0,
+                "resolved": 0,
+                "invalid_bay_id": 0,
+                "sample_requested": requested[:3],
+                "sample_unmatched": [],
+                "sample_resolved": [],
+                "dsn": cfg.dsn,
+                "username": cfg.username,
+            }
+
+        # Phase 1: decode every G keyid through DBI's authoritative functions.
+        decoded_by_keyid: dict[str, tuple[str, int, int]] = {}
+        invalid_keyids: set[str] = set()
+        for keyid in all_keyids:
+            if not re.fullmatch(r"\d+", keyid):
+                invalid_keyids.add(keyid)
+
+        numeric_keyids = [item for item in all_keyids if item not in invalid_keyids]
+        for chunk in chunks(numeric_keyids, 180):
+            params: dict[str, Any] = {}
+            selects: list[str] = []
+            for index, keyid in enumerate(chunk):
+                bind = f"key_{index}"
+                params[bind] = int(keyid)
+                selects.append(
+                    f"SELECT :{bind} AS KEY_ID, "
+                    f"long2_to_long1(:{bind}) AS DEVICE_ID, "
+                    f"get_tab_no(:{bind}) AS TAB_NO, "
+                    f"get_col_no(:{bind}) AS COL_NO FROM DUAL"
+                )
+            sql = " UNION ALL ".join(selects)
+            _columns, rows = self.query(sql, params, max_rows=max(len(chunk) * 2, 100), config=cfg)
+            for row in rows:
+                keyid = id_text(row[0] if len(row) > 0 else "")
+                device_id = id_text(row[1] if len(row) > 1 else "")
+                try:
+                    tab_no = int(row[2]) if len(row) > 2 and row[2] is not None else 0
+                except (TypeError, ValueError):
+                    tab_no = 0
+                try:
+                    col_no = int(row[3]) if len(row) > 3 and row[3] is not None else 0
+                except (TypeError, ValueError):
+                    col_no = 0
+                if keyid and device_id and tab_no:
+                    decoded_by_keyid[keyid] = (device_id, tab_no, col_no)
+
+        # Phase 2: use the decoded table number to resolve/verify the DBI table name.
+        table_ids = sorted({decoded[1] for decoded in decoded_by_keyid.values() if decoded[1]})
+        table_name_by_id: dict[int, str] = {}
+        if table_ids:
+            for id_chunk in [table_ids[i:i + 500] for i in range(0, len(table_ids), 500)]:
+                params = {f"tab_{i}": int(tab_id) for i, tab_id in enumerate(id_chunk)}
+                bind_list = ", ".join(f":tab_{i}" for i in range(len(id_chunk)))
+                sql = (
+                    "SELECT TABLE_ID, TABLE_NAME_ENG FROM SYS_TABLE_INFO "
+                    f"WHERE TABLE_ID IN ({bind_list})"
+                )
+                _columns, rows = self.query(sql, params, max_rows=max(len(id_chunk) * 2, 20), config=cfg)
+                for row in rows:
+                    try:
+                        table_id = int(row[0])
+                    except (TypeError, ValueError, IndexError):
+                        continue
+                    table_name_by_id[table_id] = str(row[1] or "").strip()
+
+        def normalized_table_name(value: object) -> str:
+            return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+        validated_device_ids: dict[str, dict[str, str]] = {table: {} for table in table_specs}
+        decoded_meta: dict[tuple[str, str], tuple[str, int, int]] = {}
+        for table, requested in requested_by_table.items():
+            expected_tab_no, expected_table_name = table_specs[table]
+            stat = self.last_topology_feeder_lookup_stats[table]
+            for keyid in requested:
+                issue_key = (table, keyid)
+                decoded = decoded_by_keyid.get(keyid)
+                if decoded is None:
+                    stat["decode_failed"] = int(stat["decode_failed"]) + 1
+                    if keyid in invalid_keyids:
+                        issues[issue_key] = f"G keyid={keyid!r} 不是有效数字，无法执行 long2_to_long1/get_tab_no。"
+                    else:
+                        issues[issue_key] = f"G keyid={keyid} 未能通过 long2_to_long1/get_tab_no 解码。"
+                    continue
+                stat["decoded"] = int(stat["decoded"]) + 1
+                device_id, tab_no, col_no = decoded
+                decoded_meta[issue_key] = decoded
+                if tab_no != expected_tab_no:
+                    stat["table_mismatch"] = int(stat["table_mismatch"]) + 1
+                    issues[issue_key] = (
+                        f"G keyid={keyid} 解码 device_id={device_id}, tab_no={tab_no}, col_no={col_no}；"
+                        f"但 {table} 锚点要求 tab_no={expected_tab_no}。"
+                    )
+                    continue
+                db_table_name = table_name_by_id.get(tab_no, "")
+                if not db_table_name:
+                    stat["table_mismatch"] = int(stat["table_mismatch"]) + 1
+                    issues[issue_key] = (
+                        f"G keyid={keyid} 解码 tab_no={tab_no}，但 SYS_TABLE_INFO 未找到对应表名。"
+                    )
+                    continue
+                if normalized_table_name(db_table_name) != normalized_table_name(expected_table_name):
+                    stat["table_mismatch"] = int(stat["table_mismatch"]) + 1
+                    issues[issue_key] = (
+                        f"G keyid={keyid} 解码 tab_no={tab_no} -> SYS_TABLE_INFO={db_table_name!r}，"
+                        f"与期望表 {expected_table_name!r} 不一致。"
+                    )
+                    continue
+                stat["table_valid"] = int(stat["table_valid"]) + 1
+                validated_device_ids[table][keyid] = device_id
+
+        # Phase 3: query the three equipment tables by decoded device_id.
+        device_rows_by_table: dict[str, dict[str, list[tuple[Any, ...]]]] = {
+            table: {} for table in table_specs
+        }
+        keyids_by_device: dict[str, dict[str, list[str]]] = {table: defaultdict(list) for table in table_specs}
+        for table, mapping in validated_device_ids.items():
+            for keyid, device_id in mapping.items():
+                keyids_by_device[table][device_id].append(keyid)
+            unique_device_ids = list(keyids_by_device[table].keys())
+            rows_by_id: dict[str, list[tuple[Any, ...]]] = {item: [] for item in unique_device_ids}
+            for chunk in chunks(unique_device_ids, 500):
+                params = {f"dev_{i}": int(device_id) for i, device_id in enumerate(chunk)}
+                bind_list = ", ".join(f":dev_{i}" for i in range(len(chunk)))
+                sql = (
+                    f"SELECT TO_CHAR(ID), NAME, TO_CHAR(ST_ID), TO_CHAR(BAY_ID) FROM {table} "
+                    f"WHERE ID IN ({bind_list})"
+                )
+                _columns, rows = self.query(sql, params, max_rows=max(len(chunk) * 3, 100), config=cfg)
+                for row in rows:
+                    device_id = id_text(row[0] if len(row) > 0 else "")
+                    if device_id in rows_by_id:
+                        rows_by_id[device_id].append(row)
+            device_rows_by_table[table] = rows_by_id
+            matched_keyids = 0
+            for device_id, keyids in keyids_by_device[table].items():
+                if rows_by_id.get(device_id):
+                    matched_keyids += len(keyids)
+            stat = self.last_topology_feeder_lookup_stats[table]
+            stat["matched"] = matched_keyids
+            stat["device_matched"] = matched_keyids
+
+        # Phase 4: resolve every equipment BAY_ID through BAY.ID -> BAY.NAME/ST_ID.
+        all_bay_ids: list[str] = []
+        seen_bays: set[str] = set()
+        for rows_by_id in device_rows_by_table.values():
+            for rows in rows_by_id.values():
+                if len(rows) != 1:
+                    continue
+                bay_id = id_text(rows[0][3] if len(rows[0]) > 3 else "")
+                if bay_id and bay_id not in seen_bays:
+                    seen_bays.add(bay_id)
+                    all_bay_ids.append(bay_id)
+        bay_rows_by_id: dict[str, list[tuple[Any, ...]]] = {item: [] for item in all_bay_ids}
+        for chunk in chunks(all_bay_ids, 500):
+            params = {f"bay_{i}": int(bay_id) for i, bay_id in enumerate(chunk)}
+            bind_list = ", ".join(f":bay_{i}" for i in range(len(chunk)))
+            sql = (
+                "SELECT TO_CHAR(ID), NAME, TO_CHAR(ST_ID) FROM BAY "
+                f"WHERE ID IN ({bind_list})"
+            )
+            _columns, rows = self.query(sql, params, max_rows=max(len(chunk) * 3, 100), config=cfg)
+            for row in rows:
+                bay_id = id_text(row[0] if len(row) > 0 else "")
+                if bay_id in bay_rows_by_id:
+                    bay_rows_by_id[bay_id].append(row)
+
+        # Phase 5: resolve BAY.ST_ID -> SUBSTATION.NAME.
+        station_ids: list[str] = []
+        seen_stations: set[str] = set()
+        for rows in bay_rows_by_id.values():
+            if len(rows) != 1:
+                continue
+            station_id = id_text(rows[0][2] if len(rows[0]) > 2 else "")
+            if station_id and station_id not in seen_stations:
+                seen_stations.add(station_id)
+                station_ids.append(station_id)
+        station_rows_by_id: dict[str, list[tuple[Any, ...]]] = {item: [] for item in station_ids}
+        for chunk in chunks(station_ids, 500):
+            params = {f"st_{i}": int(station_id) for i, station_id in enumerate(chunk)}
+            bind_list = ", ".join(f":st_{i}" for i in range(len(chunk)))
+            sql = (
+                "SELECT TO_CHAR(ID), NAME FROM SUBSTATION "
+                f"WHERE ID IN ({bind_list})"
+            )
+            _columns, rows = self.query(sql, params, max_rows=max(len(chunk) * 3, 100), config=cfg)
+            for row in rows:
+                station_id = id_text(row[0] if len(row) > 0 else "")
+                if station_id in station_rows_by_id:
+                    station_rows_by_id[station_id].append(row)
+
+        # Phase 6: assemble one traceable feeder anchor per original G keyid.
+        for table, requested in requested_by_table.items():
+            stat = self.last_topology_feeder_lookup_stats[table]
+            unresolved_samples: list[str] = []
+            resolved_samples: list[str] = []
+            valid_bay_count = 0
+            bay_matched_count = 0
+            station_matched_count = 0
+            resolved_count = 0
+            for keyid in requested:
+                issue_key = (table, keyid)
+                if issue_key in issues:
+                    if len(unresolved_samples) < 3:
+                        unresolved_samples.append(keyid)
+                    continue
+                decoded = decoded_meta.get(issue_key)
+                if decoded is None:
+                    if len(unresolved_samples) < 3:
+                        unresolved_samples.append(keyid)
+                    continue
+                device_id, tab_no, col_no = decoded
+                rows = device_rows_by_table.get(table, {}).get(device_id, [])
+                if not rows:
+                    issues[issue_key] = (
+                        f"G keyid={keyid} -> device_id={device_id}, tab_no={tab_no}, col_no={col_no}；"
+                        f"{table}.ID={device_id} 未找到设备记录。"
+                    )
+                    if len(unresolved_samples) < 3:
+                        unresolved_samples.append(keyid)
+                    continue
+                if len(rows) > 1:
+                    issues[issue_key] = (
+                        f"G keyid={keyid} -> device_id={device_id}；{table}.ID 返回 {len(rows)} 条记录，无法唯一确定。"
+                    )
+                    if len(unresolved_samples) < 3:
+                        unresolved_samples.append(keyid)
+                    continue
+
+                row = rows[0]
+                device_name = str(row[1] or "").strip()
+                bay_id = id_text(row[3] if len(row) > 3 else "")
+                if not bay_id:
+                    issues[issue_key] = (
+                        f"G keyid={keyid} -> device_id={device_id}；{table}.BAY_ID 为空，请先完成设备 BAY 关联。"
+                    )
+                    if len(unresolved_samples) < 3:
+                        unresolved_samples.append(keyid)
+                    continue
+                valid_bay_count += 1
+
+                bay_rows = bay_rows_by_id.get(bay_id, [])
+                if not bay_rows:
+                    issues[issue_key] = (
+                        f"G keyid={keyid} -> device_id={device_id} -> BAY_ID={bay_id}；BAY 表未找到对应记录。"
+                    )
+                    if len(unresolved_samples) < 3:
+                        unresolved_samples.append(keyid)
+                    continue
+                if len(bay_rows) > 1:
+                    issues[issue_key] = (
+                        f"BAY.ID={bay_id} 返回 {len(bay_rows)} 条记录，无法唯一确定馈线。"
+                    )
+                    if len(unresolved_samples) < 3:
+                        unresolved_samples.append(keyid)
+                    continue
+                bay_matched_count += 1
+                bay_row = bay_rows[0]
+                feeder_name = str(bay_row[1] or "").strip()
+                station_id = id_text(bay_row[2] if len(bay_row) > 2 else "")
+                if not feeder_name:
+                    issues[issue_key] = f"BAY.ID={bay_id} 的 NAME 为空，无法确定馈线名称。"
+                    if len(unresolved_samples) < 3:
+                        unresolved_samples.append(keyid)
+                    continue
+                if not station_id:
+                    issues[issue_key] = f"BAY.ID={bay_id} 的 ST_ID 为空，无法确定所属厂站。"
+                    if len(unresolved_samples) < 3:
+                        unresolved_samples.append(keyid)
+                    continue
+
+                station_rows = station_rows_by_id.get(station_id, [])
+                if not station_rows:
+                    issues[issue_key] = (
+                        f"BAY.ID={bay_id} -> ST_ID={station_id}；SUBSTATION 表未找到对应记录。"
+                    )
+                    if len(unresolved_samples) < 3:
+                        unresolved_samples.append(keyid)
+                    continue
+                if len(station_rows) > 1:
+                    issues[issue_key] = (
+                        f"SUBSTATION.ID={station_id} 返回 {len(station_rows)} 条记录，无法唯一确定厂站。"
+                    )
+                    if len(unresolved_samples) < 3:
+                        unresolved_samples.append(keyid)
+                    continue
+                station_name = str(station_rows[0][1] or "").strip()
+                if not station_name:
+                    issues[issue_key] = f"SUBSTATION.ID={station_id} 的 NAME 为空，无法确定厂站名称。"
+                    if len(unresolved_samples) < 3:
+                        unresolved_samples.append(keyid)
+                    continue
+                station_matched_count += 1
+
+                resolved[issue_key] = TopologyFeederAnchorContext(
+                    table_name=table,
+                    device_id=device_id,
+                    device_name=device_name,
+                    bay_id=bay_id,
+                    station_name=station_name,
+                    feeder_name=feeder_name,
+                )
+                resolved_count += 1
+                if len(resolved_samples) < 3:
+                    resolved_samples.append(
+                        f"keyid={keyid} -> device_id={device_id} -> tab_no={tab_no} -> "
+                        f"BAY_ID={bay_id} -> {station_name}/{feeder_name}"
+                    )
+
+            stat["valid_bay_id"] = valid_bay_count
+            stat["bay_matched"] = bay_matched_count
+            stat["station_matched"] = station_matched_count
+            stat["resolved"] = resolved_count
+            stat["unmatched"] = len(requested) - resolved_count
+            stat["invalid_bay_id"] = max(0, int(stat["device_matched"]) - resolved_count)
+            stat["sample_unmatched"] = unresolved_samples
+            stat["sample_resolved"] = resolved_samples
+
+        return resolved, issues
 
     @classmethod
     def validate_read_only_sql(cls, sql: str) -> str:

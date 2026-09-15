@@ -1,321 +1,109 @@
-# G File Studio v2.18.97
-## v2.18.97 RMU Poke 图框模板污染修复
+# v2.18.148
 
-- 直接基于 v2.18.96 修复，仅调整 RMU Poke 创建/修复属性，不改变 RMU 识别、数据库馈线解析、站点跳转 Poke、报告或其他业务模块。
-- 新增 RMU Poke 不再从当前 G 文件任意已有 `<poke>` 复制模板，彻底避免误复制图框/标题栏 Poke。
-- RMU Poke 固定从专用 `_CANONICAL_POKE_ATTRS` 创建，保证 `Pos=0`、蓝色 Line Color、Invisible 以及完整 `app/domain` 等运行属性。
-- 对 v2.18.96 已经生成且带 `gfs_frame_role/gfs_frame_component/gfs_frame_type` 的污染 RMU Poke，再次运行时会自动修复：保留 `id/x/y/w/h/ahref/gfs_rmu_*` 动态字段，其余属性重建为 RMU Poke 标准属性。
-- ABH-22 类问题中正确的 RMU 名称、AH322 数据库归属和 ahref 不改变，只修复导致点击行为异常的 Poke 属性。
+## Git / generated-artifact protection
 
-## v2.18.96 Poke 无 facID / 多馈线 RMU 解析
+- Fix `.gitignore` so `workspace/runs/` is never committed. This directory can contain very large generated G-content HTML/Excel analysis outputs.
+- Ignore local packaging outputs: `release/`, `build/`, `dist/`, and `GFileStudio_v*_Windows_x64.zip`.
+- Add defense-in-depth rules for generated G-content analysis reports.
+- Add `GIT_LARGE_FILE_CLEANUP.md` with one-time repair commands for repositories that already tracked generated files.
+- No G-file parsing, feeder/topology, Jeddah processing, drawing-frame, SSH, database, or UI business logic changed in this release.
 
-- Poke 模块不再要求根节点 `facID`。
-- RMU Poke 以公共 RMU 识别得到的柜名为入口，查询 `DMS_COMBINED_DEVICE.NAME`，通过 `FEEDER_ID` 找到每个柜自己的馈线，再沿 `DMS_FEEDER_DEVICE -> SUBSTATION -> SUBCONTROLAREA` 生成目标，例如 `16781 -> JED-NTH-ABH-AH303-16781.sln.pic.g`。
-- 一个站级馈线总图中不同 RMU 可属于不同馈线，目标不再被根节点 `facID` 错误统一。
-- 站点跳转 Poke 继续只使用站名关键字，不使用 `facID`；`GRAPH_NAME` 仍不参与业务命名。
+---
 
+# v2.18.147
 
-## 站点跳转 Poke 目标名称明确为“对端变电站馈线总图”
+## 吉达馈线处理 / 图框添加：当前模板强制覆盖已有图框
 
-- 直接基于 v2.18.94 更新；站点跳转识别、Oracle 查询、JM2-J2 Poke 属性模板、RMU Poke 和处理报告逻辑均不改变。
-- 跳转类型文案从“站点跳转 Poke：跳转到对端变电站单线图”统一改为“站点跳转 Poke：跳转到对端变电站馈线总图”。
-- 帮助说明明确：`JED-CTL-DHN.sln.pic.g` 一类目标是变电站级馈线总图，即一个变电站下多条馈线集中展示的站级总图。
-- `DHN-40 → DHN → SUBSTATION.NAME → SUBAREA_ID → SUBCONTROLAREA.NAME → JED-CTL-DHN.sln.pic.g` 的业务规则不变；后缀和附近数字仍不参与目标名称。
+- “图框添加”现在把用户本次选择的模板视为唯一权威图框：处理前先删除可检测到的已有图框，再重新添加当前模板，不再把新图框叠加到旧图框上。
+- 可自动替换的旧图框包括：G File Studio 已标记的内置/自定义图框、旧版本未带标记但可按严格指纹识别的内置图框，以及可确认位于画布外围的未标记图框。
+- 对未标记外围图框的清理仅作用于通用绘图装饰元素（line/rect/Text/poke/image）；FeedLine、ConnectLine、BusDis 和设备类电气图元不进入该兜底删除集合，避免误删实时拓扑。
+- 吉达固定馈线处理在“图形边距调整”前显式启用旧图框强制移除，因此即使输入 G 已经带有非内置或与当前模板不同的图框，也不会再被“请先人工删除图框”阻断；最终阶段统一使用吉达页面当前选择的模板重新添加。
+- 独立“图形边距调整”模块默认行为不变：`force_remove_existing_frame=False`，仍保持原有保守识别/保护逻辑。只有吉达固定流程和“图框添加”的明确替换路径执行强制替换。
+- 图框标题、Draw/Approve/Issue、四边距、ID 分配、输出文件名和输出同名文件处理逻辑均保持原有规则。
 
-## v2.18.94 既有功能（继承）
+# v2.18.146
 
+## G 图形内容解析：CBreaker 作为权威馈线根
 
-## 站点跳转 Poke 属性模板改为 JM2-J2 参考对象
+- 所属馈线继续只允许顶部 `CBreaker(407)`、`Disconnector(408)`、`GroundDisconnector(409)` 三类设备查询 Oracle；下游任何设备均不查询 keyid/数据库关联。
+- `CBreaker(407)` 现在是权威馈线根：其数据库 `BAY_ID -> BAY.NAME -> SUBSTATION.NAME` 有效后，直接确定该分支馈线。
+- Disconnector/GroundDisconnector 仅作为一致性/回退证据；即使它们未关联或因历史数据指向旧 BAY，也只产生告警，不再清空已经由 CBreaker 确认的馈线。
+- 从有效 CBreaker 的非 Bus 侧沿真实 `ConnectLine / FeedLine / BusDis / device link/node_area` 完整遍历，多分支全部纳入，直到自然拓扑终点；所有可达下游设备直接继承同一 `FeederName`。
+- 仍禁止使用文件名、facID/facName、FeedLine 文字或空间距离补猜馈线。
 
-- 直接基于 v2.18.93 更新；RMU Poke 的识别、数据库命名、蓝色/Invisible 属性规则保持不变。
-- 站点跳转 Poke 单独使用用户提供的 `JED-CTL-AJWD-15.sln.pic(2).g` 中 `JM2-J2` 对应 Poke（id=17001493）作为属性模板。
-- 除每个目标对象自己的 `id/x/y/w/h`、数据库生成的 `ahref` 与 G File Studio 跟踪元数据外，其余 Poke 属性均完全复制 JM2-J2 参考对象。
-- 参考对象关键属性包括：`fc=100,100,100`、`fcc=#646464`、`lc=0,0,0`、`lcc=#000000`、`RectStyle=1`、`p_RectStyle=1`、`fm=1`、`ls=1`、`lw=1`，以及参考对象的全部 PlaneState/显示/事件相关属性。
-- 复用已有站点跳转 Poke 时也会按参考模板完整规范化；新增站点跳转 Poke 使用同一模板，并按实际站点标签生成自己的几何位置与尺寸。
-- 报告、页面、日志与帮助中的“站点条状 Poke”统一改名为“站点跳转 Poke”，避免把视觉形状误当成业务术语；识别算法本身不变。
-- `GRAPH_NAME` 仍不参与站点业务名称生成；站名查询仍为 `SUBSTATION.NAME → SUBAREA_ID → SUBCONTROLAREA.NAME`。
+# v2.18.145
 
-## v2.18.93 既有功能：Poke 矩形外观统一为 Invisible
+## G 图形内容解析：入口锚点部分关联也可建立馈线，确认后全下游继承
 
-- 直接基于 v2.18.92 更新，不改变 RMU/站点条状识别、数据库命名、ahref 规则或 Poke 报告逻辑。
-- 根据用户提供的工作 G 样例确认属性面板中的 “Rectangular appearance = Invisible” 对应 `RectStyle=0` 与 `p_RectStyle=0`。
-- 独立“Poke 跳转处理”维护的 RMU Poke 与站点条状 Poke，新增或复用时均强制同步 `RectStyle=0`、`p_RectStyle=0`。
-- Poke Line Color 继续保持蓝色：`lc=0,0,255`、`lcc=#0000ff`。
-- 新增 Poke 继续使用 `fm=0` / `ls=0` 的不可见点击区域模板；复用既有 Poke 时不改变其几何位置和 ahref 之外的业务定位逻辑。
-- 既有填充颜色字段可保留，但 Rectangular appearance 强制为 Invisible。
+- 所属馈线数据库查询仍然严格只允许每个 Bus 入口最近的三类设备：`CBreaker`→407 `breaker`、`Disconnector`→408 `disconnector`、`GroundDisconnector`→409 `grounddisconnector`。任何下游设备都不再查询 keyid 或数据库关联状态。
+- 三个入口设备中，只要至少一个成功解析出 `BAY_ID -> BAY.NAME -> SUBSTATION.NAME`，即可作为该分支馈线锚点；如果另外一个或两个入口也成功解析，则所有已解析入口必须指向同一 `BAY_ID`。已解析入口 BAY 冲突时，为防止串馈线，整条分支 `FeederName` 留空并告警。
+- 入口中一到两个设备未关联时仅告警，不再阻断已经由其他入口设备确认的馈线。只有三个入口设备全部未取得有效 BAY 时，该分支才保持空白并提示优先完成入口设备关联。
+- 一旦入口馈线确认，程序沿真实 G 拓扑一直向下遍历 `ConnectLine / FeedLine / BusDis / 设备节点` 到自然终点；RMU、Transformer、LBS、下游 CB 等全部直接继承同一 `FeederName`，其自身 keyid/数据库是否关联完全不参与馈线判断。
+- 保持 `Bus` 仅作为上游分支边界，不以 Bus 元数据判定馈线；不恢复文件名、facID/facName、标题文字或空间距离猜测。
+- 馈线根发现顺序改为确定性排序，日志中的 branch 标识稳定，便于现场排查。
+- 真实 `JED-CTL-AJWD.sln.pic(4).g` smoke：用户指出的 RMU `30640 / 30647 / 30652 / 30639 / 30641 / 30722 / 30629 / 30642 / 30666 / 30726 / 30643` 均处于同一 Bus-root 下游组件；仅提供该分支 CBreaker 一个有效数据库锚点时，11/11 均通过拓扑继承 `AJWD AH313`。
 
-## v2.18.92 既有功能（继承）
+其余 G File Studio 业务逻辑保持 v2.18.144 不变。
 
+# v2.18.144
 
-## AJWD 站点条状 Poke 识别修复
+## G 图形内容解析：Bus 入口三设备 + 全下游拓扑继承
 
-- 直接基于 v2.18.91 修复站点条状候选识别，不改变数据库命名、RMU Poke 或报告业务规则。
-- 站点条状名称支持 `JM2-J2 → JM2`、`5MR-23 → 5MR`，同时继续支持 `DHN-40 / BWD2-49 / SALAB-12 / FEL 03`。
-- 站名关键字允许数字开头，条状后缀允许字母数字组合；仍要求站名至少包含 2 个字母，避免 `Y-1 / Q-1` 等设备标签误判。
-- 长多段设计/设备文本（如 `V2-W-J-H-0017`）不再进入站点条状候选，仅有一个清晰站名段 + 一个尾段的标签才进入结构判定。
-- 已有非 RMU Poke 与 Text 几何覆盖仍为 HIGH 置信度主依据；背景颜色不作为必要条件。
-- 使用用户提供的 `JED-CTL-AJWD-15.sln.pic(1).g` 做真实样例回归：正确得到 5 个条状候选 `JM2-J2 / 5MR-23 / FEL 03 / BWD2-49 / SALAB-12`，不再把 `V2-W-J-H-0017` 作为候选。
+- 所属馈线不再扫描整张 G 中所有 407/408/409 元素。程序先把站内 `Bus` 当作馈线起点边界，将 Bus 从电气图中移除，再按 `ConnectLine / FeedLine / BusDis / link / node_area` 识别每个 Bus 下游真实分支。
+- 每个下游分支只选择距离 Bus 最近的一组 `<CBreaker>`、`<Disconnector>`、`<GroundDisconnector>` 作为馈线入口三设备；Oracle 只查询这三个入口 keyid。下游即使再次出现同类 XML 元素，也不再查询其 keyid 或数据库关联状态。
+- 三个入口设备继续使用正式 DBI 链：`keyid -> long2_to_long1/get_tab_no/get_col_no -> SYS_TABLE_INFO -> 407/408/409 -> BAY -> SUBSTATION`。三个入口必须全部有效且指向同一个 `BAY_ID`，才建立该分支馈线。
+- 一旦入口三设备同 BAY，该 Bus 下游连通分支一直到真实拓扑终点的全部设备直接继承 `SUBSTATION.NAME + BAY.NAME`，例如 `AJWD AH310`；RMU、Transformer、LBS、CB 以及其他下游设备均不再做数据库关联校验。
+- `Bus` 只用于切分馈线入口、防止沿公共母线横向串到旁边馈线；`BusDis` 始终是可穿越的 RMU 内部拓扑节点。
+- 拓扑构建在显式 `link/node_area` 之外增加保守几何补链：ConnectLine/FeedLine/ACLine 端点小间隙、端点到线段 T 连接、以及线端点落在电气设备边界内时补充连接。这样可覆盖现场总图中“视觉已连接但 reciprocal 引用缺失”的入口 CBreaker/GroundDisconnector。不会连接纯视觉对象，也不会把两条线的内部交叉点自动当电气连接。
+- 同位置存在旧/新重叠入口图元时，优先选择具有 `keyid` 的数据库关联图元，避免空 keyid 的视觉副本阻断馈线入口。
+- 如果入口三设备任一未关联或三者 BAY_ID 不一致，该分支 `FeederName` 留空并告警，但文件其他内容继续解析；仍禁止使用文件名、facID/facName、FeedLine 文字或空间距离猜馈线。
 
-## v2.18.91 既有功能（继承）
+其余 G File Studio 业务逻辑保持 v2.18.143 不变。
 
+# v2.18.142
 
-## Poke 跳转处理报告
+## G 图形内容解析：三锚点同 BAY 后才允许拓扑传播
 
-- 直接基于 v2.18.90 继续开发，不改变 RMU Poke、站点条状 Poke、数据库命名或共享 RMU 识别业务规则。
-- “Poke 跳转处理”每次成功执行新增稳定的 `poke-processing-report.html` 与 `poke-processing-report.csv`。
-- HTML 报告提供本次运行汇总：处理文件数、公共 RMU 识别总数、智能 RMU 数、RMU Poke 新增/更新/跳过数量、站点条状候选/成功解析/新增/更新/跳过数量，以及删除重复条状 Poke 数量。
-- 文件级汇总记录每个 G 的 facID、数据库解析得到的完整馈线业务名，以及该文件 RMU/站点条状 Poke 的处理结果。
-- 明细报告记录 RMU 柜名或站点条状原文、提取的站名关键字、数据库解析业务名、Poke ID、实际写入 ahref、识别置信度、识别依据和处理动作。
-- 所有“未加跳转”候选必须在报告中记录具体原因，例如数据库未找到/不唯一、缺少结构支撑、RMU 名称重复、无法唯一定位 RMU 柜名 Text、facID/数据库前置条件失败等。
-- Poke 页面“执行与日志”新增“打开 Poke 报告”按钮；完成后可直接打开最近一次 HTML 报告，并在日志中显示简要统计。
+- 馈线数据库查询严格只读取 G 中 `<CBreaker>`、`<Disconnector>`、`<GroundDisconnector>` 三类元素的 `keyid`；其他设备（包括 Transformer、RMU、LBS 等）的 `keyid` 不参与馈线数据库查询。
+- 三类 keyid 继续按 DBI 正式链路解析：`long2_to_long1 -> get_tab_no/get_col_no -> SYS_TABLE_INFO -> 407/408/409 设备表 -> BAY -> SUBSTATION`。
+- 一个 BAY 只有同时存在 BREAKER(407)、DISCONNECTOR(408)、GROUNDDISCONNECTOR(409) 三类有效锚点，且三类锚点全部解析到同一 `BAY_ID`，才被认定为有效馈线根。单个 Breaker 或两类设备不再足以给下游赋馈线。
+- 有效三锚点建立后，仅沿 G 的真实 `link/node_area` 拓扑传播给其下游设备。未关联的 407/408/409、不同 BAY 锚点、站母线和拓扑冲突均作为传播边界；没有可靠路径的设备直接留空。
+- 主迁移表中的 `FeederName` 改为组合显示，如 `AJWD AH327`；删除主表中 FeederStation/FeederBayID/Confidence/Evidence/Anchor/Cluster/Conflict 等冗余馈线列，详细信息移到新的 `馈线关联审计` Sheet。
+- 未满足三锚点同 BAY 时只警告并留空馈线字段，不影响 G 图元、设备、RMU、名称等其他解析结果。
 
-# G File Studio v2.18.90
+其余 G File Studio 业务逻辑保持 v2.18.141 不变。
 
-## Poke 跳转独立模块 + 站点条状跳转
+# v2.18.141
 
-- 直接基于 v2.18.89 继续开发，将 Poke 业务从“环网柜处理”抽离为独立“Poke 跳转处理”模块；环网柜页面不再持有 Poke UI 或数据库调用。
-- RMU Poke 必须复用现有公共 `identify_rmus(...)` 识别结果和同一套 RMU 识别配置，避免维护第二套环网柜识别逻辑；以后公共 RMU 识别规则更新时，独立 Poke 模块同步生效。
-- RMU Poke 继续读取当前 G 根节点 `facID`，通过 `DMS_FEEDER_DEVICE → SUBSTATION → SUBCONTROLAREA` 的业务字段生成完整馈线前缀，再拼已识别 RMU 名，例如 `JED-NTH-ABH-AH303-34661.sln.pic.g`。`facID` 为空时明确提示先关联馈线。
-- 新增“站点条状 Poke”：从 `DHN-40 / BWD2-49 / SALAB-12 / FEL 03` 等标签只提取站关键字（如 `DHN`），精确查询 `SUBSTATION.NAME`，再通过 `SUBAREA_ID → SUBCONTROLAREA.NAME` 得到完整站名，例如 `JED-CTL-DHN`，最终跳转 `JED-CTL-DHN.sln.pic.g`；标签后缀数字和附近括号数字均不参与命名。
-- 站点条状识别不依赖固定灰色背景。优先复用与标签几何重叠的既有 `<poke>`；无 Poke 时使用线路末端/紧邻背景形状 + Text 几何关系作为候选，并必须通过 Oracle 唯一站名匹配后才自动处理。
-- 同一条状标签若存在多个相关 Poke，自动去重只保留一个；没有 Poke 时自动新增；已有 Poke 尽量保留原位置、尺寸和填充样式。
-- 所有由该模块生成或复用的 RMU / 站点 Poke 均将 Line Color 统一设置为蓝色：`lc=0,0,255`、`lcc=#0000ff`；不强制修改背景填充颜色。
-- 站点、馈线完整名称只来自 Oracle 业务字段，不使用 `GRAPH_NAME` 或源 G 文件名反推。
+## G 图形内容解析：按 DBI keyid 解码链建立馈线锚点
 
-# G File Studio v2.18.89
+- 所属馈线只处理业务 G 中 `<CBreaker>`、`<Disconnector>`、`<GroundDisconnector>` 三类元素；不查询其他设备类型。
+- G `keyid` 不再直接与设备表 `ID` 比较。程序先执行 `long2_to_long1(keyid)` 得到真实 `device_id`，并读取 `get_tab_no(keyid)` / `get_col_no(keyid)`。
+- `get_tab_no` 必须分别为 407/408/409，并通过 `SYS_TABLE_INFO.TABLE_NAME_ENG` 校验为 `breaker` / `disconnector` / `grounddisconnector` 后才允许作为馈线锚点。
+- 使用解码后的 `device_id` 查询三张设备表，取得数值 `BAY_ID`；再查询 `BAY.ID`，以 `BAY.NAME` 作为馈线名称，并通过 `BAY.ST_ID -> SUBSTATION.ID` 取得厂站名称。
+- 有效数据库锚点只沿 G 的真实 `link/node_area` 电气拓扑传播。未关联、解码失败、表号不匹配、设备不存在、BAY_ID 为空、BAY/SUBSTATION 缺失的 407/408/409 设备均成为拓扑硬阻断点，其下游所属馈线留空并提示用户优先完成关联。
+- 整张 G 没有任何有效 407/408/409 锚点时，只停止本文件的“所属馈线分析”并告警；设备/图元/RMU/名称等其他 G 内容仍继续解析。
+- 继续禁止用文件名、facID/facName、FeedLine 文字、顶部标题或空间距离猜测所属馈线。
+- 运行日志新增 `keyid解码 / 表号校验 / 设备表匹配 / BAY_ID有效 / BAY匹配 / 厂站匹配 / 有效锚点 / 未解析` 逐阶段统计，并输出最多 3 条真实锚点链示例。
 
-## 智能环网柜 Poke 改为数据库自动命名
+其余 G File Studio 业务逻辑保持 v2.18.140 不变。
 
-- 直接基于 v2.18.88 继续开发，保留数据库首次默认配置、语言下拉框滚轮保护、图元标准人工上传与 v2.18.85 进度平滑等现有功能。
-- “环网柜处理 → 智能环网柜 Poke 跳转”移除用户手工输入 ahref 文件名模板。
-- 程序读取每个 G 根节点 `facID`，通过公共 Oracle 数据库按 `DMS_FEEDER_DEVICE.ID → ST_ID → SUBSTATION.ID → SUBAREA_ID → SUBCONTROLAREA.ID` 查询业务名称。
-- Poke 完整馈线名前缀只使用 `SUBCONTROLAREA.NAME + SUBSTATION.NAME + DMS_FEEDER_DEVICE.NAME`，不使用 `GRAPH_NAME` 或源文件名拼凑。示例：`JED-NTH + ABH + AH303 → JED-NTH-ABH-AH303`。
-- 再与既有 RMU 基础识别得到的柜名组合，例如 `34661 → JED-NTH-ABH-AH303-34661.sln.pic.g`。Poke 仍只覆盖识别到的柜名 Text，不另写 RMU 识别规则。
-- `facID` 为空时，本文件 Poke 被跳过并明确提示“请先关联馈线，再执行智能环网柜 Poke 跳转”；其他组合、改色、柜名和 RMU 汇总继续执行。
-- 若 `G.facName` 与数据库 `DMS_FEEDER_DEVICE.NAME` 不一致，只记录告警；Poke 名称以数据库业务字段为准。
+# v2.18.140
 
-# G File Studio v2.18.87
+## G 图形内容解析：407/408/409 精确 keyid 数据库查询修正
 
-## 中英文切换禁用滚轮误触
+- 所属馈线数据库锚点严格只读取业务 G 中 `<CBreaker>`、`<Disconnector>`、`<GroundDisconnector>` 三类 XML 元素的 `keyid`。
+- 固定映射为 `BREAKER`（DBI 407）、`DISCONNECTOR`（408）、`GROUNDDISCONNECTOR`（409），不查询其他设备表。
+- 18 位及以上 keyid 不再转 Python 整数；SQL 改为 `TO_CHAR(ID)` 与字符串 keyid 精确匹配，避免 Oracle NUMBER/VARCHAR 或驱动类型转换导致 G 中明明有 keyid 但查询结果为 0。
+- 每次文件解析在运行日志直接显示三张表各自的 `G keyid 数 / DB匹配数 / 有效 BAY_ID / 未匹配数 / BAY_ID无效数`；未匹配时额外显示最多 3 个实际 keyid，便于现场直接核对数据库。
+- 只要三类设备查到有效 `BAY_ID`，其站/馈线身份作为唯一 DB Anchor，并沿 G 的真实 `link/node_area` 拓扑传播给下游设备。
+- 三类设备自身没有 keyid、数据库无记录、或 BAY_ID 为空/无法解析时，该设备继续作为拓扑硬阻断点：给出警告，并停止分析其下游所属馈线；其他 G 内容解析、设备识别和报告生成不受阻断。
+- 不恢复任何空间距离、文件名、facID/facName 或 FeedLine 文字猜测所属馈线的逻辑。
 
-- 直接基于 v2.18.86 继续修改，保留 Oracle 数据库公共模块以及此前全部功能。
-- 左下角“语言 / Language”下拉框改为统一的 `WheelSafeComboBox`：下拉列表未展开时，鼠标滚轮不会切换中文/English，滚轮事件继续交给页面/父级滚动区域。
-- 用户仍可通过点击展开下拉框或键盘主动切换语言；下拉列表展开后仍允许滚轮浏览选项。
-- 本次仅修改语言选择器的交互保护，不改变 i18n 翻译逻辑、数据库模块或任何 G 文件业务处理逻辑。
+其余 G File Studio 业务逻辑保持 v2.18.139 不变。
 
-# G File Studio v2.18.86
 
-## 公共 Oracle 数据库模块（基于 v2.18.85）
-
-- 本版本直接以 **v2.18.85** 为代码基线继续开发，完整保留 v2.18.85 的图元标准检查进度平滑修复；不回退到 v2.18.82，也不包含已放弃的 v2.18.83/v2.18.84 服务器自动图元发现方向。
-- 新增独立“数据库”公共页面，提供 Oracle 用户名、密码、服务器地址、端口、Service Name、连接测试、配置保存和运行日志。
-- 默认非敏感连接参数：用户 d5000、主机 jeddahprpczdb01、端口 1521、Service Name jedup8000；数据库密码不写入源码，Windows 下保存时使用当前用户 DPAPI 加密。
-- 新增共享 `OracleDatabaseService`，后续需要数据库的业务模块统一复用该服务；公共查询接口默认仅允许 SELECT / WITH。
-- 数据库模块不引用图元标准检测引擎；图元标准检测仍只允许“图元标准检查”和“吉达批处理”两个业务入口使用。
-
-# G File Studio v2.18.85
-
-## 图元标准检查进度平滑
-
-- 本版本直接基于 v2.18.82 修改，不包含 v2.18.83 / v2.18.84 的服务器自动查找图元逻辑。
-- “检查图元标准”和“纠正标准问题”继续保持固定 0~100% 百分比样式。
-- 后台线程的真实进度只更新目标值，UI 以固定节奏单调追赶目标值，避免大量 queued progress 信号造成进度条闪烁、跳跃或倒退。
-- 仅在“图元标准检查”页面启用该显示平滑；其他模块原有进度行为不改变。
-- 未修改图元标准匹配、人工上传标准 G、devref / w×h / AlignCenter / Pins 判断、纠正规则或吉达批处理业务逻辑。
-
-# G File Studio v2.18.82
-
-## 图元标准进度条样式统一
-
-- “检查图元标准”和“纠正标准问题”从开始到完成始终保持带百分比的确定型进度条。
-- 移除该页面在约 0.9 秒无新回调时自动切换为动态 busy 条的行为，因此不会再出现中途变成一整块移动绿色条、随后又恢复百分比的视觉跳变。
-- 继续使用处理器真实的细粒度进度回调，不改变图元识别、标准比较、纠正或报告逻辑。
-
-# G File Studio v2.18.82
-
-## 图元标准检查 / 纠正实时进度
-
-- 修复单个较大 G 文件执行“检查图元标准”时，进度条长时间停在某个百分比、完成后突然跳变的问题。处理器现在按 XML 读取、RMU/设备检查、标准图元比较、报告生成等阶段持续回报细粒度进度。
-- 修复“纠正标准问题”在 62%~70% 左右进入自动复查后看起来卡住的问题。纠正阶段与 post-check 复查阶段现在使用连续映射的同一条进度，不再整段等待后一次性跳到 100%。
-- 对 RMU 识别等受黄金基线保护、内部无法安全插入百分比回调的耗时阶段，进度条超过约 0.9 秒没有新的精确百分比时会自动切换为动态“处理中”状态；一旦收到下一条真实进度立即恢复准确百分比。这样不会伪造进度，也不会让界面看起来冻结。
-- 进度更新继续由后台线程通过 Qt Signal 发送，UI 主线程只负责刷新进度条；不修改图元标准检查、RMU 识别、devref/几何判定、纠正输出或业务规则。
-- 黄金基线保护保持不变：`rmu_identification_engine.py` 未修改，现有 v2.17.60 业务逻辑锁验证继续通过。
-
-
-## 图元标准锁定、人工绑定与标准来源边界
-- 在“图元标准”表格操作区新增“锁定当前版本 / 解锁当前版本”。ACTIVE 标准锁定后，表格编辑、SMART/NORMAL 共用选择、上传/替换标准 G、添加/删除自定义项、保存、删除标准以及恢复历史版本全部禁止；检查/生成 workspace 纠正副本仍可执行，因为不会改动标准本体。锁定状态持久化，重新打开程序仍保持。
-- 服务层同步增加锁保护，避免绕过 UI 修改已锁定的 ACTIVE 标准；锁定/解锁本身不创建新 Profile 版本，解锁后真正修改标准时才按原版本机制生成新的 ACTIVE 版本。
-- 解除上传时的“图元类型不匹配 / SMART-NORMAL 文件名推断”硬阻断。设备角色由用户当前选中的表格行明确绑定；上传文件名、SMART/NORMAL 字样以及解析到的 XML 元素只作为参考信息，不再自动改绑或拒绝绑定。
-- 表格将“XML 元素”明确为“检查对象 XML”，将“匹配属性/当前旧图元匹配值”改为“设备定位规则/定位条件”，用于说明程序如何在业务单线图中找到该角色，而不是说明如何从标准 G 猜角色。上传 G 的解析 XML 与默认检查对象不一致时，仅在状态中显示“XML参考不同”，不阻止保存。
-- 标准建立流程彻底固定为“用户上传权威图元 G → 明确绑定设备角色 → 保存/锁定 → 检查业务单线图”。业务单线图不再建立/持久化待确认图元目录，也不会用于标准候选、devref、尺寸、AlignCenter 或 pin 的学习/补全；检查时只解析业务 G 以定位设备实例并与已上传标准比较。
-- SMART / NORMAL 共用标准逻辑保持：同一个标准 G 可同时服务两个检查范围，特别适用于没有智能/非智能版本区分的接地刀闸。
-- 图元标准文件列继续只显示文件名，devref/XML/主体 ID 等技术信息保留在悬浮提示和内部标准记录中。
-
-# G File Studio v2.18.76
-
-- 修正“图元标准检查”中同一个 `CBreakerDis` 上传文件被自动引用到 SMART/NORMAL、LBS/Circuit Breaker 多个角色的问题。标准绑定改为严格“一次上传 = 当前选中的一个设备角色”，不会再因为 XML 元素相同而自动复制到其他行。
-- SMART 与 NORMAL、LBS 与 Circuit Breaker 继续作为独立标准。对于 `Circuit_Breaker_NON-SMART`、`Circuit_Breaker_SMART`、`Load_Breaker_Switch_NON-SMART`、`Load_Breaker_Switch_SMART` 等明确文件名，上传时增加角色识别保护；选错行会直接提示，不会错误绑定。
-- 标准上传改为先选中标准定义表中的设备角色，再打开一次单文件选择器选择一个真实图元定义 G；移除上传前额外确认窗口，不再出现“确认窗口 + 文件选择窗口”的两步操作。
-- 支持“部分标准”：不再强制一次配置 6 个 RMU 基础角色。只上传并保存 1 个角色也可成为 READY 标准，执行时只检查已配置角色；例如只上传 NORMAL / Circuit Breaker，就只用该文件检查非智能 RMU 的 Q 设备。
-- 用户上传的图元定义 G 本体继续是唯一权威来源：devref、XML 主体、w/h、AlignCenter、pin/连接锚点以及标准文件 SHA256 均取自该文件。被检查的业务单线图 G 只作为待检对象，不参与 devref、尺寸、AlignCenter 或 pin 标准的生成。
-- 检查引擎对未配置的 SMART/NORMAL/LBS/Breaker/接地刀闸角色直接跳过，不再因为缺少其他角色阻止当前已上传标准执行；纠正时仍保持既有“生成 workspace 输出副本、不覆盖源 G”的安全边界。
-
-# G File Studio v2.18.75
-
-- 修正 v2.18.74 “权威标准库”只完成持久化门禁、但编辑界面仍残留旧样本学习语义的问题：图元标准编辑现在只显示用户实际上传/已持久化的标准图元 G，不再把历史业务 G 扫描得到的 devref 候选显示成可用标准。
-- “标准定义”增加直接可见的“上传 / 更新标准图元 G”入口。上传后直接解析图元文件本体的 devref、XML 元素、主体 ID、w/h、AlignCenter、pin 坐标、pin id/index；业务单线图不参与这些标准字段的生成。
-- 保存 ACTIVE 标准时，6 个 RMU 基础角色必须分别绑定到用户上传或已持久化的标准图元记录；RMU 电气设备标准必须包含可用 pin。可一次只更新某个角色，其他角色继续复用已保存的标准文件。
-- 检查/纠正执行路径在存在持久化标准文件时，几何模板只从用户上传图元 G 重建；被检查业务 G 不再作为几何回退来源，因此不会因不同电脑扫描历史不同而产生“标准漂移”。
-- 用户上传图元的元数据会覆盖旧 Profile 中同 devref 的历史样本目录/几何数据；报告与日志继续记录标准文件及 SHA256/整体 Standard Fingerprint，便于跨机器核对。
-- 老版本中“6/6 角色已有 devref、但标准图元文件=0”的 Profile 会保持 NOT READY，并且不再显示这些旧学习 devref 为可执行标准；用户只需首次上传真实标准图元 G 并保存一次，之后继续使用持久化标准库。
-
-# G File Studio v2.18.74
-
-- “图元标准检查”改为权威标准图元库模式：业务单线图不再允许作为标准来源，必须由用户通过“标准管理 → 上传标准图元 G”明确上传真实图元定义 G 文件。
-- 6 个 RMU 基础角色（SMART/NORMAL 的 LBS、Circuit Breaker、接地刀闸）必须全部绑定标准图元；同一 ACTIVE Profile 中一个设备角色只能使用一个标准图元文件。上传文件会校验图元主体、XML 元素、w/h、AlignCenter、pin 等定义。
-- 标准图元在保存 Profile 时自动复制到 Windows 用户数据目录下的持久标准库，不再依赖程序 ZIP/EXE 所在目录；升级或重新解压新版程序不会删除用户标准。原始上传文件之后删除也不影响已保存标准。
-- Profile 保存每个标准图元 SHA256，并生成包含“角色绑定 + 标准文件指纹”的整体 Standard Fingerprint；标准文件丢失、被修改或绑定不完整时，检查/纠正按钮不可执行。
-- 同一图元可通过 Profile 历史版本保留多个版本；更新标准时创建新的 ACTIVE 版本，旧版本继续 ARCHIVED。下次启动默认恢复上次使用的 ACTIVE Profile。
-- 业务 G 中发现的未知 devref 只能作为检查线索，不能直接“学习/加入”标准；如需纳入，必须先上传对应真实图元 G，避免错误业务图反向污染标准。
-- 图元标准 HTML 报告与运行日志增加标准指纹，便于不同电脑确认是否使用完全相同的标准库。
-- 运行生成的 G、HTML/CSV 报告和日志继续位于 workspace/runs，沿用现有 30 天自动清理；标准图元/Profile 位于独立持久目录，不参与运行结果清理。
-
-# G File Studio v2.18.73
-
-- 精简“RMU 基础识别与汇总”：固定识别全部有效 RMU，不再显示智能/非智能范围和固定分类开关。
-- 新增“智能 RMU 标记字符”配置，默认 `SMART, SMR`，支持 `NEWSMART`、`SMART-SE` 等任意完整 Text；全图扫描后每个标记只唯一归属最近有效 RMU。
-- 智能标记自动从 RMU 柜名候选中排除；原“柜名排除字符串”继续保留且按完整文本严格排除。
-- Poke、智能 RMU 外框等后续能力继续复用基础识别结果；每次运行仍固定生成 RMU 汇总 CSV / HTML。
-
-# G File Studio v2.18.72
-
-- 将“RMU 基础识别与汇总”移动到环网柜处理页面最前方，作为所有后续 RMU 功能的固定前置能力。
-- 基础 RMU 识别固定开启且不可关闭；智能 RMU（SMART / SMR）与非智能 RMU 都固定纳入识别范围，智能/非智能分类固定开启。
-- 每次环网柜处理强制生成 RMU 汇总 CSV / HTML 报告；组合、外框颜色、Poke、柜名处理、台账对比等后续功能统一复用该识别结果。
-- 柜名方向和柜名排除字符串仍保留为可配置识别条件；其他既有 RMU 算法与处理规则不变。
-
-# G File Studio v2.18.71
-
-- 将独立“智能环网柜 Poke 跳转”命名规则统一为用户指定的完整 ahref 文件名模板；单文件与批处理不再区分两套命名模式。
-- 新版执行路径只替换两个变量：`{FACNAME}` 从当前 G 文件根节点 `facName` 读取，`{RMU}` 使用既有 `identify_rmus()` 识别出的智能环网柜名称；其余文件名内容全部由用户直接指定。
-- `{RMU}` 为必填占位符，可位于文件名任意位置；`{FACNAME}` 为可选占位符。单文件已知 `AH303` 时可直接写死，例如 `JED-NTH-ABH-AH303-{RMU}-JED.sln.pic.g`；批处理可使用 `JED-NTH-ABH-{FACNAME}-{RMU}-JED.sln.pic.g`，每个 G 文件分别读取自己的 `facName`。
-- 同时兼容独立字段 `FACNAME` / `RMU` 的简写形式；不再从源 G 文件名解析 FEEDER、区域、站点，也不再执行主图文件名格式校验。
-- 模板使用 `{FACNAME}` 而某个 G 根节点 `facName` 为空时，仅跳过该文件的 Poke 并告警；RMU 组合、颜色、信息汇总和同批其他文件继续处理。RMU 识别、SMART/SMR 唯一归属、Poke 柜名范围与去重逻辑不变。
-
-# G File Studio v2.18.69
-
-- 将“智能环网柜 Poke 跳转”从“环网柜图元处理”的增强选项中拆出，作为“环网柜处理”页面下的独立模块；RMU 识别、组合、外框颜色、channel_status 和 RMU 信息汇总逻辑不变。
-- 新增“单文件 / 固定详情图规则”：该模式完全不检查源 G 文件名。可输入 `JED-NTH-ABH-AH303-RMU.sln.pic.g`、`JED-NTH-ABH-AH303-{RMU}.sln.pic.g`、真实样例 `JED-NTH-ABH-AH303-34661.sln.pic.g`，或固定前缀 `JED-NTH-ABH-AH303`；程序为每个已识别智能 RMU 生成对应 ahref。
-- 新增“批处理 / 从主图文件名提取 FEEDER”：只有该模式校验源文件名，要求 `.sln.pic.g` 前最后一段为纯数字；例如 `...-03.sln.pic.g` 提取 `03`。批处理规则可只填固定部分 `JED-NTH-ABH-AH3`，自动得到 `JED-NTH-ABH-AH303-<RMU>.sln.pic.g`，也可使用 `{FEEDER}` / `{RMU}` 模板。
-- 批处理中单个文件无法提取 FEEDER 时，仅跳过该文件的智能 RMU Poke 并记录告警；不会中断同批其他文件，也不影响当前文件的 RMU 组合、外框颜色、柜名、信息汇总等其他处理。
-- SMART/SMR 全局唯一归属、Poke 只包柜名、已有 Poke 复用、多个相关 Poke 自动去重等既有业务规则保持不变。
-
-# G File Studio v2.18.68
-
-- 智能 RMU Poke 的批处理命名改为“每个主 G 文件独立解析”：例如 `...-03.sln.pic.g` 生成 `...-AH303-<RMU>.sln.pic.g`，`...-12.sln.pic.g` 独立生成 `...-AH312-<RMU>.sln.pic.g`，不会再让一个固定前缀误套整个目录。
-- 自动模式仍严格要求主图文件名符合 `区域-区域-站点-馈线号.sln.pic.g`；单个文件不合规时只跳过该文件的智能 RMU Poke 并记录明确告警，不再使该 G 文件整体失败，也不影响同批其他文件继续处理。
-- 环网柜处理页面将旧“前缀/样例”输入改成两种明确模式：默认“自动按每个主图文件名生成（推荐）”；可选“自定义模板”。
-- 自定义模板支持 `{region1}`、`{region2}`、`{station}`、`{feeder}`、`{rmu}`，并强制包含 `{rmu}`，避免一个主图中多个智能 RMU 跳转到同一个详情图。示例：`{region1}-{region2}-{station}-AH3{feeder}-{rmu}.sln.pic.g`。
-- RMU 识别、SMART/SMR 唯一归属、Poke 柜名范围、重复 Poke 去重、外框改色、组合、信息汇总以及其他模块逻辑均未调整。
-
-# G File Studio v2.18.67
-
-- 智能 RMU Poke 的 `ahref` 不再依赖 G 根节点 `facName`。默认严格从主图文件名解析：`区域-区域-站点-馈线号.sln.pic.g` → `区域-区域-站点-AH3+馈线号-RMU名称.sln.pic.g`。例如 `JED-NTH-ABH-03.sln.pic.g` + RMU `34661` → `JED-NTH-ABH-AH303-34661.sln.pic.g`。
-- 主图文件名不符合该规范时，未提供人工覆盖的 Poke 处理会直接报错并使该文件处理失败，不生成猜测的 `ahref`。
-- 环网柜处理页面新增可选“Poke 详情图前缀/样例”：可输入 `JED-NTH-ABH-AH303`，也可直接粘贴一个完整样例 `JED-NTH-ABH-AH303-22522.sln.pic.g`；程序只提取前缀，再为当前主图内每一个智能 RMU 分别追加其柜名。
-- 一个主图含多个智能 RMU 时只需一个前缀/样例；例如会分别生成 `...-22522.sln.pic.g`、`...-34661.sln.pic.g`、`...-40597.sln.pic.g`。
-- RMU 识别、SMART/SMR 全局唯一归属、Poke 只包柜名、重复相关 Poke 只保留一个，以及其他处理模块逻辑均保持不变。
-
-# G File Studio v2.18.66
-
-- 统一智能 RMU 标记识别：`SMART` 与 `SMR` Text 现在在整张 G 的有效 RMU 集合中做全局扫描，不再要求文字完全落在柜框内部。
-- 每一个 SMART/SMR 标记只会唯一归属到一个最近 RMU：先比较标记中心到 RMU 外框的距离，再比较到 RMU 中心的距离；如果两项仍完全相同则判为异常歧义并告警跳过，绝不把同一个标记同时归属给两个 RMU。
-- 保留已有 SMART 图元 devref 的兼容回退；可见 SMART/SMR 文字的归属则统一以新的全局唯一映射为准。
-- RMU 信息汇总、智能 RMU Poke 以及独立 RMU 页面中复用 `identify_rmus()` 的功能会自动共享同一份智能柜识别结果；其他业务逻辑未调整。
-
-# G File Studio v2.18.65
-
-- 修复 SMART RMU 外框改色漏判：独立“环网柜处理”的 SMART 外框颜色现在直接复用 RMU 信息汇总 `identify_rmus()` 的智能柜识别结果，不再要求 SMART Text 的整个文本框必须完全落在 RMU rect 内；因此像 30834 这种 SMART 文字边界仅超出外框 1 px 的柜体也会正确改色。旧调用保持原默认行为。
-
-- 环网柜处理页面移除 SMART/SMR 外框的“线型”下拉控件。RMU 外框增强继续只修改颜色；基础处理中的 FeedLine/ConnectLine/BusDis/Bus 线型功能保持不变。
-
-- “环网柜处理”新增“为智能环网柜添加 / 更新 Poke 详情图跳转”。该功能不自行判断 RMU，严格复用现有 `identify_rmus()` 的柜体、柜名及 SMART/SMR 智能分类结果。
-- 仅对已识别且柜名唯一的智能 RMU 创建/更新 Poke；普通 RMU 不处理，柜名缺失/重复、Layer 无法定位等不安全情况只告警并跳过。
-- Poke 点击范围取“RMU 外框 + 已识别柜名 Text”的几何并集，保证覆盖整个环网柜及其名称；Poke 放在 Layer 后层，柜名和设备保持在其上方。
-- 跳转目标文件名按真实样本规则自动生成：`主图前缀 + facName + RMU名称 + .sln.pic.g`。例如 `JED-NTH-ABH-03.sln.pic.g`、`facName=AH303`、RMU `34661` → `JED-NTH-ABH-AH303-34661.sln.pic.g`。
-- 复用用户已验证的 Zenon Poke 跳转属性（`ahref`、`switchapp=1`、`switchappflag=1`、`p_ShowModeMask=3` 等）；新增 Poke 使用不可见样式 `fm=0 / ls=0`，并分配不冲突的 `17xxxxxx` ID。
-- 已存在相同 `ahref` 的 Poke 不重复创建，而是更新目标属性、点击范围和后层顺序；重复运行保持幂等。
-- 用户真实 `JED-NTH-ABH-03.sln.pic(6).g` 验证：RMU 识别 17 个，其中智能 RMU 5 个；已有 34661/40597 两个 Poke 被更新，另外 3 个智能 RMU 自动新增 Poke；与“组合所有环网柜”同时启用时仍成功重建 17 个 RMU Merge 并写出 G。
-- 本次功能仅通过独立“环网柜处理”页面显式开关启用；基础处理页面、图元标准检查、同类图元升级和吉达馈线批处理均不自动启用该功能。
-
-# G File Studio v2.18.61
-
-- 按用户要求从“环网柜处理”页面删除“删除带 Bus 的环网柜外框，并将最近标题放到母线上方”功能。
-- 仅移除 RMU 页面复选框、旧配置读取/保存和该页面向 `BasicSettings` 传入的执行参数；该功能不会再通过“环网柜处理”触发。
-- “基础处理”中原有同名能力、吉达馈线批处理中的既有 Bus 外框/标题处理，以及底层引擎均保持不变。
-- RMU 识别、组合、SMART/SMR、channel_status、柜名/柜型、RMU 信息汇总及台账对比逻辑均未修改。
-
-# G File Studio v2.18.60
-
-- 按用户要求移除“环网柜处理 → 执行与日志”中的“打开图元处理报告”按钮。
-- 仅删除该按钮、按钮状态联动和对应打开入口；“打开 RMU 汇总报告”“打开台账对比报告”“打开本次运行目录”等其他按钮保持不变。
-- 环网柜图元处理报告的 CSV/HTML 生成逻辑仍保留，不修改 RMU 识别、组合、SMART/SMR、柜名/柜型、输出 G 或其他业务处理逻辑。
-
-# G File Studio v2.18.59
-
-- “环网柜处理 → 组合所有环网柜”改为直接复用现有“RMU 信息汇总”识别器 `identify_rmus()`，不再由组合引擎自行判断哪些 `rect` 是 RMU。
-- RMU 信息汇总仍按现有规则确认柜体：候选 `rect` 必须满足有效几何且框内同时存在 `BusDis + CBreakerDis + ZhaiWaiJieDiDaoZha`；柜名、Y/Q 柜型、devref 交叉校验、SMART/SMR 等既有识别逻辑保持不变。
-- 独立 RMU 组合现在先取得信息汇总返回的精确 `rect_id` 集合；如存在旧 Merge，彻底取消组合时只对这批已确认 RMU 外框执行置底；随后也只对同一批 `rect_id` 重建 Merge。
-- 即使没有勾选“启用 RMU 信息汇总”，点击“组合所有环网柜”也会在内存中调用同一个只读识别器取得柜体集合，但不会因此额外生成 RMU 汇总报告。
-- 为兼容其他历史调用，`group_rmu_tree()` 默认旧行为和既有辅助识别函数仍保留；本次只改变独立“环网柜处理”安全重建路径的识别来源。
-- 使用用户真实 `JED-NTH-ABH-12.sln.pic(8).g` 验证：RMU 信息汇总识别 **38 个**柜体，组合模块收到同样 **38 个 rect ID**，最终重建 **38 个 Merge**，成功写出新 G。
-
-# G File Studio v2.18.58
-
-- 修复“环网柜处理 → 组合所有环网柜”在包含图框/标题栏辅助 `rect` 时误判组合归属并整文件失败的问题。
-- 根因：旧组合引擎把 Layer 下所有直属 `<rect>` 都当成环网柜候选；内置图框会用多个完全重叠、同尺寸的 `rect` 绘制信息栏，导致例如 Text ID `8001589` 同时落入多个等面积 rect，触发“无法唯一确定组合归属”异常。
-- 独立“环网柜处理”页面现启用严格 RMU 外框模式：只有框内同时包含 `BusDis + CBreakerDis + ZhaiWaiJieDiDaoZha` 的 rect 才能成为环网柜 Merge owner；图框 title/info 等辅助 rect 继续保留在 Layer，不参与 RMU 分组。
-- 分组成员规则保持不变：真正 RMU 框内的其他直属图元仍按完整包含关系进入对应 Merge；ConnectLine 等伸出框外的图元仍不组合。
-- 该严格模式只由独立“环网柜处理”页面的安全重建路径启用；通用 `group_rmu_tree()` 默认行为、基础处理、图元标准检查、同类图元版本升级及吉达馈线批处理均保持原逻辑。
-- 修复后即使原文件没有旧 Merge，也会正常识别真实 RMU、生成 Merge 并写出新的 G 文件。
-
-# G File Studio v2.18.57
-
-- “环网柜处理 → 组合所有环网柜”改为安全重建模式：**仅当当前 G 文件已经存在 Layer 直属 `<Merge>` 时**，先复用“基础处理 → 图形组合处理”的“彻底取消图形组合”能力删除全部旧 Merge，再根据当前图元几何重新组合环网柜。
-- 这样不会再让历史 Merge 的范围、`mergesize`、成员顺序或旧组合方式参与新一轮环网柜分组，可避免旧组合与当前图元不一致时的重叠、成员解析和重复组合问题。
-- 如果当前文件没有任何 Merge，不执行预清理，直接沿用原“组合所有环网柜”流程。
-- 此行为只由独立“环网柜处理”页面启用；“基础处理”页面、图元标准检查、同类图元版本升级、吉达馈线批处理及其他业务逻辑均保持 v2.18.56 状态。
-
-# G File Studio v2.18.56
-
-- 基础处理页面移除旧“连接点修复”模块及其执行入口，避免与“图元标准检查 → 纠正标准问题”的 Pin/锚点纠正能力重复或产生职责冲突。
-- 底层历史 connection engine / processor 保留不动，其他基础处理、同类图元版本升级、图元标准检查及吉达馈线批处理业务逻辑均未修改。
-- 基础处理帮助与顶部说明同步移除旧连接点修复入口说明。
-
-# G File Studio v2.18.55
-
-## 本次修改
-
-- 修复“基础处理 → 同类图元版本升级”对真实 NORMAL Circuit Breaker 的误阻断。
-- v2.18.54 只支持“pin index 完全一致”或“pin id 集合完全一致”两种自动端口映射；当新版同时重编号 index 与 id 时会阻断。
-- 本次新增严格的第三层端口映射：当 index/id 都无法对应时，按每个 pin 相对 `AlignCenter` 的唯一几何方向建立 OLD→NEW 端口对应。
-- 只有每个方向都唯一且 OLD/NEW 的方向集合完全一致时才自动放行；同一侧存在多个 pin、中心 pin、方向集合变化等有歧义场景仍然阻断，不猜测。
-- 已验证用户真实图元：OLD `28×28 / AlignCenter 12,14 / pin index 2,3 / id 18000002,18000003` → NEW `34×38 / AlignCenter 17,19 / pin index 6,7 / id 18000003,18000004`，正确识别为“上端→上端、下端→下端”。
-- 使用真实 `JED-NTH-ABH-12.sln.pic(7).g` 回归：25 个旧 NORMAL CB 可建立升级规则，50 条连接关系可处理，0 skipped / 0 warnings。
-- “图元标准检查”保持 v2.18.53 现有检查/纠正逻辑不变。
-- **吉达馈线批处理流程、步骤和两个核心源文件保持 v2.18.54 原样，不做任何修改。**
-
-## 基线
-
-- 直接基于 v2.18.54。
-- 本次仅修改同类图元版本升级的 OLD→NEW pin 兼容判定，并增加回归测试。
-
-
-
-- 调整“为智能环网柜添加 / 更新 Poke 详情图跳转”：只处理智能 RMU 相关 Poke，点击区域仅包住柜名；已有 1 个相关 Poke 时直接复用，已有多个相关 Poke 时自动删除多余项仅保留 1 个；若不存在则自动新建。
-
-- 智能 RMU Poke 跳转补充：单文件若模板未使用 {FACNAME}，则完全不读取/依赖 facName；即使源 G 没有 facName，只要识别到智能 RMU 也可正常生成 ahref。仅当模板显式包含 {FACNAME} 时，才为当前文件读取 facName。
-
-## v2.18.88
-- 基于 v2.18.87 更新数据库首次运行默认配置：服务器 `172.16.21.45`，端口 `1521`，Service Name `jedup8000`，并自动带入默认账号与密码。
-- 默认值只用于尚未保存过数据库配置的首次/空白用户环境。用户保存配置后，该配置优先级最高并跨启动恢复。
+## v2.18.143
+- 修复设备所属馈线拓扑传播在 RMU 内部 `BusDis` 处被错误截断的问题。
+- `Bus` / `BusbarSection` 仍作为站内公共母线边界，防止从一条馈线横向传播到其他馈线；`BusDis` 作为 RMU 内部母线现在参与真实 `link/node_area` 拓扑传播。
+- 数据库仍只查询 `CBreaker`→407、`Disconnector`→408、`GroundDisconnector`→409；其他设备不查数据库，只继承已确认三锚点 BAY 的下游拓扑馈线。

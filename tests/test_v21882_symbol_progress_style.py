@@ -10,5 +10,5 @@ def test_symbol_standard_page_keeps_determinate_percentage_progress():
 
 
 def test_release_version_is_21882():
-    assert '__version__ = "2.18.97"' in Path("g_file_studio/__init__.py").read_text(encoding="utf-8")
-    assert 'version = "2.18.97"' in Path("pyproject.toml").read_text(encoding="utf-8")
+    assert '__version__ = "2.18.148"' in Path("g_file_studio/__init__.py").read_text(encoding="utf-8")
+    assert 'version = "2.18.148"' in Path("pyproject.toml").read_text(encoding="utf-8")

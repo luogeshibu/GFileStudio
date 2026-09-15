@@ -6,8 +6,9 @@ def test_jeddah_profile_combo_reloads_shared_active_standard():
     assert 'def refresh_profiles(self, preferred_name: str = "")' in source
     assert "def on_page_activated(self)" in source
     assert "self.refresh_profiles()" in source
-    assert "self.profile_service.load_profiles().get(profile_name)" in source
-    assert "当前 ACTIVE 图元标准" in source
+    assert "self.profile_service.get_global_profile_selection()" in source
+    assert "self.profile_service.get_profile_version(profile_name, profile_version)" in source
+    assert "当前全局图元标准" in source
     assert "连接锚点位置偏移" in source
     assert "profiles = SiteProfileService().load_profiles()" not in source
 

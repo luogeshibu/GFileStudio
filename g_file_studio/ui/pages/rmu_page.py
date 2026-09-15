@@ -216,23 +216,19 @@ class RmuPage(BasePage):
         description = QLabel(
             "每次运行固定识别全部有效 RMU 并生成 RMU 汇总 CSV / HTML，不提供关闭或识别范围开关。"
             "只有 rect 框内同时存在 BusDis、CBreakerDis 和 ZhaiWaiJieDiDaoZha 才认定为 RMU；"
-            "后续组合、外框、柜名处理和台账对比统一复用这份基础识别结果；独立 Poke 模块也直接调用同一个识别器。"
+            "后续组合、外框、柜名处理和台账对比统一复用这份基础识别结果；本页面柜名采用 auto_cluster 自动布局识别。"
         )
         description.setWordWrap(True)
         description.setObjectName("mutedText")
         layout.addWidget(description)
 
-        name_row = QHBoxLayout()
-        name_row.addWidget(QLabel("柜名可能位置："))
-        self.rmu_name_top = QCheckBox("上方")
-        self.rmu_name_bottom = QCheckBox("下方")
-        self.rmu_name_left = QCheckBox("左侧")
-        self.rmu_name_right = QCheckBox("右侧")
-        for item in (self.rmu_name_top, self.rmu_name_bottom, self.rmu_name_left, self.rmu_name_right):
-            item.setProperty("optionChoice", True)
-            name_row.addWidget(item)
-        name_row.addStretch(1)
-        layout.addLayout(name_row)
+        auto_name = QLabel(
+            "柜名识别方式：自动。系统按 RMU 重复排列自动分组，分别推断上/下/左/右名称布局与主导文字风格，"
+            "再做组内一对一匹配；单个或不规则 RMU 自动采用全方向候选回退，无需人工指定柜名方向。"
+        )
+        auto_name.setWordWrap(True)
+        auto_name.setObjectName("mutedText")
+        layout.addWidget(auto_name)
 
         marker_row = QHBoxLayout()
         marker_row.addWidget(QLabel("智能 RMU 标记字符："))
@@ -259,7 +255,7 @@ class RmuPage(BasePage):
 
         note = QLabel(
             "默认智能标记为 SMART, SMR；以后现场改成 NEWSMART、SMART-SE 或其他文字时，直接在“智能 RMU 标记字符”中维护即可，"
-            "无需修改识别代码。无论是否智能，所有有效 RMU 都始终进入基础汇总报告。"
+            "无需修改识别代码。柜名方向无需配置；无论是否智能，所有有效 RMU 都始终进入基础汇总报告。"
         )
         note.setWordWrap(True)
         note.setObjectName("mutedText")
@@ -267,11 +263,8 @@ class RmuPage(BasePage):
         self.layout.addWidget(box)
 
     def _refresh_rmu_name_controls(self) -> None:
-        # RMU 基础识别始终开启；这里只维护可配置的识别输入项。
-        for item in (
-            self.rmu_name_top, self.rmu_name_bottom, self.rmu_name_left,
-            self.rmu_name_right, self.rmu_name_exclusions, self.rmu_intelligent_markers,
-        ):
+        # RMU 基础识别始终开启；柜名方向由 auto_cluster 自动推断。
+        for item in (self.rmu_name_exclusions, self.rmu_intelligent_markers):
             item.setEnabled(True)
 
     def _build_rmu_ledger_options(self) -> None:
@@ -404,11 +397,8 @@ class RmuPage(BasePage):
         self.rmu_channel_status_position.setEnabled(self.rmu_reposition_channel_status.isChecked())
         self.rmu_channel_status_margin.setEnabled(self.rmu_reposition_channel_status.isChecked())
         self.rmu_name_white.setChecked(self.user_settings.get_bool("basic/rmu/name_text_white", False))
-        # RMU 基础识别固定开启；只恢复柜名方向、排除项与智能标记配置。
-        self.rmu_name_top.setChecked(self.user_settings.get_bool("basic/rmu/name_top", True))
-        self.rmu_name_bottom.setChecked(self.user_settings.get_bool("basic/rmu/name_bottom", False))
-        self.rmu_name_left.setChecked(self.user_settings.get_bool("basic/rmu/name_left", False))
-        self.rmu_name_right.setChecked(self.user_settings.get_bool("basic/rmu/name_right", False))
+        # RMU 基础识别固定开启；柜名方向由 auto_cluster 自动推断。
+        # 历史 basic/rmu/name_* 配置保留在用户配置中供旧流程兼容，但本页面不再读取。
         self.rmu_name_exclusions.setText(self.user_settings.get_value("basic/rmu/name_exclusions", ""))
         self.rmu_intelligent_markers.setText(
             self.user_settings.get_value("basic/rmu/intelligent_markers", "SMART, SMR") or "SMART, SMR"
@@ -435,10 +425,8 @@ class RmuPage(BasePage):
         self.user_settings.set_value("basic/rmu/channel_status_inner_margin", self.rmu_channel_status_margin.value())
         self.user_settings.set_value("basic/rmu/name_text_white", self.rmu_name_white.isChecked())
         self.user_settings.set_value("basic/rmu/identify_name_type", True)
-        self.user_settings.set_value("basic/rmu/name_top", self.rmu_name_top.isChecked())
-        self.user_settings.set_value("basic/rmu/name_bottom", self.rmu_name_bottom.isChecked())
-        self.user_settings.set_value("basic/rmu/name_left", self.rmu_name_left.isChecked())
-        self.user_settings.set_value("basic/rmu/name_right", self.rmu_name_right.isChecked())
+        # 本页面不再写入历史 basic/rmu/name_top/bottom/left/right；
+        # auto_cluster 在运行时自动判断每个 RMU Cluster 的名称方向。
         self.user_settings.set_value("basic/rmu/name_exclusions", self.rmu_name_exclusions.text().strip())
         self.user_settings.set_value("basic/rmu/intelligent_markers", self.rmu_intelligent_markers.text().strip())
         self.user_settings.set_value("basic/rmu/smart_in_type", True)
@@ -456,9 +444,6 @@ class RmuPage(BasePage):
             return
         output_dir = self.output_path.path()
         if not validate_existing_directory(self, output_dir, "环网柜处理输出目录"):
-            return
-        if not any((self.rmu_name_top.isChecked(), self.rmu_name_bottom.isChecked(), self.rmu_name_left.isChecked(), self.rmu_name_right.isChecked())):
-            QMessageBox.warning(self, "RMU 柜名设置", "柜名位置至少选择上方、下方、左侧或右侧中的一个。")
             return
         if self.compare_rmu_ledger.isChecked():
             if self._selected_ledger_mode() == RmuLedgerInputMode.FILE and not self.rmu_ledger_file.path().is_file():
@@ -493,10 +478,13 @@ class RmuPage(BasePage):
             add_smart_rmu_poke=False,  # Poke 已独立到 Poke 跳转处理模块。
             smart_rmu_poke_ahref_template="",
             identify_rmu_name_and_type=True,
-            rmu_name_top=self.rmu_name_top.isChecked(),
-            rmu_name_bottom=self.rmu_name_bottom.isChecked(),
-            rmu_name_left=self.rmu_name_left.isChecked(),
-            rmu_name_right=self.rmu_name_right.isChecked(),
+            rmu_name_resolution_mode="auto_cluster",
+            # Legacy direction fields remain on BasicSettings for compatibility with
+            # other callers, but are ignored by auto_cluster.
+            rmu_name_top=True,
+            rmu_name_bottom=True,
+            rmu_name_left=True,
+            rmu_name_right=True,
             rmu_name_exclusions=self.rmu_name_exclusions.text().strip(),
             rmu_intelligent_markers=self.rmu_intelligent_markers.text().strip() or "SMART, SMR",
             rmu_smart_in_type=True,

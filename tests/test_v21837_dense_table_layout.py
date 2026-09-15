@@ -10,12 +10,14 @@ def test_dense_table_layout_is_presentation_only_and_reused():
     assert 'ScrollBarAlwaysOn' in helper
     assert 'resizeColumnsToContents' in helper
     assert 'self.profile_table' not in site
-    assert 'configure_known_dense_table(self.standard_table)' in site
+    assert 'self._fit_standard_table_columns()' in site
+    assert 'header.setTextElideMode(Qt.TextElideMode.ElideNone)' in site
+    assert 'table.resizeColumnsToContents()' in site
     assert 'configure_known_dense_table(widget)' in i18n
     # Golden/protected ID feature source remains the legacy table implementation.
     assert 'self.table = QTableWidget(0, 7)' in id_page
 
 
 def test_release_version_21837():
-    assert '__version__ = "2.18.97"' in Path('g_file_studio/__init__.py').read_text(encoding='utf-8')
-    assert 'version = "2.18.97"' in Path('pyproject.toml').read_text(encoding='utf-8')
+    assert '__version__ = "2.18.148"' in Path('g_file_studio/__init__.py').read_text(encoding='utf-8')
+    assert 'version = "2.18.148"' in Path('pyproject.toml').read_text(encoding='utf-8')

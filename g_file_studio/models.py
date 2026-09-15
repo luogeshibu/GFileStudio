@@ -184,6 +184,10 @@ class BasicSettings(BaseModel):
 
     # RMU 信息汇总。只读取/统计，不修改 G 图元；SMART 与 SMR 统一归类为智能环网柜。
     identify_rmu_name_and_type: bool = False
+    # RMU cabinet-name resolver mode.  Keep selected_direction as the public/default
+    # compatibility path; the standalone RMU page and selected new workflows may opt
+    # in to auto_cluster without changing legacy Basic/Poke callers.
+    rmu_name_resolution_mode: str = "selected_direction"
     rmu_name_top: bool = True
     rmu_name_bottom: bool = False
     rmu_name_left: bool = False
@@ -246,6 +250,14 @@ class MergeSettings(BaseModel):
     top_margin: int = Field(default=300, ge=0)
     right_margin: int = Field(default=300, ge=0)
     bottom_margin: int = Field(default=300, ge=0)
+    add_frame_after_merge: bool = False
+    frame_template_file: Path | None = None
+    frame_template_mode: TemplateMode = TemplateMode.BUILTIN
+    frame_builtin_template_id: str = "default_sld_frame"
+    frame_left: int = Field(default=50, ge=0)
+    frame_top: int = Field(default=50, ge=0)
+    frame_right: int = Field(default=50, ge=0)
+    frame_bottom: int = Field(default=50, ge=0)
 
     @field_validator("output_name")
     @classmethod
@@ -269,6 +281,10 @@ class MarginSettings(BaseModel):
     right_margin: int = Field(default=500, ge=0)
     bottom_margin: int = Field(default=500, ge=0)
     preserve_existing_frame: bool = True
+    # Jeddah fixed workflow only: the user has already chosen the authoritative
+    # frame template, so any detected pre-existing frame is removed before margin
+    # calculation and the selected template is added again in the final stage.
+    force_remove_existing_frame: bool = False
     output_suffix: str = ""
     append_timestamp: bool = False
     task_timestamp: str = ""

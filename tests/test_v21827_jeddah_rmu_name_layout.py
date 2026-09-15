@@ -41,7 +41,6 @@ def test_jeddah_rmu_name_is_white_size_50_and_centered_10_above_frame(tmp_path: 
     result = apply_jeddah_rmu_name_standard(
         source,
         output,
-        name_positions=("top",),
         name_exclusions="NOP, DAS/OK, SFI",
         font_size=50,
         top_gap=10,

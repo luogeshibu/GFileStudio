@@ -106,17 +106,17 @@ def apply_jeddah_rmu_name_standard(
     source_path: Path,
     output_path: Path,
     *,
-    name_positions: tuple[str, ...],
     name_exclusions: str = "",
     font_size: int = 50,
     top_gap: int = 10,
 ) -> JeddahRmuNameStandardResult:
     """Jeddah-only wrapper over the existing RMU recognition/name matching.
 
-    For each RMU name already recognized by the shared RMU engine, reuse the shared
-    exact-name Text locator, then apply only Jeddah presentation rules:
-    white text, font size 50, and horizontal centering 10 units above the top frame.
-    The shared RMU module and its original algorithms/defaults remain unchanged.
+    RMU detection/type/SMART logic remains shared and unchanged. For cabinet names,
+    the Jeddah batch explicitly enables the shared ``auto_cluster`` resolver so users
+    no longer configure TOP/BOTTOM/LEFT/RIGHT. After a name is recognized, reuse the
+    exact-name Text locator and apply only Jeddah presentation rules: white text,
+    font size 50, and horizontal centering 10 units above the top frame.
     """
 
     source_path = Path(source_path)
@@ -125,10 +125,12 @@ def apply_jeddah_rmu_name_standard(
     tree = ET.parse(source_path)
     file_path = source_path
 
+    all_name_positions = ("top", "bottom", "left", "right")
     identification = identify_rmus(
         tree,
         file_path,
-        name_positions=name_positions,
+        name_positions=all_name_positions,
+        name_resolution_mode="auto_cluster",
         smart_in_type=True,
         excluded_name_values=parse_name_exclusions(name_exclusions),
     )
@@ -156,7 +158,7 @@ def apply_jeddah_rmu_name_standard(
             name=item.name,
             rect_box=rect_box,
             preferred_position=item.name_position,
-            allowed_positions=name_positions,
+            allowed_positions=all_name_positions,
             used_text_keys=used_text_keys,
         )
         if text is None:
@@ -208,6 +210,57 @@ class JeddahSmrSmartReplacementResult:
     frame_red_changed_count: int = 0
     warnings: list[str] = field(default_factory=list)
 
+
+
+
+@dataclass
+class JeddahBusDisBlueResult:
+    file_path: Path
+    scanned_count: int = 0
+    eligible_count: int = 0
+    changed_count: int = 0
+    linked_count: int = 0
+    keyid_fallback_count: int = 0
+    skipped_count: int = 0
+
+
+def apply_jeddah_busdis_blue(
+    tree: ET.ElementTree,
+    file_path: Path,
+) -> JeddahBusDisBlueResult:
+    """Paint Jeddah distribution ``BusDis`` conductors blue conservatively.
+
+    A BusDis is eligible when it has normal topology references (``link`` or
+    ``node_area``).  Some site drawings have a valid distribution bus whose
+    topology references are missing; in that case a non-empty ``keyid`` is the
+    explicit fallback authority requested by the Jeddah workflow.  BusDis
+    objects with neither relation evidence nor keyid are left untouched.
+
+    Only line color is standardized (``lc/lcc``).  Fill/status colors, geometry,
+    IDs and references are never changed.
+    """
+
+    result = JeddahBusDisBlueResult(file_path=Path(file_path))
+    for element in direct_layer_elements(tree.getroot()):
+        if local_name(element.tag) != "BusDis":
+            continue
+        result.scanned_count += 1
+        has_relation = bool((element.get("link") or "").strip() or (element.get("node_area") or "").strip())
+        has_keyid = bool((element.get("keyid") or "").strip())
+        if not has_relation and not has_keyid:
+            result.skipped_count += 1
+            continue
+        result.eligible_count += 1
+        if has_relation:
+            result.linked_count += 1
+        else:
+            result.keyid_fallback_count += 1
+        changed = (element.get("lc") or "") != "0,0,255" or (element.get("lcc") or "").upper() != "#0000FF"
+        element.set("lc", "0,0,255")
+        element.set("lcc", "#0000FF")
+        if changed:
+            result.changed_count += 1
+    return result
 
 def apply_jeddah_feedline_solid(
     tree: ET.ElementTree,

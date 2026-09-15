@@ -54,7 +54,7 @@ def test_uploaded_standard_icons_are_copied_outside_release_and_survive_source_d
         managed = Path(str(row["managed_path"]))
         assert managed.is_file()
         assert user_data in managed.parents
-        assert "GFileStudio_v2.18.97" not in str(managed)
+        assert "GFileStudio_v2.18.103" not in str(managed)
 
     for file in files:
         file.unlink()

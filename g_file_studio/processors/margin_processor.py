@@ -39,10 +39,20 @@ def adjust_graph_margins(
             right_margin=settings.right_margin,
             bottom_margin=settings.bottom_margin,
             preserve_existing_frame=settings.preserve_existing_frame,
+            force_remove_existing_frame=settings.force_remove_existing_frame,
         )
         enforce_confirmed_id_rules(output_path, log)
         outputs.append(output_path)
-        if result.had_existing_frame:
+        removed_frame_count = int(getattr(result, "removed_existing_frame_count", 0) or 0)
+        removed_frame_modes = tuple(getattr(result, "removed_existing_frame_modes", ()) or ())
+        if removed_frame_count:
+            files_with_frame.append(output_path.name)
+            mode_text = ", ".join(removed_frame_modes) or "detected"
+            frame_text = (
+                f"；已按任务选择强制移除旧图框 {removed_frame_count} 个组件"
+                f"（{mode_text}），后续由当前选择模板重新添加"
+            )
+        elif result.had_existing_frame:
             files_with_frame.append(output_path.name)
             frame_mode = (
                 "身份标记" if result.frame_detection_mode == "marker"

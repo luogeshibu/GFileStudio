@@ -12,7 +12,9 @@ from g_file_studio.engines.feeder_title_engine import move_feeder_titles_above_b
 from g_file_studio.engines.rmu_group_engine import enhance_rmu_tree, remove_all_graphic_merges
 from g_file_studio.engines.small_element_engine import delete_issues_to_output, scan_file, write_reports
 from g_file_studio.engines.smart_profile_engine import apply_smart_profile_to_tree
+from g_file_studio.engines.standard_connection_cleanup import normalize_standard_device_connections
 from g_file_studio.jeddah.style_engine import (
+    apply_jeddah_busdis_blue,
     apply_jeddah_feedline_solid,
     apply_jeddah_rmu_name_standard,
     ensure_jeddah_smart_rmu_devices,
@@ -38,8 +40,13 @@ from g_file_studio.processors.common import LogCallback, ProgressCallback, disco
 from g_file_studio.processors.frame_processor import add_drawing_frames
 from g_file_studio.processors.id_processor import process_ids
 from g_file_studio.processors.margin_processor import adjust_graph_margins
+from g_file_studio.processors.smart_profile_processor import standard_connection_scope
 from g_file_studio.services.output_naming import make_task_timestamp
-from g_file_studio.services.site_profile_service import SiteProfileService
+from g_file_studio.services.site_profile_service import (
+    SiteProfileService,
+    authoritative_geometry_templates,
+    resolve_jeddah_role_devrefs,
+)
 from g_file_studio.services.report_i18n import report_is_english
 
 
@@ -51,18 +58,15 @@ class JeddahBatchSettings:
     """Parameters owned only by the Jeddah feeder batch module.
 
     Existing module settings and business implementations are intentionally not
-    changed.  This object only tells the new orchestrator which input to process and
-    which Jeddah name-recognition parameters to pass to the existing RMU algorithm.
+    changed.  This object only tells the orchestrator which input to process and
+    which Jeddah-specific parameters to apply. RMU cabinet-name direction is no
+    longer user-configured here; the Jeddah flow uses the shared auto-cluster resolver.
     """
 
     source_path: Path
     input_mode: InputMode
     output_dir: Path
     small_element_threshold: int = 10
-    rmu_name_top: bool = True
-    rmu_name_bottom: bool = False
-    rmu_name_left: bool = False
-    rmu_name_right: bool = False
     rmu_name_exclusions: str = ""
     margin_left: int = 500
     margin_top: int = 500
@@ -72,20 +76,7 @@ class JeddahBatchSettings:
     frame_template_mode: TemplateMode = TemplateMode.BUILTIN
     frame_builtin_template_id: str = "default_sld_frame"
     rmu_profile_name: str = ""
-
-    @property
-    def rmu_name_positions(self) -> tuple[str, ...]:
-        return tuple(
-            name
-            for name, enabled in (
-                ("top", self.rmu_name_top),
-                ("bottom", self.rmu_name_bottom),
-                ("left", self.rmu_name_left),
-                ("right", self.rmu_name_right),
-            )
-            if enabled
-        )
-
+    rmu_profile_version: int | None = None
 
 @dataclass
 class _FileSummary:
@@ -110,6 +101,12 @@ class _FileSummary:
     profile_normal_breaker_changed: int = 0
     profile_normal_ground_changed: int = 0
     profile_geometry_adjusted: int = 0
+    redundant_connection_lines_removed: int = 0
+    connection_lines_straightened: int = 0
+    connection_devices_realigned: int = 0
+    connection_endpoints_connected: int = 0
+    connection_topology_links_repaired: int = 0
+    busdis_blue_changed: int = 0
     feedline_solid_applied: int = 0
     ht_text_removed: int = 0
     channel_status_removed: int = 0
@@ -234,6 +231,12 @@ def _write_batch_report(
     smart_device_precheck_changed: int,
     cbreaker_smart_devref_changed: int,
     smart_device_postcheck_changed: int,
+    redundant_connection_lines_removed: int,
+    connection_lines_straightened: int,
+    connection_devices_realigned: int,
+    connection_endpoints_connected: int,
+    connection_topology_links_repaired: int,
+    busdis_blue_changed: int,
     bus_frames_removed: int,
     bus_titles_moved: int,
     feeder_titles_moved: int,
@@ -278,6 +281,12 @@ def _write_batch_report(
         "ProfileNORMALBreakerChanged",
         "ProfileNORMALGroundChanged",
         "ProfileGeometryAdjusted",
+        "RedundantConnectionLinesRemoved",
+        "ConnectionLinesStraightened",
+        "ConnectionDevicesRealigned",
+        "ConnectionEndpointsConnected",
+        "ConnectionTopologyLinksRepaired",
+        "BusDisBlueChanged",
         "FeedLineSolidApplied",
         "HTTextRemoved",
         "RMUChannelStatusRemoved",
@@ -312,6 +321,12 @@ def _write_batch_report(
         "Profile校正普通断路器",
         "Profile校正普通接地刀闸",
         "Profile几何原位调整",
+        "重复贯穿连接线删除",
+        "设备连接线正交修复",
+        "正交修复设备对齐",
+        "双Pin连接端点吸附",
+        "设备拓扑引用补齐",
+        "配网母线BusDis刷蓝",
         "馈线实线处理",
         "删除H.T文字",
         "删除RMU红色状态点",
@@ -349,6 +364,12 @@ def _write_batch_report(
             row.profile_normal_breaker_changed,
             row.profile_normal_ground_changed,
             row.profile_geometry_adjusted,
+            row.redundant_connection_lines_removed,
+            row.connection_lines_straightened,
+            row.connection_devices_realigned,
+            row.connection_endpoints_connected,
+            row.connection_topology_links_repaired,
+            row.busdis_blue_changed,
             row.feedline_solid_applied,
             row.ht_text_removed,
             row.channel_status_removed,
@@ -385,6 +406,10 @@ def _write_batch_report(
             f"SMR cabinets already containing SMART (SMR removed only): {smr_existing_smart_cleanup}; "
             f"SMR texts removed: {smr_text_removed}; existing-SMART device devrefs corrected: {smart_device_precheck_changed}; "
             f"SMR-conversion device devrefs changed: {cbreaker_smart_devref_changed}; post-SMR SMART device devrefs corrected: {smart_device_postcheck_changed}; "
+            f"redundant device-through ConnectLines removed: {redundant_connection_lines_removed}; "
+            f"two-pin endpoints snapped: {connection_endpoints_connected}; topology links repaired: {connection_topology_links_repaired}; "
+            f"single-pin connection lines straightened: {connection_lines_straightened}; devices realigned: {connection_devices_realigned}; "
+            f"distribution BusDis changed to blue: {busdis_blue_changed}; "
             f"RMU name texts changed to white: {total_rmu_names_white}; "
             f"Bus frames removed: {bus_frames_removed}; corresponding titles moved: {bus_titles_moved}; "
             f"feeder titles moved above bus: {feeder_titles_moved}; FeedLine elements set to solid: {feedline_solid_applied}; "
@@ -408,6 +433,9 @@ def _write_batch_report(
             f"SMR 替换 SMART：{smr_to_smart_replaced}；已有 SMART 仅清理 SMR：{smr_existing_smart_cleanup}；"
             f"删除 SMR 文字：{smr_text_removed}；已有 SMART 柜图元校正：{smart_device_precheck_changed}；"
             f"SMR 转换阶段图元切换：{cbreaker_smart_devref_changed}；SMR 转换后 SMART 图元复检校正：{smart_device_postcheck_changed}；"
+            f"删除设备重复贯穿 ConnectLine：{redundant_connection_lines_removed}；双 Pin 端点吸附：{connection_endpoints_connected}；"
+            f"设备拓扑引用补齐：{connection_topology_links_repaired}；单连接点设备连接线正交修复：{connection_lines_straightened}；同步对齐设备：{connection_devices_realigned}；"
+            f"配网母线 BusDis 刷蓝：{busdis_blue_changed}；"
             f"RMU 名称文字改白：{total_rmu_names_white}；"
             f"删除带 Bus 外框：{bus_frames_removed}；对应标题上移：{bus_titles_moved}；"
             f"馈线名称移到母线上方：{feeder_titles_moved}；馈线改为实线：{feedline_solid_applied}；"
@@ -466,9 +494,8 @@ def process_jeddah_batch(
 
     if settings.small_element_threshold <= 0:
         raise ValueError("异常小尺寸阈值必须大于 0。")
-    positions = settings.rmu_name_positions
-    if not positions:
-        raise ValueError("吉达批处理的 RMU 柜名位置至少选择一个方向。")
+    # v2.18.129: Jeddah cabinet naming is automatic. RMU detection itself is
+    # unchanged; only the name resolver uses the shared auto-cluster mode.
     if min(settings.margin_left, settings.margin_top, settings.margin_right, settings.margin_bottom) < 0:
         raise ValueError("吉达批处理的图形边距不能小于 0。")
     if settings.frame_template_file is None or not Path(settings.frame_template_file).is_file():
@@ -499,10 +526,12 @@ def process_jeddah_batch(
     log(
         "[吉达批处理] 固定流程：彻底取消图形组合（删除全部 <Merge>，RMU 外框置底） → 删除异常小尺寸元素 → RMU 名称改白 → "
         "SMART/SMR 外框刷红 + 已有 SMART 柜图元检查（LBS / Circuit Breaker） + SMR 智能处理（已有 SMART 时删 SMR；否则生成 SMART） + SMR 转换后再次检查 SMART 图元 + "
+        "GLOBAL 图元标准化 + 重复贯穿连接线清理 + 单连接点设备连接线正交修复 + "
         "删除带 Bus 外框并上移标题 + "
         "馈线名称上移 + 馈线改实线 + 删除 H.T 文字 + 删除 RMU channel_status 红色状态点 + 清理 RMU 内重复 SMART + "
         "删除相邻 2000.00 / UPDATED_MEASURMENT 字符对 → ID 检查与修复 → 图形边距调整 → 图框添加。"
     )
+    log("[吉达批处理] RMU 柜名识别：自动 Cluster（按组自动判断上/下/左/右并一对一匹配）。")
     log(f"[吉达批处理] RMU 名称排除字符串：{settings.rmu_name_exclusions or '(无)'}")
 
     # Stage 1: reuse Basic Processing > Graphic Group Processing unchanged.
@@ -557,7 +586,6 @@ def process_jeddah_batch(
         result = apply_jeddah_rmu_name_standard(
             source,
             output,
-            name_positions=positions,
             name_exclusions=settings.rmu_name_exclusions,
             font_size=50,
             top_gap=10,
@@ -597,6 +625,12 @@ def process_jeddah_batch(
     profile_normal_breaker_changed = 0
     profile_normal_ground_changed = 0
     profile_geometry_adjusted = 0
+    redundant_connection_lines_removed = 0
+    connection_lines_straightened = 0
+    connection_devices_realigned = 0
+    connection_endpoints_connected = 0
+    connection_topology_links_repaired = 0
+    busdis_blue_changed = 0
     smr_to_smart_frame_red_changed = 0
     bus_frames_removed = 0
     bus_titles_moved = 0
@@ -613,15 +647,32 @@ def process_jeddah_batch(
     adjacent_measurement_texts_removed = 0
     visual_failures: list[str] = []
     active_rmu_profile = None
+    active_rmu_roles: dict[str, str] = {}
+    connection_eligible_devrefs: set[str] = set()
+    connection_single_pin_devrefs: set[str] = set()
+    connection_geometry_templates: dict[str, list[dict[str, object]]] = {}
     if settings.rmu_profile_name.strip():
-        active_rmu_profile = SiteProfileService().load_profiles().get(settings.rmu_profile_name.strip())
+        active_rmu_profile = SiteProfileService().get_profile_version(
+            settings.rmu_profile_name.strip(), settings.rmu_profile_version
+        )
         if active_rmu_profile is None:
-            warnings.append(f"吉达批处理所选图元标准不存在：{settings.rmu_profile_name}")
+            warnings.append(
+                f"吉达批处理所选全局图元标准不存在：{settings.rmu_profile_name} "
+                f"V{settings.rmu_profile_version or '-'}"
+            )
         else:
+            active_rmu_roles = resolve_jeddah_role_devrefs(active_rmu_profile)
+            connection_eligible_devrefs, connection_single_pin_devrefs = standard_connection_scope(active_rmu_profile)
+            connection_geometry_templates = (
+                authoritative_geometry_templates(active_rmu_profile)
+                if active_rmu_profile.managed_standard_files
+                else active_rmu_profile.geometry_templates
+            )
             log(
-                f"[吉达批处理/图元标准] 使用 ACTIVE：{active_rmu_profile.site_name} / "
+                f"[吉达批处理/图元标准] 使用 GLOBAL：{active_rmu_profile.site_name} / "
                 f"{active_rmu_profile.profile_name} / V{active_rmu_profile.profile_version}；"
-                f"检查 SMART/NORMAL 的 LBS、Circuit Breaker 与 ZhaiWaiJieDiDaoZha 接地刀闸。"
+                f"检查 SMART/NORMAL 的 LBS、Circuit Breaker 与 ZhaiWaiJieDiDaoZha 接地刀闸；"
+                f"连接修复复用同一标准范围：已定义 devref {len(connection_eligible_devrefs)} 个，单 Pin 图元 {len(connection_single_pin_devrefs)} 个。"
             )
     stage3_files = discover_g_inputs(stage_white, InputMode.DIRECTORY)
     for index, source in enumerate(stage3_files, 1):
@@ -655,14 +706,23 @@ def process_jeddah_batch(
                 profile_consistency = apply_smart_profile_to_tree(
                     tree,
                     source,
-                    smart_lbs_devref=active_rmu_profile.smart_lbs_devref,
-                    smart_breaker_devref=active_rmu_profile.smart_breaker_devref,
-                    normal_lbs_devref=active_rmu_profile.normal_lbs_devref,
-                    normal_breaker_devref=active_rmu_profile.normal_breaker_devref,
-                    smart_ground_devref=active_rmu_profile.smart_ground_devref,
-                    normal_ground_devref=active_rmu_profile.normal_ground_devref,
+                    smart_lbs_devref=active_rmu_roles["smart_lbs"],
+                    smart_breaker_devref=active_rmu_roles["smart_breaker"],
+                    normal_lbs_devref=active_rmu_roles["normal_lbs"],
+                    normal_breaker_devref=active_rmu_roles["normal_breaker"],
+                    smart_ground_devref=active_rmu_roles["smart_ground"],
+                    normal_ground_devref=active_rmu_roles["normal_ground"],
                     profile_geometry_templates=active_rmu_profile.geometry_templates,
                 )
+            connection_cleanup = None
+            if active_rmu_profile is not None:
+                connection_cleanup = normalize_standard_device_connections(
+                    tree,
+                    eligible_devrefs=connection_eligible_devrefs,
+                    single_pin_devrefs=connection_single_pin_devrefs,
+                    geometry_templates=connection_geometry_templates,
+                )
+            busdis_blue = apply_jeddah_busdis_blue(tree, source)
             feeder_titles = move_feeder_titles_above_buses(tree, source)
             feedline_style = apply_jeddah_feedline_solid(tree, source)
             ht_cleanup = remove_jeddah_ht_texts(tree, source)
@@ -720,8 +780,18 @@ def process_jeddah_batch(
                 row.profile_geometry_adjusted = profile_consistency.geometry_adjusted_count
                 for warning in profile_consistency.warnings:
                     warnings.append(f"{source.name}: {warning}")
+            if connection_cleanup is not None:
+                redundant_connection_lines_removed += connection_cleanup.removed_redundant_lines
+                connection_lines_straightened += connection_cleanup.straightened_lines
+                connection_devices_realigned += connection_cleanup.moved_devices
+                row = summaries[source.name]
+                row.redundant_connection_lines_removed = connection_cleanup.removed_redundant_lines
+                row.connection_lines_straightened = connection_cleanup.straightened_lines
+                row.connection_devices_realigned = connection_cleanup.moved_devices
             bus_frames_removed += enhancement.bus_rect_removed
             bus_titles_moved += enhancement.bus_title_moved
+            busdis_blue_changed += busdis_blue.changed_count
+            summaries[source.name].busdis_blue_changed = busdis_blue.changed_count
             feeder_titles_moved += feeder_titles.moved_count
             file_feedline_solid = int(feedline_style.style_changed_by_tag.get("FeedLine", 0) or 0)
             feedline_solid_applied += file_feedline_solid
@@ -761,6 +831,13 @@ def process_jeddah_batch(
                     f"NORMAL LBS {profile_consistency.normal_lbs_changed_count}、NORMAL Q {profile_consistency.normal_breaker_changed_count}、NORMAL 接地刀闸 {profile_consistency.normal_ground_changed_count}；"
                     f"几何原位升级 {profile_consistency.geometry_adjusted_count}；"
                 )
+            connection_text = ""
+            if connection_cleanup is not None:
+                connection_text = (
+                    f"连接规范化：重复贯穿线删除 {connection_cleanup.removed_redundant_lines}、"
+                    f"双 Pin 端点吸附 {connection_cleanup.connected_endpoints}、拓扑引用补齐 {connection_cleanup.repaired_topology_links}、"
+                    f"单 Pin 正交修复 {connection_cleanup.straightened_lines}、设备同步对齐 {connection_cleanup.moved_devices}；"
+                )
             log(
                 f"[吉达批处理/图面处理] {source.name}：SMART 匹配 {enhancement.smart_rmu_rect_count}、刷红 {enhancement.smart_frame_color_changed}；"
                 f"SMR Text {enhancement.smr_text_count}、匹配 {enhancement.smr_matched_rect_count}、刷红 {enhancement.smr_frame_color_changed}；"
@@ -769,7 +846,9 @@ def process_jeddah_batch(
                 f"删除 SMR Text {smr_replacement.smr_text_removed_count}；SMR 转换阶段切 SMART 图元 {smr_replacement.cbreaker_smart_devref_changed_count}；"
                 f"SMR 后复检：SMART 柜 {smart_device_postcheck.smart_rmu_count}、校正 devref {smart_device_postcheck.cbreaker_smart_devref_changed_count}；"
                 f"{profile_text}"
+                f"{connection_text}"
                 f"删除带 Bus 外框 {enhancement.bus_rect_removed}、对应标题上移 {enhancement.bus_title_moved}；"
+                f"配网 BusDis 刷蓝 {busdis_blue.changed_count}/{busdis_blue.eligible_count}（无关联 keyid 兜底 {busdis_blue.keyid_fallback_count}）；"
                 f"馈线名称上移 {feeder_titles.moved_count}；馈线改实线 {file_feedline_solid}；删除 H.T 文字 {ht_cleanup.removed_count}；"
                 f"删除 RMU 红色状态点 {channel_status_cleanup.removed_status_count}/{channel_status_cleanup.matched_status_count} 个；"
                 f"扫描 RMU {duplicate_smart_cleanup.scanned_rmu_count} 个、重复 SMART 柜 {duplicate_smart_cleanup.duplicate_rmu_count} 个、删除重复 SMART {duplicate_smart_cleanup.smart_text_removed_count} 个；"
@@ -810,7 +889,9 @@ def process_jeddah_batch(
         )
     ids_repaired = int(id_result.statistics.get("repaired_id_count", 0) or 0)
 
-    # Stage 6: reuse the existing Drawing Margin Adjustment processor unchanged.
+    # Stage 6: reuse Drawing Margin Adjustment, but Jeddah is an explicit
+    # replacement workflow: any detected pre-existing frame is removed first so
+    # it cannot block body-margin calculation.  Stage 7 adds the selected frame.
     margin_settings = MarginSettings(
         source_path=stage_id,
         input_mode=InputMode.DIRECTORY,
@@ -820,6 +901,7 @@ def process_jeddah_batch(
         right_margin=settings.margin_right,
         bottom_margin=settings.margin_bottom,
         preserve_existing_frame=True,
+        force_remove_existing_frame=True,
         output_suffix="",
         append_timestamp=False,
         task_timestamp=timestamp,
@@ -840,7 +922,8 @@ def process_jeddah_batch(
         f"左={settings.margin_left}、上={settings.margin_top}、右={settings.margin_right}、下={settings.margin_bottom}。"
     )
 
-    # Stage 7: reuse the existing Drawing Frame processor unchanged.
+    # Stage 7: Drawing Frame treats the current template selection as authoritative
+    # and replaces any frame that may still be present instead of appending it.
     frame_settings = FrameSettings(
         source_path=stage_margin,
         input_mode=InputMode.DIRECTORY,
@@ -910,6 +993,12 @@ def process_jeddah_batch(
         smart_device_precheck_changed=smart_device_precheck_changed,
         cbreaker_smart_devref_changed=cbreaker_smart_devref_changed,
         smart_device_postcheck_changed=smart_device_postcheck_changed,
+        redundant_connection_lines_removed=redundant_connection_lines_removed,
+        connection_lines_straightened=connection_lines_straightened,
+        connection_devices_realigned=connection_devices_realigned,
+        connection_endpoints_connected=connection_endpoints_connected,
+        connection_topology_links_repaired=connection_topology_links_repaired,
+        busdis_blue_changed=busdis_blue_changed,
         bus_frames_removed=bus_frames_removed,
         bus_titles_moved=bus_titles_moved,
         feeder_titles_moved=feeder_titles_moved,
@@ -939,6 +1028,9 @@ def process_jeddah_batch(
         f"SMR 转换阶段图元切换 {cbreaker_smart_devref_changed}；SMR 后复检图元校正 {smart_device_postcheck_changed}；"
         f"Profile 图元升级：SMART LBS {profile_smart_lbs_changed}、SMART Q {profile_smart_breaker_changed}、SMART 接地 {profile_smart_ground_changed}、"
         f"NORMAL LBS {profile_normal_lbs_changed}、NORMAL Q {profile_normal_breaker_changed}、NORMAL 接地 {profile_normal_ground_changed}、几何原位调整 {profile_geometry_adjusted}；"
+        f"连接规范化：重复贯穿线删除 {redundant_connection_lines_removed}、双 Pin 端点吸附 {connection_endpoints_connected}、"
+        f"拓扑引用补齐 {connection_topology_links_repaired}、单 Pin 正交修复 {connection_lines_straightened}、设备同步对齐 {connection_devices_realigned}；"
+        f"配网母线 BusDis 刷蓝 {busdis_blue_changed}；"
         f"RMU 名称改白 {white_total}；带 Bus 外框删除 {bus_frames_removed}；"
         f"对应标题上移 {bus_titles_moved}；馈线名称上移 {feeder_titles_moved}；"
         f"馈线改实线 {feedline_solid_applied}；删除 H.T 文字 {ht_text_removed}；"
@@ -999,6 +1091,12 @@ def process_jeddah_batch(
             "profile_normal_breaker_changed_count": profile_normal_breaker_changed,
             "profile_normal_ground_changed_count": profile_normal_ground_changed,
             "profile_geometry_adjusted_count": profile_geometry_adjusted,
+            "redundant_connection_line_removed_count": redundant_connection_lines_removed,
+            "connection_line_straightened_count": connection_lines_straightened,
+            "connection_device_realigned_count": connection_devices_realigned,
+            "connection_endpoint_connected_count": connection_endpoints_connected,
+            "connection_topology_link_repaired_count": connection_topology_links_repaired,
+            "busdis_blue_changed_count": busdis_blue_changed,
             "smr_to_smart_frame_red_changed_count": smr_to_smart_frame_red_changed,
             "bus_rmu_frame_removed_count": bus_frames_removed,
             "bus_rmu_title_moved_count": bus_titles_moved,

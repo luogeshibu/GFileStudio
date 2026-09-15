@@ -1100,6 +1100,25 @@ def process_one_file(
     width, height = read_canvas_size(target_root, input_path.name)
     file_config = resolve_file_config(all_config, input_path.name)
 
+    # v2.18.147: “图框添加”本身就是用户对目标模板的明确选择。
+    # 因此不再叠加/保留旧图框，也不再因为旧图框来源不同而阻断；
+    # 先强制移除可检测到的已有图框，再以当前选择模板作为唯一权威图框。
+    # 使用函数内导入避免 margin_engine -> frame_engine 的模块级循环依赖。
+    from g_file_studio.engines.margin_engine import remove_existing_frame_for_replacement
+
+    replacement = remove_existing_frame_for_replacement(
+        target_root,
+        target_layer,
+        width,
+        height,
+    )
+    if replacement.removed_count:
+        modes = ", ".join(replacement.detection_modes) or "detected"
+        print(
+            f"  已强制移除已有图框：{replacement.removed_count} 个组件（{modes}）；"
+            "将使用当前选择模板重新添加。"
+        )
+
     template_elements = prepare_template_elements(
         template_tree.getroot(),
         target_width=width,

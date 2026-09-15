@@ -81,13 +81,13 @@ def test_partial_engine_checks_only_configured_normal_breaker(tmp_path: Path):
     assert q.get("devref") == standard
 
 
-def test_ui_upload_is_single_file_and_can_explicitly_share_same_role_across_scopes():
+def test_ui_upload_is_single_file_and_binds_only_the_selected_learned_symbol_row():
     source = Path("g_file_studio/ui/pages/site_profile_page.py").read_text(encoding="utf-8")
     assert 'QFileDialog.getOpenFileName(' in source
     assert 'QFileDialog.getOpenFileNames(' not in source
-    assert 'SMART / NORMAL 共用此标准' in source
-    assert 'self._paired_builtin_row(row)' in source
-    assert 'if share_pair:' in source
+    assert 'self.standard_table = QTableWidget(0, 17)' in source
+    assert 'def _builtin_row_for_discovery' not in source
+    assert 'Bind the uploaded authoritative symbol only to the selected learned row.' in source
     assert 'len(eligible) == 1' not in source
     assert 'def _confirm_rescan_target' not in source
-    assert '可以只配置当前需要检查的设备角色' in source
+    assert '先扫描图形 G 自动发现实际使用的图元候选' in source

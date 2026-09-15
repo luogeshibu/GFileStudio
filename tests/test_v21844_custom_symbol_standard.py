@@ -163,9 +163,12 @@ def test_custom_symbol_uses_raw_icon_geometry_without_moving_connectlines(tmp_pa
 
 def test_site_profile_page_exposes_custom_symbol_controls():
     source = Path("g_file_studio/ui/pages/site_profile_page.py").read_text(encoding="utf-8")
-    assert 'QPushButton("添加自定义设备角色")' in source
+    assert 'QPushButton("手动添加图元（可选）")' in source
     assert 'QPushButton("添加扫描到的未映射图元")' not in source
     assert '业务单线图中发现的 devref 只能作为检查线索，不能直接加入图元标准' in source
-    assert 'QPushButton("删除选中自定义项")' in source
-    assert '"检查对象 XML", "标准图元文件", "主体 ID", "w×h", "AlignCenter", "Pins"' in source
-    assert '"设备定位规则", "定位条件"' in source
+    assert 'QPushButton("删除选中图元")' in source
+    for header in ('检查对象 XML', '标准图元文件', '主体 ID', 'w×h', 'AlignCenter', 'Pins'):
+        assert f'"{header}"' in source
+    assert '"图元定位规则", "定位条件"' not in source
+    assert '"扫描图元 G 文件全名"' in source
+    assert '"match_attr": "devref"' in source

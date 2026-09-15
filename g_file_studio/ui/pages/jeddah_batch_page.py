@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QCheckBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -13,7 +12,7 @@ from PySide6.QtWidgets import (
 
 from g_file_studio.jeddah import JeddahBatchSettings, process_jeddah_batch
 from g_file_studio.services.id_rule_service import IdRuleService
-from g_file_studio.services.site_profile_service import SiteProfileService
+from g_file_studio.services.site_profile_service import SiteProfileService, jeddah_role_issues
 from g_file_studio.services.paths import default_workspace
 from g_file_studio.services.run_history import begin_managed_run, configure_managed_output
 from g_file_studio.services.user_settings_service import UserSettingsService
@@ -100,9 +99,9 @@ class JeddahBatchPage(BasePage):
             "✓ 6. SMR 环网柜外框统一刷成红色",
             "✓ 7. SMR 条件转换 SMART：已有 SMART 时删除外部 SMR并保持原 SMART；没有 SMART 时生成顶部居中 SMART（字号 20）；外框强制红色",
             "✓ 8. SMR 转换后再次执行 SMART 图元检查，确保 LBS / Circuit Breaker devref 正确",
-            "✓ 9. 使用“图元标准检查”中的当前 ACTIVE 标准执行 SMART/NORMAL 图元标准化：纠正 LBS、Circuit Breaker、<ZhaiWaiJieDiDaoZha> 接地刀闸的错误变体/devref，并按标准 pin 修正与 ConnectLine 的连接锚点位置偏移（连接线保持不动）",
+            "✓ 9. 使用“图元标准检查”中的当前 ACTIVE 标准执行 SMART/NORMAL 图元标准化，并复用同一连接修复规则：纠正 LBS、Circuit Breaker、<ZhaiWaiJieDiDaoZha> 接地刀闸的错误变体/devref与标准几何；按标准 Pin + ConnectLine/FeedLine/BusDis 端点计算双 Pin 真实连接，删除重复贯穿 ConnectLine（旁路贯穿线）并补齐拓扑；单 Pin 轻微斜线自动吸附为水平/垂直",
             "✓ 10. 删除 RMU 红色状态点（channel_status），沿用现有状态点识别/归属规则",
-            "✓ 11. 删除带 Bus 的环网柜矩形框，并将对应标题移动到母线上方",
+            "✓ 11. 删除带 Bus 的环网柜矩形框、上移标题，并将有效配网 BusDis 母线统一刷为蓝色（无关联时 keyid 兜底）",
             "✓ 12. 将馈线名称移动到母线上方",
             "✓ 13. 将所有 FeedLine 馈线统一改成实线（ls=1）",
             "✓ 14. 删除精确 H.T 文字标识",
@@ -131,11 +130,11 @@ class JeddahBatchPage(BasePage):
         self.rmu_profile = WheelSafeComboBox()
         self.rmu_profile.setMinimumContentsLength(50)
         self.rmu_profile.setToolTip(
-            "与“图元标准检查”联动：每次进入本页、标准保存/恢复/删除后以及执行批处理前，都会重新读取最新 Jeddah ACTIVE 标准。"
-            "吉达批处理使用所选 ACTIVE 标准执行 SMART/NORMAL 图元变体、devref 与连接锚点位置纠正；这不属于同类图元版本升级。"
+            "与“图元标准检查”联动：本页严格使用用户手动设定的全局执行版本，不会因为保存了更新版本而自动切换。"
+            "吉达批处理使用该 GLOBAL 标准执行 SMART/NORMAL 图元变体、devref、标准几何与连接锚点位置偏移纠正，并执行设备连接规范化：双 Pin 设备按标准 Pin 与 ConnectLine/FeedLine/BusDis 端点计算真实断点，安全删除重复贯穿 ConnectLine（旁路贯穿线）并补齐 link/node_area；单 Pin 设备轻微斜线自动正交；这不属于同类图元版本升级。"
         )
         self.refresh_profiles(self.user_settings.get_value("jeddah_batch/rmu_profile_name", ""))
-        profile_form.addRow("当前 ACTIVE 图元标准", self.rmu_profile)
+        profile_form.addRow("当前全局图元标准", self.rmu_profile)
         settings_layout.addLayout(profile_form)
 
         threshold_form = QFormLayout()
@@ -148,21 +147,13 @@ class JeddahBatchPage(BasePage):
         threshold_form.addRow("异常小尺寸阈值", self.threshold)
         settings_layout.addLayout(threshold_form)
 
-        position_row = QHBoxLayout()
-        position_row.addWidget(QLabel("RMU 柜名可能位置："))
-        self.name_top = QCheckBox("上方")
-        self.name_bottom = QCheckBox("下方")
-        self.name_left = QCheckBox("左侧")
-        self.name_right = QCheckBox("右侧")
-        self.name_top.setChecked(self.user_settings.get_bool("jeddah_batch/rmu_name_top", True))
-        self.name_bottom.setChecked(self.user_settings.get_bool("jeddah_batch/rmu_name_bottom", False))
-        self.name_left.setChecked(self.user_settings.get_bool("jeddah_batch/rmu_name_left", False))
-        self.name_right.setChecked(self.user_settings.get_bool("jeddah_batch/rmu_name_right", False))
-        for item in (self.name_top, self.name_bottom, self.name_left, self.name_right):
-            item.setProperty("optionChoice", True)
-            position_row.addWidget(item)
-        position_row.addStretch(1)
-        settings_layout.addLayout(position_row)
+        auto_name_note = QLabel(
+            "RMU 柜名识别：自动 Cluster。系统按 RMU 的重复排列自动判断上/下/左/右名称布局，"
+            "学习当前组的主导名称风格并一对一分配；孤立或不规则 RMU 自动全方向匹配。"
+        )
+        auto_name_note.setObjectName("mutedText")
+        auto_name_note.setWordWrap(True)
+        settings_layout.addWidget(auto_name_note)
 
         exclusion_row = QHBoxLayout()
         exclusion_row.addWidget(QLabel("RMU 柜名排除字符串："))
@@ -177,7 +168,7 @@ class JeddahBatchPage(BasePage):
         settings_layout.addLayout(exclusion_row)
 
         color_note = QLabel(
-            "吉达固定样式：SMART/SMR 外框 = 红色 #FF0000；只要 SMART Text 的中心位于 RMU 框内，就检查并校正 Y1/Y2/Y3 的 Load_Breaker_Switch 与 Q1 Circuit_Breaker 的 CBreakerDis devref（兼容 Circuit_Breaker_NO-SMART 与 Circuit_Breaker_NON-SMART 两种源图元）；若 SMR 柜内已有 SMART，只删除外部 SMR并保留原 SMART；若柜内没有 SMART，则生成顶部居中 SMART（字号 20）；SMR 处理后再次执行 SMART 图元复检；已识别 RMU 柜名 Text = 白色 #FFFFFF、字号 50，并与环网柜上边框保持 10 距离且水平居中；RMU channel_status 红色状态点直接删除；所有 FeedLine 馈线 = 实线 ls=1；精确 H.T Text = 删除；所有已识别配网 RMU 都检查重复 SMART，同柜多个时保留 XML 中原有第一个并删除后续重复；2000.00 与 UPDATED_MEASURMENT 只有在同行且相邻（水平间距不超过 10）时才成对删除。"
+            "吉达固定样式：SMART/SMR 外框 = 红色 #FF0000；只要 SMART Text 的中心位于 RMU 框内，就检查并校正 Y1/Y2/Y3 的 Load_Breaker_Switch 与 Q1 Circuit_Breaker 的 CBreakerDis devref（兼容 Circuit_Breaker_NO-SMART 与 Circuit_Breaker_NON-SMART 两种源图元）；若 SMR 柜内已有 SMART，只删除外部 SMR并保留原 SMART；若柜内没有 SMART，则生成顶部居中 SMART（字号 20）；SMR 处理后再次执行 SMART 图元复检；已识别 RMU 柜名 Text = 白色 #FFFFFF、字号 50，并与环网柜上边框保持 10 距离且水平居中；RMU channel_status 红色状态点直接删除；有效配网 BusDis 母线 = 蓝色 #0000FF（link/node_area 无关联时以非空 keyid 兜底）；所有 FeedLine 馈线 = 实线 ls=1；精确 H.T Text = 删除；所有已识别配网 RMU 都检查重复 SMART，同柜多个时保留 XML 中原有第一个并删除后续重复；2000.00 与 UPDATED_MEASURMENT 只有在同行且相邻（水平间距不超过 10）时才成对删除。"
         )
         color_note.setObjectName("mutedText")
         color_note.setWordWrap(True)
@@ -219,8 +210,9 @@ class JeddahBatchPage(BasePage):
         frame_layout.setContentsMargins(12, 18, 12, 12)
         frame_layout.setSpacing(9)
         frame_note = QLabel(
-            "图形边距调整完成后，直接调用现有“图框添加”处理能力。默认使用程序内置模板；"
-            "内置模板标题留空时自动使用输入文件名。"
+            "图形边距调整完成后，直接调用现有“图框添加”处理能力。当前选择的模板就是最终权威模板；"
+            "如果输入 G 已有旧图框（包括非内置或与当前模板不同的图框），程序会直接删除旧图框并强制覆盖，"
+            "不再要求人工先删除或再次确认。默认使用程序内置模板；内置模板标题留空时自动使用输入文件名。"
         )
         frame_note.setObjectName("mutedText")
         frame_note.setWordWrap(True)
@@ -244,57 +236,37 @@ class JeddahBatchPage(BasePage):
         return site_key.startswith("JED") or "JEDDAH" in site_key
 
     def refresh_profiles(self, preferred_name: str = "") -> None:
-        """Reload Jeddah ACTIVE standards from the shared profile store.
+        """Show the explicitly selected global execution standard only.
 
-        The symbol-standard page and Jeddah batch page intentionally use the same
-        persistent profile file.  Never cache the combo contents for the lifetime of
-        the page: a standard can be renamed, replaced, restored, or versioned while
-        this page already exists.
+        v2.18.116 decouples the global execution version from the newest editable
+        Profile version.  Jeddah batch must therefore never guess the newest version
+        by profile name; it follows the exact global profile + version selected in
+        “图元标准检查”.
         """
-        current_name = str(self.rmu_profile.currentData() or "").strip()
-        saved_name = self.user_settings.get_value("jeddah_batch/rmu_profile_name", "").strip()
-        profiles = self.profile_service.load_profiles()
-        rows = [
-            (name, profile)
-            for name, profile in profiles.items()
-            if self._is_jeddah_profile(profile)
-        ]
-        rows.sort(key=lambda row: (str(row[1].site_name).casefold(), str(row[1].profile_name).casefold()))
-        available = {name for name, _profile in rows}
-
-        requested = str(preferred_name or "").strip()
-        if requested not in available:
-            requested = current_name if current_name in available else ""
-        if requested not in available:
-            requested = saved_name if saved_name in available else ""
-        if not requested and rows:
-            # A stale selection must not keep an obsolete profile visible.  When no
-            # previous choice survives, prefer the most recently updated Jeddah
-            # ACTIVE standard (the common one-standard-per-site workflow).
-            newest = max(rows, key=lambda row: str(getattr(row[1], "updated_at", "") or ""))
-            requested = newest[0]
+        del preferred_name  # compatibility with the existing cross-page signal
+        name, version = self.profile_service.get_global_profile_selection()
+        profile = self.profile_service.get_profile_version(name, version) if name and version is not None else None
 
         self.rmu_profile.blockSignals(True)
         self.rmu_profile.clear()
-        if not rows:
-            self.rmu_profile.addItem("尚无 Jeddah ACTIVE 图元标准，请先到“图元标准检查”创建", "")
+        if profile is None:
+            self.rmu_profile.addItem("尚未设置全局图元标准，请先到“图元标准检查”选择版本并设为全局", ("", None))
+        elif not self._is_jeddah_profile(profile):
+            self.rmu_profile.addItem(
+                f"当前全局标准不是 Jeddah：{profile.site_name} / {profile.profile_name} / V{profile.profile_version}",
+                (profile.profile_name, profile.profile_version),
+            )
         else:
-            for name, profile in rows:
-                readiness = "SMART/NORMAL LBS+Q+接地" if (profile.smart_ready and profile.normal_ready and profile.ground_ready) else "标准学习未完整"
-                label = (
-                    f"{profile.site_name} / {profile.profile_name} / V{profile.profile_version} ACTIVE · "
-                    f"{readiness}"
-                )
-                self.rmu_profile.addItem(label, name)
-            index = self.rmu_profile.findData(requested)
-            self.rmu_profile.setCurrentIndex(index if index >= 0 else 0)
+            missing = jeddah_role_issues(profile)
+            readiness = "吉达所需 SMART/NORMAL LBS+Q+接地标准完整" if not missing else ("缺少：" + "、".join(missing))
+            lock_text = " · LOCKED" if profile.locked else ""
+            self.rmu_profile.addItem(
+                f"{profile.site_name} / {profile.profile_name} / V{profile.profile_version} · GLOBAL{lock_text} · {readiness}",
+                (profile.profile_name, profile.profile_version),
+            )
+        self.rmu_profile.setCurrentIndex(0)
+        self.rmu_profile.setEnabled(False)
         self.rmu_profile.blockSignals(False)
-
-        selected = str(self.rmu_profile.currentData() or "").strip()
-        if selected and selected != saved_name:
-            # Persist the repaired selection so a removed/renamed old standard does
-            # not return on the next launch.
-            self.user_settings.set_value("jeddah_batch/rmu_profile_name", selected)
 
     def on_page_activated(self) -> None:
         """Page-navigation hook: always show the latest shared ACTIVE standard."""
@@ -302,12 +274,8 @@ class JeddahBatchPage(BasePage):
 
     def _persist(self) -> None:
         self.source.persist_all_text()
-        self.user_settings.set_value("jeddah_batch/rmu_profile_name", str(self.rmu_profile.currentData() or ""))
+        # Global standard selection is owned by “图元标准检查”; this page never overrides it.
         self.user_settings.set_value("jeddah_batch/small_element_threshold", self.threshold.value())
-        self.user_settings.set_value("jeddah_batch/rmu_name_top", self.name_top.isChecked())
-        self.user_settings.set_value("jeddah_batch/rmu_name_bottom", self.name_bottom.isChecked())
-        self.user_settings.set_value("jeddah_batch/rmu_name_left", self.name_left.isChecked())
-        self.user_settings.set_value("jeddah_batch/rmu_name_right", self.name_right.isChecked())
         self.user_settings.set_value("jeddah_batch/rmu_name_exclusions", self.name_exclusions.text().strip())
         self.user_settings.set_value("jeddah_batch/margin_left", self.margin_left.value())
         self.user_settings.set_value("jeddah_batch/margin_top", self.margin_top.value())
@@ -326,9 +294,6 @@ class JeddahBatchPage(BasePage):
             log=self.task.append_log,
         ):
             return
-        if not any((self.name_top.isChecked(), self.name_bottom.isChecked(), self.name_left.isChecked(), self.name_right.isChecked())):
-            QMessageBox.warning(self, "吉达 RMU 柜名设置", "RMU 柜名位置至少选择上方、下方、左侧或右侧中的一个。")
-            return
         if not self.template_selector.validate_selection():
             return
         if not IdRuleService().load_rules():
@@ -338,23 +303,31 @@ class JeddahBatchPage(BasePage):
                 "吉达批处理的 ID 处理阶段必须使用全局 ID 模板。请先在“ID 检查与修复”模块中确认 ID 规则。",
             )
             return
-        profile_name = str(self.rmu_profile.currentData() or "").strip()
-        if not profile_name:
+        profile_data = self.rmu_profile.currentData()
+        profile_name = str(profile_data[0] or "").strip() if isinstance(profile_data, (tuple, list)) and profile_data else ""
+        try:
+            profile_version = int(profile_data[1]) if isinstance(profile_data, (tuple, list)) and len(profile_data) > 1 and profile_data[1] is not None else None
+        except (TypeError, ValueError):
+            profile_version = None
+        if not profile_name or profile_version is None:
             QMessageBox.warning(
                 self,
-                "吉达 RMU 图元 Profile 未选择",
-                "吉达批处理现在会全面校验 SMART/NORMAL 的 LBS、Circuit Breaker 与接地刀闸。请先在“图元标准检查”中扫描标准 G 文件并保存 Jeddah ACTIVE 标准，然后在此选择。",
+                "尚未设置全局图元标准",
+                "请先在“图元标准检查”中选择需要执行的版本，并点击“设为全局版本”。",
             )
             return
-        active_profile = self.profile_service.load_profiles().get(profile_name)
+        active_profile = self.profile_service.get_profile_version(profile_name, profile_version)
         if active_profile is None:
-            QMessageBox.warning(self, "Profile 不存在", f"未找到当前 ACTIVE Profile：{profile_name}")
+            QMessageBox.warning(self, "Profile 不存在", f"未找到全局图元标准：{profile_name} V{profile_version}")
             return
-        if not active_profile.smart_ready or not active_profile.normal_ready or not active_profile.ground_ready:
+        missing_roles = jeddah_role_issues(active_profile)
+        if missing_roles:
             QMessageBox.warning(
                 self,
-                "Profile 学习不完整",
-                f"{active_profile.profile_name} V{active_profile.profile_version} 尚未完整学习 SMART/NORMAL 的 LBS、Circuit Breaker 和 <ZhaiWaiJieDiDaoZha> 接地刀闸。请用确认过的标准 G 文件重新扫描并保存新 ACTIVE 版本。",
+                "吉达所需图元标准不完整",
+                f"当前全局标准 {active_profile.profile_name} V{active_profile.profile_version} 已保存，但吉达固定流程仍缺少：\n"
+                + "\n".join(f"- {item}" for item in missing_roles)
+                + "\n\n请在图元标准表中确认这些图元的检查范围（SMART/NORMAL/ANY）和设备类型后保存。",
             )
             return
 
@@ -365,10 +338,6 @@ class JeddahBatchPage(BasePage):
             input_mode=self.source.mode(),
             output_dir=run_dir,
             small_element_threshold=self.threshold.value(),
-            rmu_name_top=self.name_top.isChecked(),
-            rmu_name_bottom=self.name_bottom.isChecked(),
-            rmu_name_left=self.name_left.isChecked(),
-            rmu_name_right=self.name_right.isChecked(),
             rmu_name_exclusions=self.name_exclusions.text().strip(),
             margin_left=self.margin_left.value(),
             margin_top=self.margin_top.value(),
@@ -378,6 +347,7 @@ class JeddahBatchPage(BasePage):
             frame_template_mode=self.template_selector.mode(),
             frame_builtin_template_id=self.template_selector.builtin_template_id(),
             rmu_profile_name=profile_name,
+            rmu_profile_version=profile_version,
         )
         self.task.start(
             lambda log, progress: process_jeddah_batch(settings, log, progress),

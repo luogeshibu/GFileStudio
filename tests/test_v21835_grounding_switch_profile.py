@@ -101,7 +101,7 @@ def test_apply_upgrades_ground_symbol_and_preserves_anchor(tmp_path: Path):
 def test_ground_symbol_change_creates_new_profile_version(tmp_path: Path):
     service = SiteProfileService(tmp_path / "profiles.json")
     v1 = service.upsert(SiteSmartProfile(
-        profile_name="Jeddah",
+        profile_name="Jeddah-ground-version-test",
         site_name="Jeddah",
         smart_lbs_devref=SMART_LBS,
         smart_breaker_devref=SMART_CB,
@@ -111,7 +111,7 @@ def test_ground_symbol_change_creates_new_profile_version(tmp_path: Path):
         normal_ground_devref=GROUND_V1,
     ))
     v2 = service.upsert(SiteSmartProfile(
-        profile_name="Jeddah",
+        profile_name="Jeddah-ground-version-test",
         site_name="Jeddah",
         smart_lbs_devref=SMART_LBS,
         smart_breaker_devref=SMART_CB,
@@ -128,7 +128,7 @@ def test_ground_symbol_change_creates_new_profile_version(tmp_path: Path):
 def test_jeddah_batch_ui_requires_active_profile_with_grounding_switch():
     source = Path("g_file_studio/ui/pages/jeddah_batch_page.py").read_text(encoding="utf-8")
     assert "ZhaiWaiJieDiDaoZha" in source
-    assert "active_profile.ground_ready" in source
+    assert "jeddah_role_issues(active_profile)" in source
     processor = Path("g_file_studio/jeddah/batch_processor.py").read_text(encoding="utf-8")
-    assert "smart_ground_devref=active_rmu_profile.smart_ground_devref" in processor
-    assert "normal_ground_devref=active_rmu_profile.normal_ground_devref" in processor
+    assert 'smart_ground_devref=active_rmu_roles["smart_ground"]' in processor
+    assert 'normal_ground_devref=active_rmu_roles["normal_ground"]' in processor

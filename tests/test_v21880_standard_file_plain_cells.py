@@ -6,7 +6,7 @@ def test_standard_symbol_file_column_uses_real_table_cells_not_white_combo_widge
 
     assert 'self.standard_table.setShowGrid(True)' in source
     assert 'self.standard_table.setAlternatingRowColors(True)' in source
-    assert 'self._set_readonly_cell(row, 3, "-")' in source
+    assert 'self._set_standard_file_cell(row, selected_devref)' in source
     assert 'def _set_standard_file_cell(self, row: int, devref: str)' in source
     assert 'item.setData(Qt.ItemDataRole.UserRole, devref)' in source
     assert 'self.standard_table.setCellWidget(row, 3, combo)' not in source

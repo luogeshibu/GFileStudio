@@ -68,13 +68,18 @@ class PokePage(BasePage):
 
         mode_box = QGroupBox("跳转类型")
         mode_layout = QVBoxLayout(mode_box)
-        self.enable_rmu_poke = QCheckBox("RMU Poke：跳转到具体环网柜明细图")
-        self.enable_station_poke = QCheckBox("站点跳转 Poke：跳转到对端变电站馈线总图")
+        self.enable_rmu_poke = QCheckBox(
+            "RMU Poke：环网柜明细图　目标：{区域}-{变电站}-{馈线}-{RMU}.sln.pic.g"
+        )
+        self.enable_station_poke = QCheckBox(
+            "站点跳转 Poke：变电站馈线总图　目标：{区域}-{变电站}.sln.pic.g"
+        )
         self.enable_rmu_poke.setChecked(self.user_settings.get_bool("poke/enable_rmu", True))
         self.enable_station_poke.setChecked(self.user_settings.get_bool("poke/enable_station", True))
         mode_layout.addWidget(self.enable_rmu_poke)
         mode_layout.addWidget(self.enable_station_poke)
         self.layout.addWidget(mode_box)
+
 
         recognition_box = QGroupBox("识别与数据库规则")
         recognition_layout = QVBoxLayout(recognition_box)

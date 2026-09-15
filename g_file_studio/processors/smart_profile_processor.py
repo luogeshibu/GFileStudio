@@ -11,6 +11,10 @@ from g_file_studio.engines.smart_profile_engine import (
     apply_smart_profile_to_file,
     apply_smart_profile_to_tree,
 )
+from g_file_studio.engines.standard_connection_cleanup import (
+    inspect_standard_device_connections,
+    normalize_standard_device_connections_file,
+)
 from g_file_studio.models import InputMode, ProcessingResult
 from g_file_studio.processors.common import LogCallback, ProgressCallback, discover_g_inputs
 from g_file_studio.services.site_profile_service import (
@@ -60,6 +64,9 @@ def _check_only(
     from the managed user-uploaded icon-definition G files.
     """
     managed = bool(profile.managed_standard_files)
+    connection_geometry_templates = (
+        authoritative_geometry_templates(profile) if managed else profile.geometry_templates
+    )
     kwargs = dict(
         smart_lbs_devref=profile.smart_lbs_devref,
         smart_breaker_devref=profile.smart_breaker_devref,
@@ -67,7 +74,7 @@ def _check_only(
         normal_breaker_devref=profile.normal_breaker_devref,
         smart_ground_devref=profile.smart_ground_devref,
         normal_ground_devref=profile.normal_ground_devref,
-        profile_geometry_templates=(authoritative_geometry_templates(profile) if managed else profile.geometry_templates),
+        profile_geometry_templates=connection_geometry_templates,
         custom_symbols=profile.custom_symbols,
         allow_source_geometry_fallback=not managed,
     )
@@ -76,15 +83,102 @@ def _check_only(
     tree = ET.parse(source)
     if progress:
         progress(8)
+    eligible_devrefs, single_pin_devrefs = _standard_connection_scope(profile)
+    connection_findings = inspect_standard_device_connections(
+        tree,
+        eligible_devrefs=eligible_devrefs,
+        single_pin_devrefs=single_pin_devrefs,
+        geometry_templates=connection_geometry_templates,
+    )
     result = apply_smart_profile_to_tree(
         tree,
         source,
         **kwargs,
         progress=(lambda value: progress(8 + round(value * 0.92))) if progress else None,
     )
+    if connection_findings.issues:
+        result.mismatch_details.extend(
+            _connection_issue_detail(source, issue) for issue in connection_findings.issues
+        )
+        result.mismatch_counts["TOPOLOGY:CONNECTION"] = len(connection_findings.issues)
     if progress:
         progress(100)
     return result
+
+
+
+
+def _standard_connection_scope(profile: SiteSmartProfile) -> tuple[set[str], set[str]]:
+    """Return standard-covered devrefs and roles known to have one electrical pin.
+
+    The symbol-standard correction may touch connection topology only for symbols
+    already covered by the current authoritative standard.  One-pin knowledge is
+    derived from the uploaded standard geometry rather than from site-specific names.
+    """
+    devrefs = {
+        value.strip() for value in (
+            profile.smart_lbs_devref,
+            profile.smart_breaker_devref,
+            profile.normal_lbs_devref,
+            profile.normal_breaker_devref,
+            profile.smart_ground_devref,
+            profile.normal_ground_devref,
+        ) if value and value.strip()
+    }
+    for row in profile.custom_symbols or []:
+        if bool(row.get("enabled", True)):
+            value = str(row.get("standard_devref", "")).strip()
+            if value:
+                devrefs.add(value)
+
+    geometry_payload = authoritative_geometry_templates(profile) if profile.managed_standard_files else profile.geometry_templates
+    single_pin: set[str] = set()
+    for devref, rows in (geometry_payload or {}).items():
+        if devref not in devrefs or not isinstance(rows, list):
+            continue
+        valid_counts = {
+            len(row.get("anchor_offsets", []))
+            for row in rows
+            if isinstance(row, dict) and isinstance(row.get("anchor_offsets", []), list) and row.get("anchor_offsets")
+        }
+        if valid_counts == {1}:
+            single_pin.add(devref)
+    return devrefs, single_pin
+
+
+def standard_connection_scope(profile: SiteSmartProfile) -> tuple[set[str], set[str]]:
+    """Return the shared safe connection-cleanup scope for an authoritative Profile.
+
+    Symbol Standard Correction and Jeddah Batch both use this helper so eligible
+    devrefs and one-pin device classification can never drift between modules.
+    """
+    return _standard_connection_scope(profile)
+
+
+def _connection_issue_detail(file_path: Path, issue) -> dict[str, object]:
+    return {
+        "File": file_path.name,
+        "RMU": "-",
+        "RMURectID": "-",
+        "Scope": "TOPOLOGY",
+        "Role": "ConnectLine",
+        "ElementTag": "ConnectLine",
+        "ElementID": issue.line_id or "-",
+        "DeviceName": "-",
+        "KeyName": "-",
+        "Rotation": 0,
+        "IssueType": issue.issue_type,
+        "Reason": issue.reason,
+        "CurrentDevref": "-",
+        "StandardDevref": "-",
+        "CurrentSize": "-",
+        "StandardSize": "-",
+        "CurrentPosition": issue.current or "-",
+        "ExpectedPosition": issue.expected or "-",
+        "ConnectedLines": issue.line_id or "-",
+        "_AppliedDevrefChanged": False,
+        "_AppliedGeometryChanged": False,
+    }
 
 
 def _expected_devref(profile: SiteSmartProfile, scope: str, role: str) -> str:
@@ -619,6 +713,9 @@ def process_smart_profile_correction(
         progress(0)
 
     managed = bool(profile.managed_standard_files)
+    connection_geometry_templates = (
+        authoritative_geometry_templates(profile) if managed else profile.geometry_templates
+    )
     kwargs = dict(
         smart_lbs_devref=profile.smart_lbs_devref,
         smart_breaker_devref=profile.smart_breaker_devref,
@@ -626,7 +723,7 @@ def process_smart_profile_correction(
         normal_breaker_devref=profile.normal_breaker_devref,
         smart_ground_devref=profile.smart_ground_devref,
         normal_ground_devref=profile.normal_ground_devref,
-        profile_geometry_templates=(authoritative_geometry_templates(profile) if managed else profile.geometry_templates),
+        profile_geometry_templates=connection_geometry_templates,
         custom_symbols=profile.custom_symbols,
         require_template_for_connected_devref_change=True,
         allow_source_geometry_fallback=not managed,
@@ -648,6 +745,12 @@ def process_smart_profile_correction(
     corrected_elements = 0
     devref_changes = 0
     geometry_changes = 0
+    redundant_lines_removed = 0
+    connection_lines_straightened = 0
+    connection_devices_realigned = 0
+    connection_endpoints_connected = 0
+    connection_topology_links_repaired = 0
+    eligible_devrefs, single_pin_devrefs = _standard_connection_scope(profile)
     correction_span = 62
     file_total = max(1, len(files))
     for index, source in enumerate(files, 1):
@@ -665,6 +768,18 @@ def process_smart_profile_correction(
                 lambda value, start=file_start, span=file_span: progress(start + round(value * span / 100))
             ) if progress else None,
         )
+        connection_cleanup = normalize_standard_device_connections_file(
+            target,
+            target,
+            eligible_devrefs=eligible_devrefs,
+            single_pin_devrefs=single_pin_devrefs,
+            geometry_templates=connection_geometry_templates,
+        )
+        redundant_lines_removed += connection_cleanup.removed_redundant_lines
+        connection_lines_straightened += connection_cleanup.straightened_lines
+        connection_devices_realigned += connection_cleanup.moved_devices
+        connection_endpoints_connected += connection_cleanup.connected_endpoints
+        connection_topology_links_repaired += connection_cleanup.repaired_topology_links
         outputs.append(target)
         warnings.extend(applied.warnings)
         file_corrected = sum(
@@ -674,11 +789,15 @@ def process_smart_profile_correction(
         corrected_elements += file_corrected
         devref_changes += applied.changed_count
         geometry_changes += applied.geometry_adjusted_count
-        if applied.changed_count or applied.geometry_adjusted_count:
+        if applied.changed_count or applied.geometry_adjusted_count or connection_cleanup.changed:
             changed_files += 1
         log(
             f"[图元标准纠正] {source.name}：发现/处理 {file_corrected} 个标准差异；"
-            f"devref/变体纠正 {applied.changed_count}，连接锚点/几何纠正 {applied.geometry_adjusted_count}。"
+            f"devref/变体纠正 {applied.changed_count}，连接锚点/几何纠正 {applied.geometry_adjusted_count}；"
+            f"重复贯穿线删除 {connection_cleanup.removed_redundant_lines}，"
+            f"双 Pin 端点吸附 {connection_cleanup.connected_endpoints}，"
+            f"拓扑引用补齐 {connection_cleanup.repaired_topology_links}，"
+            f"单连接点设备正交修复 {connection_cleanup.straightened_lines}。"
         )
         if progress:
             progress(file_end)
@@ -712,6 +831,11 @@ def process_smart_profile_correction(
         "Corrected Elements": corrected_elements,
         "Devref Corrections": devref_changes,
         "Geometry Corrections": geometry_changes,
+        "Redundant Connection Lines Removed": redundant_lines_removed,
+        "Connection Lines Straightened": connection_lines_straightened,
+        "Connection Devices Realigned": connection_devices_realigned,
+        "Connection Endpoints Connected": connection_endpoints_connected,
+        "Connection Topology Links Repaired": connection_topology_links_repaired,
         "Remaining Nonstandard Symbols": int(stats.get("Nonstandard Symbols", 0) or 0),
     })
     if progress:
