@@ -52,13 +52,14 @@ def _rmu_tree(name_nodes: str):
     return ET.ElementTree(ET.fromstring(xml))
 
 
-def test_rmu_selected_direction_only_and_dtext_supported():
+def test_rmu_selected_direction_uses_text_and_ignores_dtext():
     tree = _rmu_tree('''
       <DText id="3300001" x="150" y="65" w="90" h="25" ts="TOP-DTEXT"/>
+      <Text id="8000201" x="150" y="65" w="90" h="25" ts="TOP-TEXT"/>
       <Text id="8000202" x="150" y="325" w="90" h="25" ts="BOTTOM-TEXT" lcc="#00ff00"/>
     ''')
     item = identify_rmus(tree, Path('x.g'), name_positions=('top',)).items[0]
-    assert item.name == 'TOP-DTEXT'
+    assert item.name == 'TOP-TEXT'
     assert item.name_position == 'top'
 
 

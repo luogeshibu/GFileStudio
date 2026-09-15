@@ -197,7 +197,7 @@ def apply_rmu_name_white_to_tree(
     )
 
     elements = direct_layer_elements(tree.getroot())
-    texts = [element for element in elements if local_name(element.tag) in {"Text", "DText"}]
+    texts = [element for element in elements if local_name(element.tag) == "Text"]
     used_text_keys: set[str] = set()
     effective_positions = ("top", "bottom", "left", "right") if (name_resolution_mode or "").strip().lower() == "auto_cluster" else name_positions
 

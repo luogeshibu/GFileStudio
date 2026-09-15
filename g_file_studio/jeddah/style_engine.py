@@ -141,7 +141,7 @@ def apply_jeddah_rmu_name_standard(
     )
 
     elements = direct_layer_elements(tree.getroot())
-    texts = [element for element in elements if local_name(element.tag) in {"Text", "DText"}]
+    texts = [element for element in elements if local_name(element.tag) == "Text"]
     used_text_keys: set[str] = set()
 
     for item in identification.items:

@@ -939,7 +939,10 @@ def identify_rmus(
 
     elements = direct_layer_elements(tree.getroot())
     rects = [element for element in elements if local_name(element.tag) == "rect"]
-    texts = [element for element in elements if local_name(element.tag) in {"Text", "DText"}]
+    # Device/RMU names are static drawing labels.  DText is reserved for
+    # dynamic measurements and must be handled only by a later association
+    # stage, never as a name candidate.
+    texts = [element for element in elements if local_name(element.tag) == "Text"]
     switches = [element for element in elements if local_name(element.tag) == "CBreakerDis"]
     buses = [element for element in elements if local_name(element.tag) == "BusDis"]
     grounds = [element for element in elements if local_name(element.tag) == "ZhaiWaiJieDiDaoZha"]
@@ -975,7 +978,7 @@ def identify_rmus(
     if smart_in_type and valid_cabinets:
         marker_texts = [
             item for item in tree.getroot().iter()
-            if local_name(item.tag) in {"Text", "DText"}
+            if local_name(item.tag) == "Text"
             and _normalize_excluded_name(item.get("ts") or "") in marker_key_to_source
         ]
         for marker in marker_texts:

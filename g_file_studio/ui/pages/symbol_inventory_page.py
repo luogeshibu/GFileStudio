@@ -26,7 +26,7 @@ _HELP = """
 <li>设备汇总不再局限于 RMU：变压器、LBS、Fuse、Recloser、SFI、CB 及后续标准库新增设备都会进入 ADMS-SLD 设备明细；原始图元类型仍保留用于审计。</li>
 <li>Excel 固定提供 ADMS-SLD设备明细、ADMS-SLD主设备、RMU、TRANSFORMER、LBS、FUSE、REC、SFI、CB、RMU内部设备、未命名设备等 Sheet，便于数据迁移按 Sheet/字段映射直接读取。</li>
 <li>RMU 继续复用公共 identify_rmus()，但本模块启用自动柜名模式：按 RMU 重复排列自动分 Cluster，分别学习 TOP/RIGHT/BOTTOM/LEFT 名称布局与主导文字风格，再做整组一对一分配；无需人工指定现场方向。只要 ParentRMU 非空，该实例仍强制视为 RMU 内部设备，不进入 ADMS-SLD主设备和主设备类型统计。</li>
-<li>除 RMU 外，独立设备名称统一按全图最近文字识别：不限定上/下/左/右方向、不使用方向加权；优先以设备连接线端点作为视觉锚点，从全图 Text/DText 中按真实几何距离做一对一分配。F、F.C、N.O.P、Y1/Q1、SMART/SMR 等明确注释不参与设备名称候选。</li>
+<li>除 RMU 外，独立设备名称统一按全图最近文字识别：不限定上/下/左/右方向、不使用方向加权；优先以设备连接线端点作为视觉锚点，从全图 Text 标签中按真实几何距离做一对一分配。DText 是动态量测值，保留给后续量测关联，不参与设备名称候选。F、F.C、N.O.P、Y1/Q1、SMART/SMR 等明确注释不参与设备名称候选。</li>
 <li>所属馈线以 Bus 仅作为上游边界，并按真实 link/node_area 拓扑识别每个馈线分支；每个分支只查询顶部 CBreaker / Disconnector / GroundDisconnector 三类入口设备 keyid。keyid 通过 long2_to_long1/get_tab_no 解码并校验 407/408/409，再查询 BAY.ID → BAY.NAME/ST_ID → SUBSTATION.NAME。CBreaker(407) 是馈线权威根：只要 CBreaker 取得有效 BAY，就从其非 Bus 一侧沿 ConnectLine / FeedLine / BusDis / 设备节点一直遍历到真实拓扑终点，所有下游设备直接继承同一馈线，不再查询任何下游设备 keyid 或关联状态。Disconnector/GroundDisconnector 只做一致性/回退证据，其未关联或旧 BAY 只告警，不会抹掉有效 CBreaker 馈线；不使用 facID/facName、FeedLine 文字或空间距离补猜。</li>
 <li>标准校验复用当前全局执行图元标准，只读执行，不修改源 G 文件。</li>
 <li>业务 G 中存在 devref 但尚未映射到标准的对象会进入“未定义图元”，不会静默丢失，便于后续继续补充分类和标准。</li>

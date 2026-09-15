@@ -443,7 +443,7 @@ def _find_name_element(root: ET.Element, rmu_name: str, rect_box: _Box) -> ET.El
     """
     candidates: list[tuple[float, ET.Element]] = []
     for element in root.iter():
-        if local_name(element.tag) not in {"Text", "DText"}:
+        if local_name(element.tag) != "Text":
             continue
         if (element.get("ts") or "").strip() != rmu_name:
             continue

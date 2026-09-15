@@ -93,7 +93,9 @@ class PokePage(BasePage):
         recognition_layout.addWidget(shared_rmu)
         station_rule = QLabel(
             "站点跳转示例：DHN-40 → 只取 DHN → SUBSTATION.NAME → SUBAREA_ID → SUBCONTROLAREA.NAME → "
-            "JED-CTL-DHN → ahref=JED-CTL-DHN.sln.pic.g，对端目标为变电站馈线总图。后缀 40 和附近 (14858) 等数字均忽略。"
+            "JED-CTL-DHN → ahref=JED-CTL-DHN.sln.pic.g，对端目标为变电站馈线总图。若站点旁有标准环网柜名（如 (14020) 或 14020），"
+            "且站点本身位于显式拓扑叶端、柜名唯一，则追加 ?locateLabel=14020&&scaleFlag=true；黄色小尺寸的 240/340/480/120 等运行标注不作为柜名。"
+            "已有站点 Poke 的同站端子也仅在上述条件全部满足时更新；内部支路不创建或更新站点跳转。"
         )
         station_rule.setWordWrap(True)
         station_rule.setObjectName("mutedText")

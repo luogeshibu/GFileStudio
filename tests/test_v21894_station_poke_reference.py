@@ -41,6 +41,7 @@ def test_station_jump_poke_uses_reference_properties_but_keeps_dynamic_geometry(
         identification,
         current_station_name="AJWD",
         station_resolver=lambda key: SimpleNamespace(station_full_name="JED-CTL-JM2"),
+        strict_topology=False,
     )
     assert result.updated_count == 1
     poke = next(e for e in list(layer) if e.tag == "poke")

@@ -54,6 +54,7 @@ def test_ajwd_five_existing_station_strips_are_detected_and_long_design_label_is
         _empty_identification(file_path),
         current_station_name="AJWD",
         station_resolver=lambda key: SimpleNamespace(station_full_name=resolved[key]),
+        strict_topology=False,
     )
 
     assert result.candidate_count == 5

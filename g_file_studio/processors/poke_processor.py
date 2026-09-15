@@ -268,6 +268,11 @@ def process_pokes(
                 identification,
                 current_station_name=current_station_name,
                 station_resolver=database_service.resolve_station_context,
+                # A same-station label is still allowed when it is an existing
+                # terminal Poke with a unique RMU locate label and strict
+                # topology proof.  This covers station overview terminals such
+                # as ADEL-20 without creating guessed self-jumps.
+                allow_same_station_terminals=True,
             )
             stats["station_candidates"] += station_result.candidate_count
             stats["station_resolved_count"] += station_result.eligible_count

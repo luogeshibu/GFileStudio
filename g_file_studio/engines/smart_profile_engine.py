@@ -235,7 +235,7 @@ def _marker_texts(elements: list[ET.Element], marker: str) -> list[ET.Element]:
     return [
         element
         for element in elements
-        if local_name(element.tag) in {"Text", "DText"}
+        if local_name(element.tag) == "Text"
         and (element.get("ts") or "").strip().upper() == marker
     ]
 

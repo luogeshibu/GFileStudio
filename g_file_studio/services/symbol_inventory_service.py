@@ -1274,13 +1274,15 @@ _GLOBAL_NAME_EXACT_EXCLUSIONS = {
 
 
 def _is_global_device_name_text(text: ET.Element) -> bool:
-    """Return whether one visible Text/DText can participate in standalone naming.
+    """Return whether one static Text label can participate in device naming.
 
     v2.18.127 deliberately makes geometry the *only* association rule for non-RMU
     devices.  This helper therefore filters only text that is clearly an annotation
     rather than a device name; it does not impose family prefixes, directions,
     colors, or a search window.
     """
+    if local_name(text.tag) != "Text":
+        return False
     value = _text_value(text).strip()
     if not value:
         return False
@@ -1411,7 +1413,7 @@ def _assign_global_standalone_names(
 ) -> dict[int, tuple[str, str, str, int, float]]:
     """Assign visible names to all non-RMU devices by one global rule: distance.
 
-    - search every eligible Text/DText in the whole G drawing;
+    - search every eligible Text label in the whole G drawing;
     - no top/bottom/left/right preference and no directional penalty;
     - use the device-side electrical anchor when available;
     - one concrete Text object can name only one device; when two devices compete,
@@ -1920,7 +1922,7 @@ def extract_file_inventory(
     contexts, warnings = _rmu_contexts(tree, source)
     validation_by_id, validation_warnings = _validation_map(source, profile)
     warnings.extend(validation_warnings)
-    texts = [element for element in elements if local_name(element.tag) in {"Text", "DText"}]
+    texts = [element for element in elements if local_name(element.tag) == "Text"]
 
     # Resolve symbol identity/context once.  RMU internals keep their dedicated
     # composite-device naming rules; every non-RMU business device participates in

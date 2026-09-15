@@ -93,7 +93,8 @@ def test_blank_facid_no_longer_blocks_station_poke(tmp_path: Path) -> None:
     source = tmp_path / "blank-facid.g"
     root = ET.Element("G")
     layer = ET.SubElement(root, "Layer", {"name": "0"})
-    ET.SubElement(layer, "FeedLine", {"id": "35000001", "d": "10,10 100,100", "x": "10", "y": "10", "w": "90", "h": "90"})
+    ET.SubElement(layer, "Node", {"id": "34000001"})
+    ET.SubElement(layer, "FeedLine", {"id": "35000001", "d": "10,10 100,100", "x": "10", "y": "10", "w": "90", "h": "90", "link": "0,0,34000001"})
     ET.SubElement(layer, "Text", {"id": "80000001", "x": "105", "y": "95", "w": "90", "h": "25", "ts": "DHN-40"})
     ET.ElementTree(root).write(source, encoding="utf-8", xml_declaration=True)
 
@@ -177,7 +178,8 @@ def test_station_poke_without_facid_does_not_create_self_jump_from_local_title(t
     source = tmp_path / "JED-CTL-AJWD-16.sln.pic.g"
     root = ET.Element("G")
     layer = ET.SubElement(root, "Layer", {"name": "0"})
-    ET.SubElement(layer, "ConnectLine", {"id": "34000011", "d": "565,347 565,262", "x": "562", "y": "259", "w": "6", "h": "91"})
+    ET.SubElement(layer, "Node", {"id": "34000012"})
+    ET.SubElement(layer, "ConnectLine", {"id": "34000011", "d": "565,347 565,262", "x": "562", "y": "259", "w": "6", "h": "91", "link": "0,0,34000012"})
     ET.SubElement(layer, "Text", {"id": "8000012", "x": "514", "y": "225", "w": "101", "h": "26", "ts": "AJWD-16"})
     tree = ET.ElementTree(root)
 

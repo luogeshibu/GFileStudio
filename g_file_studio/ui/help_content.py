@@ -270,7 +270,7 @@ APP_HELP["poke"] = (
 <h3>RMU Poke</h3>
 <p>严格调用与“环网柜处理”相同的 identify_rmus()，并读取同一组柜名方向、名称排除项和智能标记设置。识别出智能 RMU 柜名后，数据库按 DMS_COMBINED_DEVICE.NAME → FEEDER_ID → DMS_FEEDER_DEVICE.NAME/ST_ID → SUBSTATION.NAME/SUBAREA_ID → SUBCONTROLAREA.NAME，为每个 RMU 独立得到所属馈线完整业务名，再追加该 RMU 名。因此同一张变电站馈线总图即使包含多条馈线，也不会被根节点 facID 限制。GRAPH_NAME 不参与命名。</p>
 <h3>站点跳转 Poke</h3>
-<p>例如 DHN-40 只提取 DHN；40 以及附近的 (14858) 等数字都不参与目标。程序按 SUBSTATION.NAME=DHN → SUBAREA_ID → SUBCONTROLAREA.NAME 得到 JED-CTL-DHN，并生成 JED-CTL-DHN.sln.pic.g；该目标图定义为“对端变电站馈线总图”，即对端变电站下多条馈线集中展示的站级总图。</p>
+<p>例如 DHN-40 只提取 DHN；40 不参与目标。程序按 SUBSTATION.NAME=DHN → SUBAREA_ID → SUBCONTROLAREA.NAME 得到 JED-CTL-DHN，并生成 JED-CTL-DHN.sln.pic.g；该目标图定义为“对端变电站馈线总图”，即对端变电站下多条馈线集中展示的站级总图。若站点本身位于显式拓扑叶端，且站点旁存在标准环网柜名（如 (14020)、（14020）或 14020），柜名候选也唯一，才会在 ahref 后追加 <code>?locateLabel=14020&amp;&amp;scaleFlag=true</code>；黄色小尺寸的 240/340/480/120 等运行标注不作为柜名。已有站点 Poke 的同站端子也仅在上述条件全部满足时更新；内部支路不创建或更新站点跳转。</p>
 <p>识别不依赖固定背景色：优先复用覆盖标签的既有非 RMU Poke；没有 Poke 时结合 FeedLine/ConnectLine 末端位置或紧凑背景图形兜底。任何候选都必须通过数据库唯一匹配才允许修改。多个相关 Poke 删除多余项仅保留一个；没有则新增。</p>
 <h3>Poke 目标文件命名规则</h3>
 <p>智能环网柜名字 Poke 目标文件：<code>{区域}-{变电站}-{馈线}-{RMU}.sln.pic.g</code></p>
@@ -291,7 +291,7 @@ APP_HELP_EN["poke"] = (
 <h3>RMU Poke</h3>
 <p>The module calls the same identify_rmus() used by RMU Processing and reads the same name-direction, exclusion and smart-marker settings. Each recognized smart RMU name independently resolves DMS_COMBINED_DEVICE.NAME → FEEDER_ID → DMS_FEEDER_DEVICE.NAME/ST_ID → SUBSTATION.NAME/SUBAREA_ID → SUBCONTROLAREA.NAME. This allows one station overview drawing to contain RMUs from multiple feeders without relying on the root facID. GRAPH_NAME is not used.</p>
 <h3>Station-jump Poke</h3>
-<p>For DHN-40 only DHN is used. The suffix 40 and nearby values such as (14858) are ignored. SUBSTATION.NAME=DHN → SUBAREA_ID → SUBCONTROLAREA.NAME produces JED-CTL-DHN and therefore JED-CTL-DHN.sln.pic.g. This target is the remote substation feeder overview, i.e. the station-level drawing that brings multiple feeders of that substation together.</p>
+<p>For DHN-40 only DHN is used for station lookup; the suffix 40 is ignored. SUBSTATION.NAME=DHN → SUBAREA_ID → SUBCONTROLAREA.NAME produces JED-CTL-DHN and therefore JED-CTL-DHN.sln.pic.g. If a standard RMU name is adjacent to the station label, such as (14020), （14020） or 14020, and exactly one explicit topology line terminal supports the station, the ahref also receives <code>?locateLabel=14020&amp;&amp;scaleFlag=true</code>. If either the topology terminal or RMU label is ambiguous, no query suffix is added and a warning is recorded. This target is the remote substation feeder overview, i.e. the station-level drawing that brings multiple feeders of that substation together.</p>
 <p>Recognition does not require a fixed background color. Existing overlapping non-RMU Pokes are preferred; otherwise nearby FeedLine/ConnectLine endpoints or compact background geometry are fallback structural cues. Every candidate must resolve uniquely in Oracle. Duplicate related Pokes are removed, and a missing Poke is created.</p>
 <h3>Target drawing files</h3>
 <p><b>RMU Poke</b> targets use <code>{area}-{substation}-{feeder}-{RMU}.sln.pic.g</code>, for example <code>JED-NTH-ABH-AH303-34661.sln.pic.g</code>.</p>
