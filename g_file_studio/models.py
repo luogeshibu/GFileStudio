@@ -128,8 +128,6 @@ class BasicSettings(BaseModel):
 
     # 勾选后仅做保守的设备半像素吸附，并补齐缺失的 node_area/link。
     repair_connection_points: bool = False
-    # 仅依据 Bus/Text 几何和文字特征，将唯一可确认的馈线名称移到主母线正上方。
-    move_feeder_titles_above_bus: bool = False
     rmu_action: RmuAction = RmuAction.NONE
     # 兼容 v2.7/v2.8 代码；为 True 且 rmu_action=NONE 时按 GROUP 处理。
     group_rmu_elements: bool = False
@@ -184,9 +182,8 @@ class BasicSettings(BaseModel):
 
     # RMU 信息汇总。只读取/统计，不修改 G 图元；SMART 与 SMR 统一归类为智能环网柜。
     identify_rmu_name_and_type: bool = False
-    # RMU cabinet-name resolver mode.  Keep selected_direction as the public/default
-    # compatibility path; the standalone RMU page and selected new workflows may opt
-    # in to auto_cluster without changing legacy Basic/Poke callers.
+    # RMU cabinet-name resolver mode retained for compatibility.  The shared
+    # recognizer now always uses the strict top-of-frame rule.
     rmu_name_resolution_mode: str = "selected_direction"
     rmu_name_top: bool = True
     rmu_name_bottom: bool = False
@@ -232,6 +229,18 @@ class ConnectionRepairSettings(BaseModel):
     input_mode: InputMode = InputMode.DIRECTORY
     output_dir: Path
     output_conflict_action: BasicOutputConflictAction = BasicOutputConflictAction.OVERWRITE
+    task_timestamp: str = ""
+
+
+class OrthogonalizeSettings(BaseModel):
+    """线路正交化参数。
+
+    处理只生成输出副本；线路重画保留原 ID 和拓扑引用，同类设备仅在安全条件下对齐。
+    """
+
+    source_path: Path
+    input_mode: InputMode = InputMode.DIRECTORY
+    output_dir: Path
     task_timestamp: str = ""
 
 

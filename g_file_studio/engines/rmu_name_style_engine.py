@@ -120,10 +120,12 @@ def _find_exact_name_text(
         positions = allowed_positions
 
     candidates: list[tuple[float, str, ET.Element]] = []
-    for index, text in enumerate(texts):
+    for text in texts:
         if _normalize(text.get("ts") or "") != target:
             continue
-        text_key = (text.get("id") or "").strip() or f"__text_{index}"
+        # Match the same concrete Text-object ownership rule as identification;
+        # equal rendered values and duplicate/missing XML ids remain independent.
+        text_key = f"__text_object_{id(text)}"
         if text_key in used_text_keys:
             continue
         text_box = _box(text)
@@ -199,7 +201,8 @@ def apply_rmu_name_white_to_tree(
     elements = direct_layer_elements(tree.getroot())
     texts = [element for element in elements if local_name(element.tag) == "Text"]
     used_text_keys: set[str] = set()
-    effective_positions = ("top", "bottom", "left", "right") if (name_resolution_mode or "").strip().lower() == "auto_cluster" else name_positions
+    # The shared RMU recognizer accepts names only above the validated frame.
+    effective_positions = ("top",)
 
     for item in identification.items:
         if not item.name:

@@ -46,7 +46,10 @@ class TaskPanel(QFrame):
         # QProgressBar is repainted at a stable cadence instead of flashing through
         # queued values. This is opt-in because most legacy modules already have
         # their own established progress behaviour.
-        self._smooth_progress_enabled = False
+        # All task panels use a determinate 0~100% display with smooth visual
+        # progression.  The worker percentage remains authoritative; smoothing
+        # only controls how quickly the bar catches up on screen.
+        self._smooth_progress_enabled = True
         self._smooth_progress_target = 0
         self._smooth_progress_display = 0
         self._smooth_progress_timer = QTimer(self)
@@ -148,16 +151,16 @@ class TaskPanel(QFrame):
             self._smooth_progress_timer.stop()
 
     def set_live_progress_enabled(self, enabled: bool) -> None:
-        """Keep long background phases visibly alive without inventing fake percentages.
+        """Keep the compatibility API while enforcing the common 0~100% style.
 
-        Worker callbacks remain authoritative. If a phase cannot expose an exact
-        percentage for ~0.9 s, the bar temporarily switches to Qt's animated busy
-        state. The next real callback restores the exact determinate percentage.
+        Indeterminate Qt busy bars are intentionally disabled globally. Long
+        phases keep the last determinate percentage and the smooth display remains
+        monotonic until the worker reports the next value.
         """
-        self._live_progress_enabled = bool(enabled)
-        if not self._live_progress_enabled:
-            self._progress_stall_timer.stop()
-            self._restore_determinate_progress()
+        del enabled
+        self._live_progress_enabled = False
+        self._progress_stall_timer.stop()
+        self._restore_determinate_progress()
 
     def _restore_determinate_progress(self) -> None:
         if self._progress_busy_active or self.progress.minimum() == 0 and self.progress.maximum() == 0:
@@ -168,11 +171,9 @@ class TaskPanel(QFrame):
         self.progress.setValue(max(0, min(100, int(value))))
 
     def _enter_progress_busy_state(self) -> None:
-        if not self._live_progress_enabled or not self._task_running or self._last_progress_value >= 100:
-            return
-        self._progress_busy_active = True
-        self.progress.setRange(0, 0)
-        self.progress.setFormat("处理中…")
+        # Kept as a timer-slot compatibility shim.  All progress bars are now
+        # determinate 0~100% bars; never switch to Qt's indeterminate range.
+        return
 
     def _on_worker_progress(self, value: int) -> None:
         value = max(0, min(100, int(value)))
@@ -245,6 +246,10 @@ class TaskPanel(QFrame):
         if self._live_progress_enabled:
             self._progress_stall_timer.start()
         self.thread_pool.start(worker)
+
+    def set_progress(self, value: int) -> None:
+        """Accept direct page progress updates through the same smooth path."""
+        self._on_worker_progress(value)
 
     def on_finished(self) -> None:
         self._task_running = False

@@ -19,7 +19,10 @@ _DETAIL_HEADERS = [
     "Type",
     "SourceName",
     "StationKey",
+    "AdjacentRMU",
+    "LocateLabel",
     "ResolvedBusinessName",
+    "TargetFormat",
     "Action",
     "PokeID",
     "TargetAhref",
@@ -27,6 +30,19 @@ _DETAIL_HEADERS = [
     "RecognitionSource",
     "Reason",
 ]
+
+
+def _target_format(row: dict[str, object], *, english: bool) -> str:
+    """Describe the target naming rule that produced the written ahref."""
+    jump_type = str(row.get("Type") or "").strip().lower()
+    locate_label = str(row.get("LocateLabel") or "").strip()
+    if jump_type == "rmu":
+        return "RMU detail: {area}-{substation}-{feeder}-{RMU}.com.pic.g" if english else "RMU 明细图：{区域}-{变电站}-{馈线}-{RMU}.com.pic.g"
+    if jump_type == "station":
+        if locate_label:
+            return "Station overview: {area}-{substation}.sln.pic.g?locateLabel={number}&&scaleFlag=true" if english else "站点馈线总图：{区域}-{变电站}.sln.pic.g?locateLabel={数字}&&scaleFlag=true"
+        return "Station overview: {area}-{substation}.sln.pic.g" if english else "站点馈线总图：{区域}-{变电站}.sln.pic.g"
+    return ""
 
 
 def _yes_no(value: object, *, english: bool) -> str:
@@ -64,16 +80,16 @@ def _source_text(value: object, *, english: bool) -> str:
     if english:
         return {
             "existing_poke": "Existing Poke",
-            "line_endpoint": "Line endpoint",
-            "compact_background": "Compact background",
             "rmu_identification": "Shared RMU identification",
+            "background_color": "Colored background",
+            "locate_label": "Adjacent parenthesized RMU label",
             "file_precondition": "File precondition",
         }.get(key, str(value or ""))
     return {
         "existing_poke": "已有 Poke 覆盖",
-        "line_endpoint": "线路末端",
-        "compact_background": "紧凑背景图形",
         "rmu_identification": "公共 RMU 识别",
+        "background_color": "彩色背景",
+        "locate_label": "相邻括号环网柜名",
         "file_precondition": "文件前置条件",
     }.get(key, str(value or ""))
 
@@ -100,6 +116,7 @@ def write_poke_reports(
             row["Type"] = _type_text(row.get("Type"), english=english)
             row["Action"] = _action_text(row.get("Action"), english=english)
             row["RecognitionSource"] = _source_text(row.get("RecognitionSource"), english=english)
+            row["TargetFormat"] = _target_format(raw, english=english)
             writer.writerow({key: row.get(key, "") for key in _DETAIL_HEADERS})
 
     title = "Poke Processing Report" if english else "Poke 跳转处理报告"
@@ -177,7 +194,10 @@ def write_poke_reports(
         "Type": "Type" if english else "类型",
         "SourceName": "Source name" if english else "识别名称/站点标签原文",
         "StationKey": "Station key" if english else "站名关键字",
+        "AdjacentRMU": "Adjacent RMU name" if english else "相邻环网柜名",
+        "LocateLabel": "Locate label" if english else "定位号",
         "ResolvedBusinessName": "Resolved business name" if english else "数据库解析业务名",
+        "TargetFormat": "Target format" if english else "跳转目标格式",
         "Action": "Action" if english else "处理结果",
         "PokeID": "Poke ID",
         "TargetAhref": "Target ahref" if english else "写入跳转名称 (ahref)",
@@ -193,6 +213,7 @@ def write_poke_reports(
         row["Type"] = _type_text(row.get("Type"), english=english)
         row["Action"] = _action_text(row.get("Action"), english=english)
         row["RecognitionSource"] = _source_text(row.get("RecognitionSource"), english=english)
+        row["TargetFormat"] = _target_format(raw, english=english)
         cells = "".join(f"<td>{html.escape(str(row.get(key, '')))}</td>" for key in _DETAIL_HEADERS)
         detail_rows_html.append(f"<tr class='{css}'>{selection_cell()}{cells}</tr>")
 
@@ -212,7 +233,7 @@ def write_poke_reports(
         + selection_style()
         + "</style></head><body>"
         f"<h1>{html.escape(title)}</h1>"
-        f"<div class='note'>{html.escape('报告记录每个 RMU/站点跳转 Poke 的识别名称、写入 ahref、处理动作，以及所有未加跳转的原因。' if not english else 'The report records each RMU/station-jump Poke name, written ahref, action, and every reason a jump was not added.')}</div>"
+        f"<div class='note'>{html.escape('报告记录每个 RMU/站点跳转 Poke 的识别名称、相邻环网柜名、定位号、目标格式、写入 ahref、处理动作，以及所有未加跳转的原因。' if not english else 'The report records each RMU/station-jump Poke name, adjacent RMU name, locate label, target format, written ahref, action, and every reason a jump was not added.')}</div>"
         f"<h2>{html.escape(summary_title)}</h2><div class='cards'>{card_html}</div>"
         f"<h2>{html.escape(file_title)}</h2>"
         + selection_bar()

@@ -139,7 +139,10 @@ def process_pokes(
         identification = identify_rmus(
             tree,
             input_path,
-            name_positions=settings.rmu_name_positions,
+            # Poke must use the same strict RMU resolver: only the Text above the
+            # validated cabinet frame can be used as its name.
+            name_positions=("top",),
+            name_resolution_mode="selected_direction",
             smart_in_type=True,
             excluded_name_values=excluded,
             intelligent_marker_values=markers,
@@ -236,6 +239,8 @@ def process_pokes(
                     "Type": "rmu",
                     "SourceName": record.rmu_name,
                     "StationKey": "",
+                    "AdjacentRMU": "",
+                    "LocateLabel": "",
                     "ResolvedBusinessName": resolved_name,
                     "Action": record.action,
                     "PokeID": record.poke_id,
@@ -268,10 +273,10 @@ def process_pokes(
                 identification,
                 current_station_name=current_station_name,
                 station_resolver=database_service.resolve_station_context,
-                # A same-station label is still allowed when it is an existing
-                # terminal Poke with a unique RMU locate label and strict
-                # topology proof.  This covers station overview terminals such
-                # as ADEL-20 without creating guessed self-jumps.
+                # A same-station label is still allowed only when an existing
+                # Poke has a unique adjacent RMU locate label.  This is a
+                # graphic-constraint exception; it does not inspect line
+                # geometry or connection references.
                 allow_same_station_terminals=True,
             )
             stats["station_candidates"] += station_result.candidate_count
@@ -305,6 +310,8 @@ def process_pokes(
                     "Type": "station",
                     "SourceName": record.label_text,
                     "StationKey": record.station_key,
+                    "AdjacentRMU": record.adjacent_rmu_names,
+                    "LocateLabel": record.locate_label,
                     "ResolvedBusinessName": record.station_full_name,
                     "Action": record.action,
                     "PokeID": record.poke_id,

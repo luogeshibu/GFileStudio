@@ -4,6 +4,7 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from g_file_studio.engines.id_engine import direct_layer_elements, local_name
 
@@ -67,6 +68,15 @@ class RmuIdentificationResult:
     warnings: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class GlobalTextOwner:
+    """Global nearest equipment owner for one static Text label."""
+
+    target_key: str
+    text: ET.Element
+    distance: float
+
+
 _Y_LABEL_RE = re.compile(r"^Y\s*(\d+)$", re.I)
 _Q_LABEL_RE = re.compile(r"^Q\s*(\d+)$", re.I)
 
@@ -94,6 +104,79 @@ def _point_to_box_distance(x: float, y: float, box: _Box) -> float:
     return (dx * dx + dy * dy) ** 0.5
 
 
+def assign_global_text_owners(
+    texts: list[ET.Element],
+    targets: list[tuple[str, ET.Element]],
+    *,
+    target_anchors: dict[str, tuple[tuple[float, float], ...]] | None = None,
+    score_adjuster: Callable[[ET.Element, str, float], float] | None = None,
+) -> dict[int, GlobalTextOwner]:
+    """Assign each static Text to its nearest equipment target globally.
+
+    This is shared by RMU recognition and the complete G-content inventory.
+    Callers provide only real equipment targets; topology and presentation objects
+    must be filtered before calling.  An exact geometric tie is left unassigned
+    instead of guessed.  Electrical anchor points can be supplied for symbols
+    whose XML bounding box is larger than the rendered device body.  An optional
+    score adjuster can add a caller-owned semantic tie-breaker (for example a
+    learned Text color convention) without changing the raw distance reported to
+    the caller.
+    """
+    valid_targets: list[tuple[str, _Box]] = []
+    for target_key, target in targets:
+        target_box = _box(target)
+        if target_box is not None:
+            valid_targets.append((str(target_key), target_box))
+    if not valid_targets:
+        return {}
+
+    owners: dict[int, GlobalTextOwner] = {}
+    for text in texts:
+        text_box = _box(text)
+        if text_box is None:
+            continue
+        distances: list[tuple[float, float, str]] = []
+        for target_key, target_box in valid_targets:
+            anchors = (target_anchors or {}).get(target_key)
+            if anchors:
+                raw_distance = min(
+                    _point_to_box_distance(x, y, text_box)
+                    for x, y in anchors
+                )
+            else:
+                raw_distance = _point_to_box_distance(
+                    text_box.center_x,
+                    text_box.center_y,
+                    target_box,
+                )
+            adjusted_distance = (
+                score_adjuster(text, target_key, raw_distance)
+                if score_adjuster is not None
+                else raw_distance
+            )
+            distances.append((adjusted_distance, raw_distance, target_key))
+        # A caller may use color/character conventions as a soft tie-breaker, but
+        # a clearly nearer graphical device must remain the owner.  The bounded
+        # 48-unit window still lets learned styles resolve adjacent labels without
+        # allowing a distant same-color target to steal a name.
+        if score_adjuster is not None:
+            nearest_raw_distance = min(item[1] for item in distances)
+            distances = [
+                item for item in distances
+                if item[1] <= nearest_raw_distance + 48.0
+            ]
+        distances.sort(key=lambda item: (item[0], item[1], item[2]))
+        best_score, best_distance, best_target = distances[0]
+        if len(distances) > 1 and abs(best_score - distances[1][0]) <= 1e-6:
+            continue
+        owners[id(text)] = GlobalTextOwner(
+            target_key=best_target,
+            text=text,
+            distance=round(best_distance, 6),
+        )
+    return owners
+
+
 def _center_inside(element: ET.Element, outer: _Box, tolerance: float = 0.5) -> bool:
     box = _box(element)
     if box is None:
@@ -117,16 +200,8 @@ def _classify_switch_by_devref(element: ET.Element) -> str | None:
 
 
 def _classify_switch(element: ET.Element) -> str | None:
-    """兼容旧调用：devref 优先；仅在 devref 无法判断时用 Y/Q 名称回退。"""
-    kind = _classify_switch_by_devref(element)
-    if kind is not None:
-        return kind
-    name = (element.get("p_NameString") or "").strip().upper()
-    if re.fullmatch(r"Y\d+", name):
-        return "L"
-    if re.fullmatch(r"Q\d+", name):
-        return "T"
-    return None
+    """Compatibility wrapper using only the graphical icon reference."""
+    return _classify_switch_by_devref(element)
 
 
 def _is_smart_device(element: ET.Element) -> bool:
@@ -280,12 +355,15 @@ def _all_candidates_for_rect(
     candidate name.
     """
     best_by_text: dict[str, tuple[float, float, str, str, str, bool]] = {}
-    for index, text in enumerate(texts):
+    for text in texts:
         if not _valid_name_text(text, excluded_names):
             continue
         value = (text.get("ts") or "").strip()
-        text_id = (text.get("id") or "").strip()
-        text_key = text_id or f"__text_{index}"
+        # Ownership is per concrete XML Text object, never per displayed value
+        # and never dependent on an XML id being globally unique.  Therefore two
+        # separate Text objects containing the same value (for example 000000)
+        # remain two independent name candidates.
+        text_key = f"__text_object_{id(text)}"
         green = _is_green_name_text(text)
         for position in positions:
             metric = _candidate_for_position(text, rect, position)
@@ -393,6 +471,10 @@ class _AutoNameCandidate:
     pattern: str
     color: str
     green: bool
+    text_center_x: float
+    text_center_y: float
+    cabinet_center_x: float
+    cabinet_center_y: float
 
     @property
     def geometry_score(self) -> float:
@@ -504,12 +586,16 @@ def _auto_candidates_for_rect(
     excluded_names: frozenset[str],
 ) -> list[_AutoNameCandidate]:
     candidates: list[_AutoNameCandidate] = []
-    for index, text in enumerate(texts):
+    for text in texts:
         if not _valid_auto_name_text(text, excluded_names):
             continue
+        box = _box(text)
+        if box is None:
+            continue
         value = (text.get("ts") or "").strip()
-        text_id = (text.get("id") or "").strip()
-        text_key = text_id or f"__auto_text_{index}"
+        # Keep repeated equal strings independent.  The object identity is the
+        # ownership key; the rendered value is only the name content.
+        text_key = f"__text_object_{id(text)}"
         pattern = _auto_name_pattern(value)
         color = _auto_color_key(text)
         green = _is_green_name_text(text)
@@ -527,6 +613,10 @@ def _auto_candidates_for_rect(
                 pattern=pattern,
                 color=color,
                 green=green,
+                text_center_x=box.center_x,
+                text_center_y=box.center_y,
+                cabinet_center_x=rect.center_x,
+                cabinet_center_y=rect.center_y,
             ))
     return candidates
 
@@ -611,19 +701,22 @@ def _style_rank(
     style: tuple[str, str],
     candidates: list[_AutoNameCandidate],
     cluster_size: int,
-) -> tuple[int, int, int, float, float, str, str]:
+) -> tuple[int, int, int, int, float, float, str, str]:
     pattern, color = style
     matched = [item for item in candidates if item.pattern == pattern and item.color == color]
     covered = {item.rect_id for item in matched}
     pattern_covered = {item.rect_id for item in candidates if item.pattern == pattern}
-    green_bonus = 1 if any(item.green for item in matched) else 0
+    green_covered = len({item.rect_id for item in matched if item.green})
+    green_bonus = 1 if green_covered else 0
     avg_gap = sum(item.gap for item in matched) / max(1, len(matched))
     avg_axis = sum(item.axis_offset for item in matched) / max(1, len(matched))
-    # Coverage is authoritative.  When two repeated styles cover the same RMUs,
-    # green is a strong disambiguation signal (ABHA AK-* vs K-*/A-* labels), but
-    # it never overrides a better-coverage non-green style.
+    # Coverage is authoritative.  When repeated styles cover the same RMUs,
+    # green is a strong disambiguation signal (ABHA AK-* vs K-*/A-* labels); the
+    # dominant-style selector below only lets it override a one-cabinet coverage
+    # advantage, so a sparse green annotation cannot dominate a mixed drawing.
     return (
         len(covered),
+        green_covered,
         green_bonus,
         len(pattern_covered),
         -avg_gap,
@@ -636,26 +729,52 @@ def _style_rank(
 def _dominant_style_for_direction(
     candidates: list[_AutoNameCandidate],
     cluster_size: int,
-) -> tuple[tuple[str, str] | None, tuple[int, int, int, float, float, str, str]]:
+) -> tuple[tuple[str, str] | None, tuple[int, int, int, int, float, float, str, str]]:
     styles = {(item.pattern, item.color) for item in candidates if item.pattern}
     if not styles:
-        return None, (0, 0, 0, float("-inf"), float("-inf"), "", "")
+        return None, (0, 0, 0, 0, float("-inf"), float("-inf"), "", "")
     ranked = sorted(
         ((_style_rank(style, candidates, cluster_size), style) for style in styles),
         key=lambda row: row[0],
         reverse=True,
     )
-    return ranked[0][1], ranked[0][0]
+    best_rank, best_style = ranked[0]
+
+    # In ABHA drawings the green AK-* Text is the cabinet identity while nearby
+    # white T-*/A-* Text describes another electrical object.  Coverage remains
+    # the primary signal, but a green style that covers most cabinets is allowed
+    # to beat a competing style that wins by only one cabinet.  This also handles
+    # a direction with two or three candidates per cabinet without treating every
+    # nearby Text as another RMU name.
+    green_styles = [
+        row for row in ranked
+        if any(
+            item.green and (item.pattern, item.color) == row[1]
+            for item in candidates
+        )
+    ]
+    if green_styles:
+        green_rank, green_style = green_styles[0]
+        green_support = green_rank[1]
+        required_green_support = max(2, (cluster_size + 1) // 2)
+        if (
+            green_support >= required_green_support
+            and green_rank[0] + 1 >= best_rank[0]
+        ):
+            return green_style, green_rank
+    return best_style, best_rank
 
 
 def _assign_cluster_direction(
     cluster_ids: list[str],
     all_candidates: dict[str, list[_AutoNameCandidate]],
+    used_texts: set[str] | None = None,
+    common_position: str | None = None,
 ) -> tuple[str | None, tuple[str, str] | None, dict[str, _AutoNameCandidate], dict[str, int]]:
     """Infer one repeated side/style and assign one Text to one RMU."""
     cluster_size = len(cluster_ids)
     direction_options: list[
-        tuple[tuple[int, int, int, float, float, str, str], str, tuple[str, str] | None, list[_AutoNameCandidate]]
+        tuple[tuple[int, int, int, int, float, float, str, str], str, tuple[str, str] | None, list[_AutoNameCandidate]]
     ] = []
     for position in _AUTO_NAME_POSITIONS:
         directional = [
@@ -670,33 +789,161 @@ def _assign_cluster_direction(
     direction_options.sort(key=lambda row: (row[0], row[1]), reverse=True)
     best_rank, position, dominant_style, directional = direction_options[0]
     min_support = max(2, (cluster_size + 1) // 2)
+    if common_position:
+        common_option = next(
+            (option for option in direction_options if option[1] == common_position),
+            None,
+        )
+        # A strong whole-drawing direction is a prior, not a hard rule.  Use it
+        # when the local cluster has comparable evidence; a genuinely different
+        # local layout is still allowed to win.
+        if (
+            common_option is not None
+            and common_option[0][0] >= min_support
+            and common_option[0][0] + 1 >= best_rank[0]
+        ):
+            best_rank, position, dominant_style, directional = common_option
     if best_rank[0] < min_support:
         return None, None, {}, {}
 
     preferred_pattern = dominant_style[0] if dominant_style else ""
-    edges: list[tuple[int, float, str, str, _AutoNameCandidate]] = []
-    for item in directional:
-        if dominant_style and (item.pattern, item.color) == dominant_style:
-            fallback_level = 0
-        elif preferred_pattern and item.pattern == preferred_pattern:
-            fallback_level = 1
-        else:
-            fallback_level = 2
-        edges.append((fallback_level, item.geometry_score, item.rect_id, item.text_key, item))
-    edges.sort(key=lambda row: (row[0], row[1], row[2], row[3]))
+    already_used = used_texts or set()
 
-    assigned_rects: set[str] = set()
-    assigned_texts: set[str] = set()
+    def fallback_level(item: _AutoNameCandidate) -> int:
+        if dominant_style and (item.pattern, item.color) == dominant_style:
+            return 0
+        if preferred_pattern and item.pattern == preferred_pattern:
+            return 1
+        return 2
+
+    # Build one edge per (cabinet, Text) pair.  When a repeated cluster has a
+    # dominant name style, unrelated styles are deliberately not allowed to fill
+    # a missing cabinet: a feeder label such as FRD-43 must not become an RMU
+    # name merely because it is nearby.
+    pair_candidates: dict[tuple[str, str], _AutoNameCandidate] = {}
+    for item in directional:
+        if item.text_key in already_used:
+            continue
+        level = fallback_level(item)
+        if dominant_style and level >= 2:
+            continue
+        key = (item.rect_id, item.text_key)
+        current = pair_candidates.get(key)
+        if current is None or (
+            fallback_level(item), item.geometry_score, item.value, item.text_key
+        ) < (
+            fallback_level(current), current.geometry_score, current.value, current.text_key
+        ):
+            pair_candidates[key] = item
+
+    if not pair_candidates:
+        return position, dominant_style, {}, {}
+
+    axis_is_vertical = position in {"top", "bottom"}
+
+    def cabinet_coordinate(item: _AutoNameCandidate) -> float:
+        return item.cabinet_center_y if axis_is_vertical else item.cabinet_center_x
+
+    def text_coordinate(item: _AutoNameCandidate) -> float:
+        return item.text_center_y if axis_is_vertical else item.text_center_x
+
+    # For a vertical stack, this creates the essential top-to-bottom order.  For
+    # a horizontal row, the same code operates left-to-right.  The dynamic
+    # program below may skip cabinets and extra Text labels, but it can never
+    # cross two accepted name assignments.
+    ordered_cabinets = sorted(
+        cluster_ids,
+        key=lambda rect_id: (
+            min(
+                cabinet_coordinate(item)
+                for (candidate_rect_id, _text_key), item in pair_candidates.items()
+                if candidate_rect_id == rect_id
+            )
+            if any(candidate_rect_id == rect_id for candidate_rect_id, _text_key in pair_candidates)
+            else float("inf"),
+            rect_id,
+        ),
+    )
+    ordered_text_keys = sorted(
+        {text_key for _rect_id, text_key in pair_candidates},
+        key=lambda text_key: (
+            min(text_coordinate(item) for (candidate_rect_id, candidate_key), item in pair_candidates.items() if candidate_key == text_key),
+            text_key,
+        ),
+    )
+
+    from functools import lru_cache
+
+    @lru_cache(maxsize=None)
+    def solve(cabinet_index: int, text_index: int) -> tuple[tuple[int, int, float], tuple[tuple[str, str], ...]]:
+        if cabinet_index >= len(ordered_cabinets) or text_index >= len(ordered_text_keys):
+            return (0, 0, 0.0), ()
+
+        options = [
+            solve(cabinet_index + 1, text_index),
+            solve(cabinet_index, text_index + 1),
+        ]
+        pair = (ordered_cabinets[cabinet_index], ordered_text_keys[text_index])
+        item = pair_candidates.get(pair)
+        if item is not None:
+            next_score, next_pairs = solve(cabinet_index + 1, text_index + 1)
+            level = fallback_level(item)
+            options.append((
+                (
+                    next_score[0] + 1,
+                    next_score[1] + (2 - level),
+                    next_score[2] - item.geometry_score,
+                ),
+                ((item.rect_id, item.text_key),) + next_pairs,
+            ))
+        # Matching count is the primary objective, then repeated style evidence,
+        # then geometric distance.  Option order makes equal ties deterministic.
+        return max(options, key=lambda option: option[0])
+
+    _score, pairs = solve(0, 0)
     assigned: dict[str, _AutoNameCandidate] = {}
     fallback_levels: dict[str, int] = {}
-    for fallback_level, _score, rect_id, text_key, item in edges:
-        if rect_id in assigned_rects or text_key in assigned_texts:
-            continue
-        assigned_rects.add(rect_id)
-        assigned_texts.add(text_key)
+    for rect_id, text_key in pairs:
+        item = pair_candidates[(rect_id, text_key)]
         assigned[rect_id] = item
-        fallback_levels[rect_id] = fallback_level
+        fallback_levels[rect_id] = fallback_level(item)
     return position, dominant_style, assigned, fallback_levels
+
+
+def _learn_common_layout_direction(
+    cabinets: list[tuple[str, _Box]],
+    all_candidates: dict[str, list[_AutoNameCandidate]],
+) -> str | None:
+    """Learn a strong drawing-level RMU name direction as a soft prior.
+
+    Repeated cabinets often use one drafting convention even when their columns
+    are separated far enough to become different local clusters.  The prior is
+    enabled only when one direction covers a clear majority, so mixed-layout
+    drawings continue to be resolved independently per cluster.
+    """
+    cabinet_count = len(cabinets)
+    if cabinet_count < 2:
+        return None
+    options: list[tuple[tuple[int, int, int, int, float, float, str, str], str]] = []
+    all_ids = [rect_id for rect_id, _rect in cabinets]
+    for position in _AUTO_NAME_POSITIONS:
+        directional = [
+            item
+            for rect_id in all_ids
+            for item in all_candidates.get(rect_id, [])
+            if item.position == position
+        ]
+        _style, rank = _dominant_style_for_direction(directional, cabinet_count)
+        options.append((rank, position))
+    options.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    best_rank, best_position = options[0]
+    second_rank = options[1][0]
+    required_support = max(2, (cabinet_count + 1) // 2)
+    if best_rank[0] < required_support:
+        return None
+    if best_rank[0] < second_rank[0] + 1:
+        return None
+    return best_position
 
 
 def _assign_singletons_auto(
@@ -727,7 +974,7 @@ def _assign_names_auto_cluster(
     cabinets: list[tuple[str, _Box]],
     excluded_names: frozenset[str] = frozenset(),
 ) -> dict[str, tuple[str, str, str, list[str]]]:
-    """Automatic RMU name resolver used by G Graphic Content Analysis.
+    """Legacy automatic RMU name resolver retained for compatibility.
 
     It learns repeated layout per RMU cluster (TOP/RIGHT/BOTTOM/LEFT), then learns
     the dominant text style within that cluster and performs one-to-one matching.
@@ -742,13 +989,21 @@ def _assign_names_auto_cluster(
         rect_id: ("", "", "未识别", []) for rect_id, _rect in cabinets
     }
     used_texts: set[str] = set()
+    ordered_cluster_ids: set[str] = set()
     clusters = _auto_cluster_cabinets(cabinets)
+    common_position = _learn_common_layout_direction(cabinets, all_candidates)
 
     # Strong repeated-layout clusters first; singletons/irregular remnants later.
     for cluster_ids in [cluster for cluster in clusters if len(cluster) >= 2]:
-        position, _style, assigned, fallback_levels = _assign_cluster_direction(cluster_ids, all_candidates)
+        position, _style, assigned, fallback_levels = _assign_cluster_direction(
+            cluster_ids,
+            all_candidates,
+            used_texts,
+            common_position,
+        )
         if position is None:
             continue
+        ordered_cluster_ids.update(cluster_ids)
         for rect_id, item in assigned.items():
             if item.text_key in used_texts:
                 continue
@@ -760,7 +1015,7 @@ def _assign_names_auto_cluster(
     unresolved = [
         rect_id
         for rect_id, _rect in cabinets
-        if not result[rect_id][0]
+        if not result[rect_id][0] and rect_id not in ordered_cluster_ids
     ]
     singleton_assigned, singleton_confidence = _assign_singletons_auto(unresolved, all_candidates, used_texts)
     for rect_id, item in singleton_assigned.items():
@@ -772,6 +1027,84 @@ def _assign_names_auto_cluster(
         )
     return result
 
+
+_GLOBAL_TOPOLOGY_ONLY_TAGS = {
+    "ConnectLine", "FeedLine", "BusDis", "Bus", "ACLine", "line",
+    "Text", "DText", "Status", "rect", "ellipse", "image", "Layer", "G",
+    "Group", "Merge", "Theme", "pwbh", "poke",
+}
+
+
+def _globally_owned_rmu_name_texts(
+    texts: list[ET.Element],
+    elements: list[ET.Element],
+    valid_cabinets: list[tuple[ET.Element, _Box]],
+    excluded_names: frozenset[str],
+) -> list[ET.Element]:
+    """Keep only Texts whose nearest global equipment target is an RMU.
+
+    RMU name recognition must compete with every other real equipment symbol in
+    the drawing.  Internal RMU symbols are excluded from the competing targets;
+    their Y/Q labels describe components, while the cabinet frame owns the outer
+    cabinet name.  ConnectLine, FeedLine, BusDis and Bus are never targets.
+    """
+    target_pairs: list[tuple[str, ET.Element]] = []
+    rmu_target_keys: set[str] = set()
+    for index, (rect, _rect_box) in enumerate(valid_cabinets):
+        rect_id = rect.get("id") or f"__rect_{index}"
+        target_key = f"rmu:{index}:{rect_id}"
+        target_pairs.append((target_key, rect))
+        rmu_target_keys.add(target_key)
+
+    for element in elements:
+        tag = local_name(element.tag)
+        if tag in _GLOBAL_TOPOLOGY_ONLY_TAGS or not (element.get("devref") or "").strip():
+            continue
+        if _box(element) is None:
+            continue
+        # A recognized RMU is a composite target; its internal device symbols do
+        # not compete for the external cabinet-name Text.
+        if any(_center_inside(element, rect_box) for _rect, rect_box in valid_cabinets):
+            continue
+        target_pairs.append((f"device:{id(element)}", element))
+
+    candidates = [
+        text for text in texts
+        if _valid_name_text(text, excluded_names)
+    ]
+    if not candidates or not target_pairs:
+        return texts
+
+    owners = assign_global_text_owners(candidates, target_pairs)
+    return [
+        text for text in candidates
+        if (owner := owners.get(id(text))) is not None
+        and owner.target_key in rmu_target_keys
+    ]
+
+
+def _cluster_rmu_name_texts(
+    texts: list[ET.Element],
+    valid_cabinets: list[tuple[ET.Element, _Box]],
+    excluded_names: frozenset[str],
+) -> list[ET.Element]:
+    """Return the full outer-label pool for repeated-layout RMU matching.
+
+    A nearest-frame pre-filter is correct for isolated cabinets but is unsafe for
+    a vertical stack: the label of a lower cabinet can be geometrically closer to
+    the upper frame.  Auto-cluster must see both labels so its learned direction
+    and top-to-bottom one-to-one assignment can resolve the pair together.
+    Texts inside a cabinet remain excluded because they are component/status text,
+    not the external cabinet name.
+    """
+    rect_boxes = [rect_box for _rect, rect_box in valid_cabinets]
+    return [
+        text for text in texts
+        if _valid_name_text(text, excluded_names)
+        and _box(text) is not None
+        and not any(_center_inside(text, rect_box) for rect_box in rect_boxes)
+    ]
+
 def _find_name(
     texts: list[ET.Element],
     rect: _Box,
@@ -781,86 +1114,6 @@ def _find_name(
     """Compatibility wrapper used by focused unit tests/single-cabinet callers."""
     matches = _assign_names_globally(texts, [("__single__", rect)], positions, excluded_names)
     return matches["__single__"]
-
-
-def _bus_key_name_candidate(inside_buses: list[ET.Element], excluded_names: frozenset[str] = frozenset()) -> str:
-    """Extract an RMU cabinet name encoded by BusDis.key_name, e.g. 30864_BUS.
-
-    This is a metadata fallback only.  It does not inspect any unselected text
-    direction, so the user's direction restriction remains a hard constraint for
-    geometric Text matching.
-    """
-    candidates: list[str] = []
-    for bus in inside_buses:
-        key_name = (bus.get("key_name") or "").strip()
-        if not key_name:
-            continue
-        match = re.fullmatch(r"(.+?)_BUS", key_name, re.I)
-        if not match:
-            continue
-        value = match.group(1).strip()
-        if value and value.upper() != "BUS" and _normalize_excluded_name(value) not in excluded_names:
-            candidates.append(value)
-    unique = []
-    seen = set()
-    for value in candidates:
-        key = value.upper()
-        if key not in seen:
-            seen.add(key)
-            unique.append(value)
-    return unique[0] if len(unique) == 1 else ""
-
-
-def _metadata_name_confirmed_by_text(
-    texts: list[ET.Element],
-    rect: _Box,
-    positions: tuple[str, ...],
-    candidate: str,
-    excluded_names: frozenset[str] = frozenset(),
-) -> bool:
-    """Confirm a BusDis.key_name fallback using nearby Text with the exact same value.
-
-    This is intentionally more tolerant than normal name geometry only because
-    the metadata value already supplies an exact candidate.  It handles tall
-    Text bounding boxes such as ``38995`` whose box overlaps the RMU frame by
-    more than the normal 20-unit tolerance, while still respecting the user's
-    selected directions and refusing metadata-only guesses.
-    """
-    key = _normalize_excluded_name(candidate)
-    if not key or key in excluded_names:
-        return False
-
-    max_distance = 160.0
-    edge_tolerance = 80.0
-    for text in texts:
-        value = (text.get("ts") or "").strip()
-        if _normalize_excluded_name(value) != key:
-            continue
-        box = _box(text)
-        if box is None:
-            continue
-        for position in positions:
-            if position == "top":
-                gap = rect.top - box.bottom
-                if (-edge_tolerance <= gap <= max_distance and box.center_y < rect.top
-                        and rect.left - edge_tolerance <= box.center_x <= rect.right + edge_tolerance):
-                    return True
-            elif position == "bottom":
-                gap = box.top - rect.bottom
-                if (-edge_tolerance <= gap <= max_distance and box.center_y > rect.bottom
-                        and rect.left - edge_tolerance <= box.center_x <= rect.right + edge_tolerance):
-                    return True
-            elif position == "left":
-                gap = rect.left - box.right
-                if (-edge_tolerance <= gap <= max_distance and box.center_x < rect.left
-                        and rect.top - edge_tolerance <= box.center_y <= rect.bottom + edge_tolerance):
-                    return True
-            elif position == "right":
-                gap = box.left - rect.right
-                if (-edge_tolerance <= gap <= max_distance and box.center_x > rect.right
-                        and rect.top - edge_tolerance <= box.center_y <= rect.bottom + edge_tolerance):
-                    return True
-    return False
 
 
 def _label_counts(inside_texts: list[ET.Element]) -> tuple[int, int, set[str], set[str]]:
@@ -898,15 +1151,15 @@ def identify_rmus(
 ) -> RmuIdentificationResult:
     """识别环网柜名称、L/T 柜型及 SMART 状态，不修改 XML。
 
-    名称识别支持两种模式：
-    - selected_direction（默认）：保持历史行为，只在用户指定方向内做一对一匹配；
-    - auto_cluster：供 G 图形内容解析使用。按重复 RMU 排列自动分 Cluster，四方向对称评估，
-      自动学习每个 Cluster 的名称方向与主导文字风格（颜色/文本模式仅作为组内证据），
-      然后整组一对一分配；孤立/不规则 RMU 才退化到全方向局部最近候选。
+    名称识别固定使用历史模式：只在环网柜外框正上方搜索可见 Text，
+    并按全图一对一规则把每个具体 Text 归属给一个外框。保留
+    ``name_positions`` 和 ``name_resolution_mode`` 参数仅为兼容旧调用方，
+    参数值不再改变 RMU 的强制识别规则。
 
     共同规则：
     1. 必须存在环网柜 rect，且框内同时具有 BusDis、CBreakerDis、ZhaiWaiJieDiDaoZha。
-    2. BusDis.key_name 只作为保守回退，必须有附近完全同名 Text 确认，不接受纯 metadata 猜名。
+    2. 环网柜名称只来自图上的可见 Text；不使用 keyid、key_name、p_NameString
+       或其他模型关联字段作为名称来源或回退。
     3. 柜型第一来源为框内 Y1/Y2/... 与 Q1/Q2/...：Y 数量=L，Q 数量=T，并检查序号连续性。
        第二来源仅按 CBreakerDis.devref 图元文件名：Load_Breaker*=L，Circuit_Breaker*=T。
        L/T 按类别分别交叉校验：已同时存在的类别计数不一致才 FAIL；某一类 Y/Q 完全缺失时
@@ -917,11 +1170,15 @@ def identify_rmus(
 
     smart_in_type 参数为了兼容现有设置保留；现在表示是否统计智能环网柜。
     """
-    mode = (name_resolution_mode or "selected_direction").strip().lower()
-    if mode not in {"selected_direction", "auto_cluster"}:
+    requested_mode = (name_resolution_mode or "selected_direction").strip().lower()
+    if requested_mode not in {"selected_direction", "auto_cluster"}:
         raise ValueError(f"未知 RMU 柜名识别模式：{name_resolution_mode}")
-    if mode == "selected_direction" and not name_positions:
-        raise ValueError("环网柜名称位置至少选择一个方向。")
+    # RMU recognition is intentionally strict and site-independent: only the
+    # Text above the validated cabinet frame can be its name.  Older callers may
+    # still pass auto_cluster or a multi-direction setting, but those options must
+    # not weaken this invariant.
+    mode = "selected_direction"
+    name_positions = ("top",)
 
     intelligent_markers = tuple(
         value for value in intelligent_marker_values if _normalize_excluded_name(value)
@@ -966,10 +1223,35 @@ def identify_rmus(
 
     cabinet_boxes = [((rect.get("id") or f"__rect_{index}"), rect_box)
                      for index, (rect, rect_box) in enumerate(valid_cabinets)]
+    # Name ownership is global across the whole drawing.  RMU-only matching is
+    # applied only after other real equipment has had the first claim on its
+    # nearest Text; topology primitives never enter that competition.
     if mode == "auto_cluster":
-        name_assignments = _assign_names_auto_cluster(texts, cabinet_boxes, excluded_names)
+        # Do not discard a label merely because a neighbouring cabinet is
+        # currently a few pixels closer.  The cluster resolver needs the complete
+        # outer-label pool to learn the common direction and preserve row/column
+        # order across vertically stacked cabinets.
+        globally_owned_name_texts = _cluster_rmu_name_texts(
+            texts, valid_cabinets, excluded_names
+        )
+        name_assignments = _assign_names_auto_cluster(
+            globally_owned_name_texts,
+            cabinet_boxes,
+            excluded_names,
+        )
     else:
-        name_assignments = _assign_names_globally(texts, cabinet_boxes, name_positions, excluded_names)
+        globally_owned_name_texts = _globally_owned_rmu_name_texts(
+            texts,
+            elements,
+            valid_cabinets,
+            excluded_names,
+        )
+        name_assignments = _assign_names_globally(
+            globally_owned_name_texts,
+            cabinet_boxes,
+            name_positions,
+            excluded_names,
+        )
 
     # User-configured intelligent markers are global RMU markers. They are not
     # required to be fully inside a cabinet frame: a label may sit on / slightly
@@ -1139,20 +1421,6 @@ def identify_rmus(
             rect_key, ("", "", "未识别", [])
         )
         warnings.extend(name_warnings)
-        # Conservative metadata fallback: only when the existing direction-based
-        # Text algorithm found no usable name.  A unique BusDis.key_name such as
-        # 38995_BUS may then supply 38995.  This does not broaden direction geometry
-        # and does not alter cabinet/type detection.
-        if not name:
-            bus_name = _bus_key_name_candidate(inside_buses, excluded_names)
-            metadata_positions = _AUTO_NAME_POSITIONS if mode == "auto_cluster" else name_positions
-            if bus_name and _metadata_name_confirmed_by_text(
-                texts, rect_box, metadata_positions, bus_name, excluded_names
-            ):
-                name = bus_name
-                position = "BusDis.key_name+Text"
-                confidence = "高"
-
         smart_count = 0
         smart_source = ""
         if smart_in_type:

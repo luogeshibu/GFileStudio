@@ -1,17 +1,11 @@
 from pathlib import Path
 
 
-def test_content_analysis_module_is_renamed_without_changing_stable_internal_page():
-    page = Path("g_file_studio/ui/pages/symbol_inventory_page.py").read_text(encoding="utf-8")
+def test_global_content_analysis_module_is_removed_from_the_ui():
     main = Path("g_file_studio/ui/main_window.py").read_text(encoding="utf-8")
-    assert '"G 图形内容解析"' in page
-    assert 'self.task.run_button.setText("开始解析")' in page
-    assert 'QPushButton("打开详细 Excel")' in page
-    assert 'QPushButton("打开 HTML 报告")' in page
-    assert '("G 图形内容解析",' in main
-    # keep stable settings/service wiring for upgrade compatibility
-    assert 'settings_prefix="symbol_inventory"' in page
-    assert 'process_symbol_inventory' in page
+    assert not Path("g_file_studio/ui/pages/symbol_inventory_page.py").exists()
+    assert "SymbolInventoryPage" not in main
+    assert '"G 图形内容解析"' not in main
 
 
 def test_locked_active_standard_hides_graphic_discovery_input_panel():

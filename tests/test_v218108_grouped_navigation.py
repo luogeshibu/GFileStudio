@@ -5,11 +5,12 @@ def test_sidebar_is_grouped_collapsible_and_help_is_fixed():
     main = Path("g_file_studio/ui/main_window.py").read_text(encoding="utf-8")
     i18n = Path("g_file_studio/i18n.py").read_text(encoding="utf-8")
 
-    for label in ("数据与分析", "检查与标准", "图形处理", "现场批处理"):
+    for label in ("检查与标准", "图形处理", "现场批处理"):
         assert f'"{label}"' in main
         assert f'"{label}"' in i18n
 
-    assert '("G 图形内容解析",' in main
+    assert '"G 图形内容解析"' not in main
+    assert '"数据与分析"' not in main
     assert '("数据库",' not in main
     assert 'self.connection_button = QPushButton("连接与环境")' in main
     assert '("通用基础处理",' in main
@@ -29,7 +30,7 @@ def test_general_processing_visible_name_and_default_landing_page():
     basic = Path("g_file_studio/ui/pages/basic_page.py").read_text(encoding="utf-8")
     help_content = Path("g_file_studio/ui/help_content.py").read_text(encoding="utf-8")
 
-    assert 'self._select_page(4)' in main
+    assert 'self._select_page(3)' in main
     assert 'basic_title.setText("通用基础处理")' in main
     assert '"基础处理"' in basic
     assert '"通用基础处理帮助"' in help_content

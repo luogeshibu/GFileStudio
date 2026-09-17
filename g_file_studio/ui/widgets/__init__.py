@@ -9,6 +9,7 @@ from g_file_studio.ui.widgets.path_row import PathRow
 from g_file_studio.ui.widgets.remote_g_source import RemoteGSourceWidget
 from g_file_studio.ui.widgets.person_editor import PersonEditor
 from g_file_studio.ui.widgets.rule_card import RuleCard
+from g_file_studio.ui.widgets.smooth_progress_bar import SmoothProgressBar
 from g_file_studio.ui.widgets.task_panel import TaskPanel
 from g_file_studio.ui.widgets.template_selector import TemplateSelector
 from g_file_studio.ui.widgets.wheel_safe_combo_box import WheelSafeComboBox
@@ -28,6 +29,7 @@ __all__ = [
     "RemoteGSourceWidget",
     "PersonEditor",
     "RuleCard",
+    "SmoothProgressBar",
     "TaskPanel",
     "TemplateSelector",
     "WheelSafeComboBox",

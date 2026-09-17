@@ -659,11 +659,13 @@ class OracleDatabaseService:
     ) -> tuple[dict[tuple[str, str], TopologyFeederAnchorContext], dict[tuple[str, str], str]]:
         """Resolve feeder anchors through the authoritative DBI keyid chain.
 
-        Only three G XML elements participate in feeder-anchor lookup:
+        Feeder ownership is rooted by the G ``CBreaker`` element:
 
         - ``CBreaker`` -> DBI table 407 -> ``breaker``
-        - ``Disconnector`` -> DBI table 408 -> ``disconnector``
-        - ``GroundDisconnector`` -> DBI table 409 -> ``grounddisconnector``
+
+        The 408/409 table specifications remain available for compatibility with
+        older callers, but the current G inventory workflow does not use
+        Disconnector/GroundDisconnector as feeder roots.
 
         The G ``keyid`` is *not* a table primary key.  It is first decoded with the
         same DBI functions used by the model-validation workflow::

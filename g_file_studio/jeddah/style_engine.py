@@ -113,8 +113,8 @@ def apply_jeddah_rmu_name_standard(
     """Jeddah-only wrapper over the existing RMU recognition/name matching.
 
     RMU detection/type/SMART logic remains shared and unchanged. For cabinet names,
-    the Jeddah batch explicitly enables the shared ``auto_cluster`` resolver so users
-    no longer configure TOP/BOTTOM/LEFT/RIGHT. After a name is recognized, reuse the
+    the Jeddah batch uses the shared strict resolver, which only accepts a Text above
+    the validated RMU frame. After a name is recognized, reuse the
     exact-name Text locator and apply only Jeddah presentation rules: white text,
     font size 50, and horizontal centering 10 units above the top frame.
     """
@@ -125,12 +125,12 @@ def apply_jeddah_rmu_name_standard(
     tree = ET.parse(source_path)
     file_path = source_path
 
-    all_name_positions = ("top", "bottom", "left", "right")
+    all_name_positions = ("top",)
     identification = identify_rmus(
         tree,
         file_path,
         name_positions=all_name_positions,
-        name_resolution_mode="auto_cluster",
+        name_resolution_mode="selected_direction",
         smart_in_type=True,
         excluded_name_values=parse_name_exclusions(name_exclusions),
     )

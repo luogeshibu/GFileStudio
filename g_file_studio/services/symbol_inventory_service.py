@@ -11,7 +11,10 @@ from pathlib import Path
 from typing import Callable
 
 from g_file_studio.engines.id_engine import direct_layer_elements, local_name
-from g_file_studio.engines.rmu_identification_engine import identify_rmus
+from g_file_studio.engines.rmu_identification_engine import (
+    assign_global_text_owners,
+    identify_rmus,
+)
 from g_file_studio.engines.smart_profile_engine import (
     _center_inside,
     _custom_rule_matches,
@@ -204,6 +207,13 @@ _FEEDER_REPEAT_RE = re.compile(
 _FEEDER_PAIR_RE = re.compile(
     r"(?i)(?<![A-Z0-9])([A-Z][A-Z0-9]{2,})[\s_-]+0*(\d{1,3})(?![\d.])"
 )
+# Some device identities use the compact form ``AH330`` rather than the
+# space-separated form used by older feeder labels.  This is deliberately a
+# separate pattern: it is only used for an orphan component after the
+# CBreaker/BAY topology has already been validated.
+_COMPACT_FEEDER_TOKEN_RE = re.compile(
+    r"(?i)(?<![A-Z0-9])([A-Z]{2,})[-_ ]*0*(\d{1,3})(?!\d)"
+)
 _NON_DEVICE_FEEDER_TAGS = {
     "ConnectLine", "FeedLine", "Text", "DText", "rect", "line", "image",
     "Status", "pwbh", "poke", "Layer", "Group", "G",
@@ -227,6 +237,29 @@ def _feeder_text(element: ET.Element) -> str:
         str(element.get(name) or "")
         for name in ("key_name", "p_EngcodeString", "p_NameString", "aliasType")
     ).strip()
+
+
+def _feeder_identity_labels(value: str) -> set[str]:
+    """Return compact feeder identities such as ``AH330`` from one value."""
+    labels: set[str] = set()
+    for code, number in _COMPACT_FEEDER_TOKEN_RE.findall(str(value or "")):
+        label = _normalize_feeder_label(code, number)
+        if label:
+            labels.add(re.sub(r"[^A-Z0-9]+", "", label.upper()))
+    return labels
+
+
+def _element_feeder_identity_labels(element: ET.Element) -> set[str]:
+    identity_text = " ".join(
+        value
+        for value in (
+            str(element.get("key_name1") or ""),
+            str(element.get("key_name2") or ""),
+            _feeder_text(element),
+        )
+        if value
+    )
+    return _feeder_identity_labels(identity_text)
 
 
 def _feedline_feeder_labels(element: ET.Element) -> set[str]:
@@ -407,10 +440,10 @@ def _build_topology_graph(elements: list[ET.Element]) -> tuple[dict[str, ET.Elem
 class _FeederRootBranch:
     """One electrical branch below a station Bus.
 
-    Only the *nearest* CBreaker / Disconnector / GroundDisconnector triplet below
-    the Bus is treated as the database feeder head.  Every other object in
-    ``node_ids`` is downstream topology and must never be queried for feeder
-    ownership.
+    The nearest associated CBreaker below the Bus is the database feeder head.
+    Every other non-Bus object in ``node_ids`` is downstream topology and must
+    inherit that CBreaker's BAY. Disconnector/GroundDisconnector are ordinary
+    downstream objects rather than required feeder roots.
     """
 
     branch_id: str
@@ -422,18 +455,16 @@ class _FeederRootBranch:
 
 
 def _discover_feeder_root_branches(elements: list[ET.Element]) -> list[_FeederRootBranch]:
-    """Discover feeder branches from station Bus -> top 407/408/409 triplet.
+    """Discover feeder branches from station Bus -> top CBreaker(407).
 
     The station ``Bus`` is used only to find where a feeder starts.  It is removed
     from the downstream graph, so traversal cannot run sideways along the common
     bus into another feeder.  ``BusDis`` remains an ordinary traversable topology
     node because it is the internal bus inside RMUs.
 
-    A branch becomes DB-queryable only when the same Bus-side connected component
-    contains all three authoritative head families.  If a family occurs multiple
-    times downstream, only the instance nearest to the Bus entry is selected.
-    Downstream instances of those same XML tags are deliberately ignored for DB
-    lookup and later simply inherit feeder ownership from topology.
+    A branch becomes DB-queryable when its Bus-side connected component contains a
+    CBreaker. If several CBreakers occur in that component, only the instance
+    nearest to the Bus entry is selected. Downstream CBreakers are not queried.
     """
     by_id, graph = _build_topology_graph(elements)
     bus_ids = {
@@ -441,15 +472,11 @@ def _discover_feeder_root_branches(elements: list[ET.Element]) -> list[_FeederRo
         for element_id, element in by_id.items()
         if local_name(element.tag) == "Bus"
     }
-    anchor_table_by_tag = {
-        "CBreaker": "BREAKER",
-        "Disconnector": "DISCONNECTOR",
-        "GroundDisconnector": "GROUNDDISCONNECTOR",
-    }
+    anchor_table_by_tag = {"CBreaker": "BREAKER"}
 
-    # Build connected components with station Bus nodes removed.  Only components
-    # touching a Bus are feeder-root candidates.  This naturally follows
-    # ConnectLine / FeedLine / BusDis chains to their real terminal.
+    # Build connected components with station Bus nodes removed. This naturally
+    # follows ConnectLine / FeedLine / BusDis chains to their real terminal while
+    # keeping different Bus branches from joining sideways.
     non_bus_nodes = set(by_id) - bus_ids
     components: list[set[str]] = []
     seen: set[str] = set()
@@ -477,18 +504,25 @@ def _discover_feeder_root_branches(elements: list[ET.Element]) -> list[_FeederRo
             for neighbour in graph.get(node, ())
             if neighbour in bus_ids
         })
-        if not adjacent_buses:
-            continue
         entry_nodes = sorted({
             node
             for node in component
             if any(neighbour in bus_ids for neighbour in graph.get(node, ()))
         })
         if not entry_nodes:
-            continue
+            # A few G files omit the station-Bus reference entirely. CBreaker is
+            # still a valid root in that case, but only a single root is accepted
+            # so two disconnected feeder identities are never guessed together.
+            isolated_roots = [
+                node for node in component
+                if local_name(by_id[node].tag) == "CBreaker"
+            ]
+            if len(isolated_roots) != 1:
+                continue
+            entry_nodes = isolated_roots
 
-        # Distance from the Bus-side attachment.  We select the first occurrence
-        # of each authoritative family, never arbitrary downstream devices.
+        # Distance from the Bus-side attachment. Select the first CBreaker, never
+        # an arbitrary downstream CBreaker as a second database root.
         distances: dict[str, int] = {}
         queue = list(entry_nodes)
         for node in queue:
@@ -512,45 +546,43 @@ def _discover_feeder_root_branches(elements: list[ET.Element]) -> list[_FeederRo
             if table:
                 candidates[table].append((distances.get(node, 10**9), node))
 
-        anchor_nodes: dict[str, str] = {}
-        ambiguous = False
-        for table in ("BREAKER", "DISCONNECTOR", "GROUNDDISCONNECTOR"):
-            ranked = sorted(candidates.get(table, []), key=lambda item: (item[0], item[1]))
-            if not ranked:
-                continue
-            best_distance = ranked[0][0]
-            tied = [node for distance, node in ranked if distance == best_distance]
-            if len(tied) > 1:
-                # Some Saudi total drawings contain an overlaid legacy copy of the
-                # feeder-head icon.  The DB-linked copy has keyid/key_name while the
-                # visual duplicate is blank.  Prefer that uniquely linked copy; do
-                # not fail the whole feeder merely because both occupy the same spot.
-                linked = [
-                    node for node in tied
-                    if str(by_id[node].get("keyid") or "").strip()
-                ]
-                if len(linked) == 1:
-                    tied = linked
-                elif len(linked) > 1:
-                    named = [
-                        node for node in linked
-                        if str(by_id[node].get("key_name") or "").strip()
-                    ]
-                    if len(named) == 1:
-                        tied = named
-            if len(tied) != 1:
-                ambiguous = True
-                break
-            anchor_nodes[table] = tied[0]
-        if ambiguous or set(anchor_nodes) != {"BREAKER", "DISCONNECTOR", "GROUNDDISCONNECTOR"}:
-            # Auxiliary/PT branches and incomplete heads are not feeder roots.
+        ranked = sorted(candidates.get("BREAKER", []), key=lambda item: (item[0], item[1]))
+        if not ranked:
+            # Auxiliary/PT branches and branches without a CBreaker are not feeder roots.
             continue
+        best_distance = ranked[0][0]
+        tied = [node for distance, node in ranked if distance == best_distance]
+        if len(tied) > 1:
+            # Some Saudi total drawings contain an overlaid legacy copy of the
+            # feeder-head icon. The DB-linked copy has keyid/key_name while the
+            # visual duplicate is blank. Prefer that uniquely linked copy; do not
+            # guess when two linked copies remain.
+            linked = [
+                node for node in tied
+                if str(by_id[node].get("keyid") or "").strip()
+            ]
+            if len(linked) == 1:
+                tied = linked
+            elif len(linked) > 1:
+                named = [
+                    node for node in linked
+                    if str(by_id[node].get("key_name") or "").strip()
+                ]
+                if len(named) == 1:
+                    tied = named
+        if len(tied) != 1:
+            continue
+        anchor_nodes = {"BREAKER": tied[0]}
 
         anchor_keyids = {
             table: str(by_id[node].get("keyid") or "").strip()
             for table, node in anchor_nodes.items()
         }
-        branch_id = f"BUS:{','.join(adjacent_buses)}:BR:{index}"
+        branch_id = (
+            f"BUS:{','.join(adjacent_buses)}:BR:{index}"
+            if adjacent_buses
+            else f"NO_BUS:CB:{tied[0]}:BR:{index}"
+        )
         result.append(_FeederRootBranch(
             branch_id=branch_id,
             bus_ids=tuple(adjacent_buses),
@@ -560,39 +592,11 @@ def _discover_feeder_root_branches(elements: list[ET.Element]) -> list[_FeederRo
             anchor_keyids=anchor_keyids,
         ))
 
-    # Legacy/synthetic drawings without a Bus: keep a conservative fallback so a
-    # fully connected triplet can still be analyzed, while real Bus-based drawings
-    # always use the directional Bus-root model above.
-    if not bus_ids and not result:
-        for index, component in enumerate(components, start=1):
-            candidates: dict[str, list[str]] = defaultdict(list)
-            for node in component:
-                element = by_id.get(node)
-                if element is None:
-                    continue
-                table = anchor_table_by_tag.get(local_name(element.tag))
-                if table:
-                    candidates[table].append(node)
-            if any(len(candidates.get(table, [])) != 1 for table in ("BREAKER", "DISCONNECTOR", "GROUNDDISCONNECTOR")):
-                continue
-            anchor_nodes = {table: candidates[table][0] for table in candidates}
-            anchor_keyids = {
-                table: str(by_id[node].get("keyid") or "").strip()
-                for table, node in anchor_nodes.items()
-            }
-            result.append(_FeederRootBranch(
-                branch_id=f"NO_BUS:BR:{index}",
-                bus_ids=(),
-                entry_nodes=(),
-                node_ids=frozenset(component),
-                anchor_nodes=anchor_nodes,
-                anchor_keyids=anchor_keyids,
-            ))
     return result
 
 
 def _feeder_anchor_keyids_for_db(elements: list[ET.Element]) -> dict[str, list[str]]:
-    """Return only Bus-head 407/408/409 keyids that are allowed to hit Oracle."""
+    """Return only Bus-head CBreaker(407) keyids that are allowed to hit Oracle."""
     result = {"BREAKER": [], "DISCONNECTOR": [], "GROUNDDISCONNECTOR": []}
     seen: dict[str, set[str]] = {table: set() for table in result}
     for branch in _discover_feeder_root_branches(elements):
@@ -682,36 +686,37 @@ def _infer_feeder_membership(
     contexts: list[_RmuContext],
     device_rows: list[dict[str, object]],
     symbol_rows: list[dict[str, object]],
+    unmapped_rows: list[dict[str, object]] | None = None,
     anchor_contexts: dict[tuple[str, str], TopologyFeederAnchorContext] | None = None,
     anchor_issues: dict[tuple[str, str], str] | None = None,
     database_lookup_enabled: bool = False,
     feeder_root_branches: list[_FeederRootBranch] | None = None,
 ) -> dict[str, object]:
-    """Assign feeder ownership by Bus-root topology and only three DB head devices.
+    """Assign feeder ownership from each CBreaker's BAY through topology.
 
     Final field rule (v2.18.146):
 
     1. ``Bus`` is only the starting boundary used to split the drawing into feeder
        branches.  We never derive the feeder name from Bus metadata.
-    2. In each Bus-side branch, only the nearest ``CBreaker`` / ``Disconnector`` /
-       ``GroundDisconnector`` triplet may query Oracle (407/408/409).  No downstream
-       device keyid is queried, even if a downstream XML tag happens to be one of
-       those three families.
-    3. CBreaker(407) is the authoritative feeder root whenever it has a valid BAY.
-       Disconnector / GroundDisconnector are consistency/fallback evidence only:
-       their missing or stale BAY never erases a valid CBreaker feeder.  If CBreaker
-       is unresolved, the remaining resolved head devices may seed the feeder only
-       when their BAY identity is internally consistent.
+    2. In each Bus-side branch, only the nearest CBreaker(407) may query Oracle.
+       No downstream device keyid is queried, including CBreaker-like devices.
+    3. CBreaker(407) is the only feeder root. If its BAY is missing or unresolved,
+       that branch remains blank; no other device can substitute for it.
     4. Once the branch has a feeder seed, *every* downstream topology object reachable
        below that Bus entry inherits the feeder through ConnectLine / FeedLine /
        BusDis and device nodes until the component's natural topology terminal.
        Downstream keyid/DB association state is completely irrelevant.
-    5. No spatial, facID/facName, filename or FeedLine-text guessing is allowed.
+    5. Bus itself is excluded from ownership assignment. For a genuinely isolated
+       component, a compact device identity such as ``AH330`` may be used only when
+       it matches exactly one already-validated CBreaker BAY feeder. This is an
+       explicit, auditable fallback; spatial, facID/facName, filename and generic
+       FeedLine-text guessing remain forbidden.
     """
     anchor_contexts = dict(anchor_contexts or {})
     anchor_issues = dict(anchor_issues or {})
     warnings: list[str] = []
-    for row in (*device_rows, *symbol_rows):
+    all_assignable_rows = (*device_rows, *symbol_rows, *(unmapped_rows or []))
+    for row in all_assignable_rows:
         _empty_feeder_fields(row)
         row["馈线判断来源"] = "NO_DB_TOPOLOGY_EVIDENCE"
         row["馈线站名"] = ""
@@ -730,14 +735,12 @@ def _infer_feeder_membership(
             if local_name(element.tag) in {"CBreaker", "Disconnector", "GroundDisconnector"}
         )
         if anchor_like_count:
-            for row in device_rows:
-                row["馈线判断来源"] = "NO_DB_TRIPLE_ANCHOR"
-            for row in symbol_rows:
-                row["馈线判断来源"] = "NO_DB_TRIPLE_ANCHOR"
+            for row in all_assignable_rows:
+                row["馈线判断来源"] = "NO_DB_CBREAKER_ANCHOR"
             warnings.append(
-                "所属馈线未分析：没有识别到完整的馈线入口三设备拓扑（Bus 下的 "
-                "CBreaker + Disconnector + GroundDisconnector）。FeederName 保持空白；"
-                "请优先确认入口三设备及连接关系。"
+                "所属馈线未分析：没有识别到 Bus 下的 CBreaker(407) 馈线入口。"
+                "FeederName 保持空白；"
+                "请优先确认 CBreaker 及其连接关系。"
             )
             primary_total = sum(1 for row in device_rows if _is_primary_device_row(row))
             return {
@@ -750,6 +753,7 @@ def _infer_feeder_membership(
                 "anchor_unresolved": 0,
                 "validated_bay_count": 0,
                 "feeder_root_branch_count": 0,
+                "element_feeder_fields": {},
                 "warnings": warnings,
             }
 
@@ -784,22 +788,16 @@ def _infer_feeder_membership(
         feeder = str(ctx.feeder_name or "").strip()
         return f"{station} {feeder}".strip() if station and feeder else (station or feeder)
 
-    # Validate branch heads.  Only the selected *top* 407/408/409 keyids are ever
-    # consulted.  Downstream elements, including downstream CBreaker/Disconnector/
-    # GroundDisconnector instances, are topology-only and never hit Oracle.
-    #
-    # A single resolved head anchor is enough to establish the feeder.  When more
-    # than one resolves they are used as a consistency check: every resolved anchor
-    # must point to the same BAY_ID / station / feeder.  This matches the operational
-    # rule: once the feeder head is known, every connected downstream device belongs
-    # to that feeder regardless of its own keyid/DB association.
+    # Validate branch heads. Only the selected *top* CBreaker(407) keyids are ever
+    # consulted. Downstream elements, including downstream CBreaker instances, are
+    # topology-only and never hit Oracle.
     valid_branches: list[tuple[_FeederRootBranch, TopologyFeederAnchorContext, int]] = []
     anchor_total = 0
     anchor_unresolved = 0
     for branch in branches:
         branch_contexts: list[TopologyFeederAnchorContext] = []
         branch_failures: list[str] = []
-        for table in ("BREAKER", "DISCONNECTOR", "GROUNDDISCONNECTOR"):
+        for table in ("BREAKER",):
             anchor_total += 1
             keyid = str(branch.anchor_keyids.get(table, "") or "").strip()
             if not keyid:
@@ -814,71 +812,23 @@ def _infer_feeder_membership(
                 continue
             branch_contexts.append(ctx)
 
-        # None of the three authoritative head devices is associated -> no feeder
-        # seed exists.  The branch remains blank, but other G analysis still runs.
+        # An unassociated CBreaker is the explicit exception: without its BAY there
+        # is no safe feeder seed, so this branch remains blank.
         if not branch_contexts:
             if database_lookup_enabled:
                 warnings.append(
-                    f"馈线入口 {branch.branch_id} 未建立：顶部 CBreaker(407) / "
-                    f"Disconnector(408) / GroundDisconnector(409) 均未取得有效 BAY。"
+                    f"馈线入口 {branch.branch_id} 未建立：顶部 CBreaker(407) 未取得有效 BAY。"
                     f"{'；'.join(branch_failures)}。该入口以下 FeederName 留空，请优先完成入口设备关联。"
                 )
             continue
 
-        # v2.18.146: the feeder-head CBreaker is the authoritative directional
-        # root.  Its Bus-side terminal is upstream and the opposite side owns the
-        # whole downstream topology.  Disconnector / GroundDisconnector remain
-        # DB evidence only; their bad/missing association must never erase a valid
-        # CBreaker feeder.  This matters on real Saudi total drawings where legacy
-        # D/GD records can still point at a stale BAY while the CBreaker is correct.
+        # The feeder-head CBreaker is the authoritative root. Its Bus-side terminal
+        # is upstream and the whole Bus-removed component owns the opposite side.
         by_table_ctx = {str(ctx.table_name or "").upper(): ctx for ctx in branch_contexts}
         breaker_ctx = by_table_ctx.get("BREAKER")
 
-        selected_ctx: TopologyFeederAnchorContext | None = None
-        evidence_count = 0
-        mismatch_details: list[str] = []
-        if breaker_ctx is not None:
-            selected_ctx = breaker_ctx
-            breaker_bay = str(breaker_ctx.bay_id or "").strip()
-            breaker_identity = (
-                str(breaker_ctx.station_name or "").strip(),
-                str(breaker_ctx.feeder_name or "").strip(),
-            )
-            for ctx in branch_contexts:
-                if ctx is breaker_ctx:
-                    continue
-                other_bay = str(ctx.bay_id or "").strip()
-                other_identity = (
-                    str(ctx.station_name or "").strip(),
-                    str(ctx.feeder_name or "").strip(),
-                )
-                if other_bay == breaker_bay and other_identity == breaker_identity:
-                    evidence_count += 1
-                else:
-                    mismatch_details.append(
-                        f"{str(ctx.table_name or '').upper()}={other_identity[0]} {other_identity[1]} "
-                        f"(BAY_ID={other_bay})"
-                    )
-            evidence_count += 1  # the CBreaker itself
-        else:
-            # Fallback only when the CBreaker itself is not DB-associated.  Use the
-            # remaining two authoritative head devices when their resolved BAY is
-            # internally consistent.  A single remaining head is still useful, but
-            # is lower-confidence and is reported as such.
-            bay_ids = {str(ctx.bay_id or "").strip() for ctx in branch_contexts}
-            identities = {
-                (str(ctx.station_name or "").strip(), str(ctx.feeder_name or "").strip())
-                for ctx in branch_contexts
-            }
-            if len(bay_ids) != 1 or "" in bay_ids or len(identities) != 1:
-                if database_lookup_enabled:
-                    warnings.append(
-                        f"馈线入口 {branch.branch_id} 未建立：CBreaker 未关联，且剩余入口设备 "
-                        "BAY_ID/馈线不一致。该入口以下 FeederName 留空。"
-                    )
-                continue
-            selected_ctx = branch_contexts[0]
-            evidence_count = len(branch_contexts)
+        selected_ctx = breaker_ctx
+        evidence_count = 1
 
         station = str(selected_ctx.station_name or "").strip() if selected_ctx else ""
         feeder = str(selected_ctx.feeder_name or "").strip() if selected_ctx else ""
@@ -891,22 +841,13 @@ def _infer_feeder_membership(
             continue
 
         valid_branches.append((branch, selected_ctx, evidence_count))
-        if database_lookup_enabled and mismatch_details:
-            warnings.append(
-                f"馈线入口 {branch.branch_id} 以 CBreaker(407) 为权威根确认 {station} {feeder}；"
-                "Disconnector/GroundDisconnector 的 BAY 与 CBreaker 不一致，仅告警，不阻断下游拓扑传播："
-                + "；".join(mismatch_details)
-            )
         if database_lookup_enabled and branch_failures:
-            warnings.append(
-                f"馈线入口 {branch.branch_id} 已由 {evidence_count}/3 个一致入口证据确认 "
-                f"{station} {feeder}；未关联入口仅作为警告，不阻断已确认馈线的下游拓扑传播。"
-                f"{'；'.join(branch_failures)}"
-            )
+            warnings.append(f"馈线入口 {branch.branch_id} 已由 CBreaker(407) 确认 {station} {feeder}；"
+                            f"其他非根设备不参与 BAY 关联。{'；'.join(branch_failures)}")
 
     if database_lookup_enabled and branches and not valid_branches:
         warnings.append(
-            "所属馈线未分析：所有 Bus 入口均没有可用的 407/408/409 BAY 锚点，"
+            "所属馈线未分析：所有 Bus 入口均没有可用的 CBreaker(407) BAY 锚点，"
             "或已关联锚点存在 BAY 冲突。请优先完成入口设备关联；文件其他内容继续解析。"
         )
 
@@ -924,6 +865,75 @@ def _infer_feeder_membership(
                 topology_conflicts.add(node)
                 branch_by_node.pop(node, None)
 
+    # A small number of real G files contain a device pair whose local
+    # ConnectLine component is detached from the rest of the drawing. Do not
+    # assign it by proximity. Instead, use the device's own compact feeder
+    # identity only when that identity maps to exactly one validated CBreaker
+    # feeder in this file. This fixes cases such as TransformerDis 99959/99960
+    # (key_name1 contains AH330) while keeping genuinely unknown orphan objects
+    # blank and visible for topology repair.
+    identity_fallback_nodes: set[str] = set()
+    bus_ids = {
+        element_id
+        for element_id, element in by_id.items()
+        if local_name(element.tag) == "Bus"
+    }
+    validated_by_identity: dict[str, list[tuple[_FeederRootBranch, TopologyFeederAnchorContext, int]]] = defaultdict(list)
+    for assignment in valid_branches:
+        branch, ctx, evidence_count = assignment
+        # The context is not a G object, so use its feeder name directly in the
+        # compact-token parser.
+        identities = _feeder_identity_labels(str(ctx.feeder_name or ""))
+        for identity in identities:
+            validated_by_identity[identity].append(assignment)
+
+    assigned_nodes = set(branch_by_node)
+    orphan_nodes = set(by_id) - bus_ids - assigned_nodes - topology_conflicts
+    seen_orphan: set[str] = set()
+    for start in sorted(orphan_nodes):
+        if start in seen_orphan:
+            continue
+        component: set[str] = {start}
+        stack = [start]
+        seen_orphan.add(start)
+        while stack:
+            current = stack.pop()
+            for neighbour in sorted(_graph.get(current, ())):
+                if neighbour in bus_ids or neighbour in assigned_nodes or neighbour in topology_conflicts or neighbour in seen_orphan:
+                    continue
+                seen_orphan.add(neighbour)
+                component.add(neighbour)
+                stack.append(neighbour)
+
+        # Require a concrete device identity in the component. A line-only
+        # fragment must stay unresolved rather than inheriting a nearby feeder.
+        component_labels: set[str] = set()
+        for node in component:
+            element = by_id.get(node)
+            if element is None or local_name(element.tag) in _NON_DEVICE_FEEDER_TAGS:
+                continue
+            component_labels.update(_element_feeder_identity_labels(element))
+        candidates = {
+            id(assignment): assignment
+            for label in component_labels
+            for assignment in validated_by_identity.get(label, ())
+        }
+        if len(candidates) != 1:
+            continue
+        branch, ctx, evidence_count = next(iter(candidates.values()))
+        matched_labels = component_labels & _feeder_identity_labels(str(ctx.feeder_name or ""))
+        if len(matched_labels) != 1:
+            continue
+        matched_label = next(iter(matched_labels))
+        for node in component:
+            branch_by_node[node] = (branch, ctx, evidence_count)
+            identity_fallback_nodes.add(node)
+        warnings.append(
+            f"孤立拓扑组件 {','.join(sorted(component))} 未直接连接 CBreaker；"
+            f"依据设备标识 {matched_label} 唯一匹配已确认馈线 {ctx.feeder_name}，"
+            "已归入该馈线，判断来源为设备标识兜底。"
+        )
+
     def apply_branch(
         row: dict[str, object],
         branch: _FeederRootBranch,
@@ -931,23 +941,27 @@ def _infer_feeder_membership(
         evidence_count: int,
         *,
         direct: bool = False,
+        identity_fallback: bool = False,
     ) -> None:
         evidence_count = max(1, int(evidence_count or 0))
+        source = (
+            "DB_CBREAKER_FEEDER_IDENTITY"
+            if identity_fallback
+            else ("DB_CBREAKER_BAY" if direct else "DB_CBREAKER_TOPOLOGY")
+        )
         _set_feeder_fields(
             row,
             feeder_display_name(ctx),
-            ("DB_BAY_TRIPLE" if direct else "DB_TRIPLE_TOPOLOGY")
-            if evidence_count == 3
-            else ("DB_HEAD_ANCHOR" if direct else "DB_ANCHOR_TOPOLOGY"),
-            "HIGH" if evidence_count >= 2 else "MEDIUM",
+            source,
+            "MEDIUM" if identity_fallback else "HIGH",
             evidence_count,
         )
         row["馈线站名"] = ctx.station_name
         row["馈线BayID"] = ctx.bay_id
-        row["馈线锚点表"] = "BREAKER/DISCONNECTOR/GROUNDDISCONNECTOR"
+        row["馈线锚点表"] = "BREAKER(407)"
         row["馈线锚点keyid"] = "/".join(
             str(branch.anchor_keyids.get(table, "") or "")
-            for table in ("BREAKER", "DISCONNECTOR", "GROUNDDISCONNECTOR")
+            for table in ("BREAKER",)
         )
         row["馈线Cluster"] = f"FC:{ctx.station_name}:{ctx.feeder_name}"
 
@@ -969,7 +983,14 @@ def _infer_feeder_membership(
             continue
         branch, ctx, evidence_count = next(iter(candidates.values()))
         direct_nodes = set(branch.anchor_nodes.values())
-        apply_branch(row, branch, ctx, evidence_count, direct=bool(nodes & direct_nodes))
+        apply_branch(
+            row,
+            branch,
+            ctx,
+            evidence_count,
+            direct=bool(nodes & direct_nodes),
+            identity_fallback=bool(nodes & identity_fallback_nodes),
+        )
         if str(row.get("迁移设备类型", "") or row.get("设备类型", "")).upper() == "RMU":
             name = str(row.get("实例名称", "") or "").strip()
             if name:
@@ -1003,7 +1024,14 @@ def _infer_feeder_membership(
         }
         if len(candidates) == 1:
             branch, ctx, evidence_count = next(iter(candidates.values()))
-            apply_branch(row, branch, ctx, evidence_count, direct=False)
+            apply_branch(
+                row,
+                branch,
+                ctx,
+                evidence_count,
+                direct=False,
+                identity_fallback=bool(nodes & identity_fallback_nodes),
+            )
 
     detail_by_element = {
         str(row.get("ElementID", "") or "").strip(): row
@@ -1026,6 +1054,51 @@ def _infer_feeder_membership(
             for field in ("馈线站名", "馈线BayID", "馈线锚点表", "馈线锚点keyid", "馈线Cluster"):
                 row[field] = source_row.get(field, "")
 
+    # Unmapped objects still belong to the electrical topology. Keep their feeder
+    # fields populated for the audit sheet; their symbol classification remains
+    # unresolved and is not changed here.
+    for row in unmapped_rows or []:
+        nodes = associated_node_ids(row)
+        candidates = {
+            id(branch): (branch, ctx, evidence_count)
+            for node in nodes
+            if node not in topology_conflicts
+            for branch, ctx, evidence_count in ([branch_by_node[node]] if node in branch_by_node else [])
+        }
+        if len(candidates) == 1:
+            branch, ctx, evidence_count = next(iter(candidates.values()))
+            apply_branch(
+                row,
+                branch,
+                ctx,
+                evidence_count,
+                direct=bool(nodes & set(branch.anchor_nodes.values())),
+                identity_fallback=bool(nodes & identity_fallback_nodes),
+            )
+
+    # Keep the topology result available to the complete XML inventory.  This is
+    # intentionally keyed by element id rather than by parsed device rows: lines,
+    # BusDis, text annotations and unrecognised graphic objects must inherit the
+    # same CBreaker BAY as long as they are electrically attached to that branch.
+    element_feeder_fields: dict[str, dict[str, object]] = {}
+    for node, assignment in branch_by_node.items():
+        if node in topology_conflicts:
+            continue
+        _branch, ctx, evidence_count = assignment
+        identity_fallback = node in identity_fallback_nodes
+        element_feeder_fields[node] = {
+            "所属馈线": feeder_display_name(ctx),
+            "馈线站名": ctx.station_name,
+            "馈线BayID": ctx.bay_id,
+            "馈线判断来源": "DB_CBREAKER_FEEDER_IDENTITY" if identity_fallback else "DB_CBREAKER_TOPOLOGY",
+            "馈线置信度": "MEDIUM" if identity_fallback else "HIGH",
+            "馈线证据设备数": evidence_count,
+            "馈线锚点表": "BREAKER(407)",
+            "馈线锚点keyid": str(_branch.anchor_keyids.get("BREAKER", "") or ""),
+            "馈线Cluster": f"FC:{ctx.station_name}:{ctx.feeder_name}",
+            "馈线冲突": "",
+        }
+
     resolved_count = sum(1 for row in primary_rows if str(row.get("所属馈线", "") or "").strip())
     feeder_names = {
         str(row.get("所属馈线", "") or "").strip()
@@ -1042,6 +1115,7 @@ def _infer_feeder_membership(
         "anchor_unresolved": anchor_unresolved,
         "validated_bay_count": len(valid_branches),
         "feeder_root_branch_count": len(branches),
+        "element_feeder_fields": element_feeder_fields,
         "warnings": warnings,
     }
 
@@ -1095,7 +1169,12 @@ def _migration_device_row(row: dict[str, object]) -> dict[str, object]:
         "ElementID": row.get("ElementID", ""),
         "keyid": row.get("keyid", ""),
         "key_name": row.get("key_name", ""),
+        "key_name1": row.get("key_name1", ""),
+        "key_name2": row.get("key_name2", ""),
         "p_NameString": row.get("p_NameString", ""),
+        "p_EngcodeString": row.get("p_EngcodeString", ""),
+        "link": row.get("link", ""),
+        "node_area": row.get("node_area", ""),
         "StandardFile": row.get("标准图元文件", ""),
         "StandardDevref": row.get("标准devref", ""),
         "ActualDevref": row.get("实际devref", ""),
@@ -1178,6 +1257,66 @@ class _RmuContext:
     scope: str
     rect_id: str
     rect: ET.Element
+
+
+_OBSERVED_TAG_DEVICE_FALLBACKS: dict[str, tuple[str, str, str, str]] = {
+    # tag: (symbol usage, business type, subtype, device level)
+    "TransformerDis": ("设备", "Transformer", "", "独立设备"),
+    "Transformer2": ("设备", "Transformer", "", "独立设备"),
+    "PT": ("设备", "VT", "", "独立设备"),
+    "Capacitor": ("设备", "Capacitor", "", "独立设备"),
+    "CBreaker": ("设备", "Circuit Breaker", "", "独立设备"),
+    "Disconnector": ("设备", "Disconnector", "", "独立设备"),
+    "GroundDisconnector": ("设备", "Ground Disconnector", "", "独立设备"),
+    # CBreakerDis is commonly an RMU internal switch. If a new devref is not
+    # present in GLOBAL yet, keep it in the device/component inventory rather
+    # than silently placing it only in the unmapped sheet.
+    "CBreakerDis": ("设备组成图元", "CBreakerDis", "", "设备内部部件"),
+    "ZhaiWaiJieDiDaoZha": ("设备组成图元", "Ground Disconnector", "", "设备内部部件"),
+    "Protect": ("设备组成图元", "Protection", "", "设备内部部件"),
+}
+
+
+def _observed_tag_fallback_definition(tag: str, actual_devref: str) -> StandardDefinition | None:
+    metadata = _OBSERVED_TAG_DEVICE_FALLBACKS.get(tag)
+    if metadata is None:
+        return None
+    usage, device_type, subtype, level = metadata
+    return StandardDefinition(
+        uid=f"observed-tag:{tag}",
+        scope="OBSERVED_TAG_FALLBACK",
+        symbol_usage=usage,
+        device_type=device_type,
+        device_subtype=subtype,
+        device_level=level,
+        element_tag=tag,
+        standard_devref=actual_devref,
+        standard_file="XML标签兜底（待补GLOBAL标准）",
+        match_attr="XML元素",
+        match_value=tag,
+    )
+
+
+_OBSERVED_CONTENT_METADATA: dict[str, tuple[str, str, str, str]] = {
+    **_OBSERVED_TAG_DEVICE_FALLBACKS,
+    "Bus": ("连接/拓扑", "Bus", "站内母线边界", "辅助关联"),
+    "BusDis": ("连接/拓扑", "BusDis", "内部母线", "辅助关联"),
+    "ConnectLine": ("连接/拓扑", "ConnectLine", "电气连接线", "辅助关联"),
+    "FeedLine": ("连接/拓扑", "FeedLine", "馈线连接线", "辅助关联"),
+    "line": ("连接/拓扑", "line", "图形线", "辅助关联"),
+}
+
+
+def _observed_content_metadata(tag: str) -> dict[str, str]:
+    usage, device_type, subtype, level = _OBSERVED_CONTENT_METADATA.get(
+        tag, ("", "", "", "")
+    )
+    return {
+        "图元用途": usage,
+        "设备类型": device_type,
+        "设备子类型": subtype,
+        "设备层级": level,
+    }
 
 
 def _profile_definitions(profile: SiteSmartProfile) -> list[StandardDefinition]:
@@ -1272,14 +1411,26 @@ _GLOBAL_NAME_EXACT_EXCLUSIONS = {
     "SMART", "SMR", "N.O.P", "N.O.P.", "NOP", "F", "F.C", "F.C.", "FC",
 }
 
+# These XML elements are topology/annotation primitives, never equipment.  Keep
+# this guard next to the global name matcher as a second line of defence: a
+# future standard rule must not accidentally make a feeder line or bus eligible
+# for a Text device-name assignment.
+_NON_DEVICE_NAME_TAGS = {
+    "ConnectLine", "FeedLine", "BusDis", "Bus", "ACLine", "line", "Line",
+    "Text", "DText", "Status", "rect", "ellipse", "image", "Layer", "G",
+    "Group", "Merge", "Theme", "pwbh", "poke",
+}
+
+_NON_DEVICE_NAME_TAGS_CASEFOLD = {tag.casefold() for tag in _NON_DEVICE_NAME_TAGS}
+
 
 def _is_global_device_name_text(text: ET.Element) -> bool:
     """Return whether one static Text label can participate in device naming.
 
-    v2.18.127 deliberately makes geometry the *only* association rule for non-RMU
-    devices.  This helper therefore filters only text that is clearly an annotation
-    rather than a device name; it does not impose family prefixes, directions,
-    colors, or a search window.
+    Geometry remains the primary association rule for non-RMU devices.  This helper
+    filters only text that is clearly an annotation rather than a device name; the
+    later global scorer may use learned family/color evidence as a tie-breaker, but
+    never turns a topology label or dynamic measurement into a device name.
     """
     if local_name(text.tag) != "Text":
         return False
@@ -1296,6 +1447,16 @@ def _is_global_device_name_text(text: ET.Element) -> bool:
     if re.fullmatch(r"\(\s*\d+\s*\)", value):
         return False
     return True
+
+
+def _is_nameable_device_element(element: ET.Element) -> bool:
+    """Return whether an XML element is allowed to receive a Text name."""
+    tag = local_name(element.tag)
+    return (
+        tag not in _NON_DEVICE_NAME_TAGS
+        and tag.casefold() not in _NON_DEVICE_NAME_TAGS_CASEFOLD
+        and bool((element.get("devref") or "").strip())
+    )
 
 
 def _polyline_points(element: ET.Element) -> list[tuple[float, float]]:
@@ -1406,24 +1567,197 @@ def _standalone_text_distance(
     )
 
 
+def _text_color_bucket(text: ET.Element) -> str:
+    """Normalize the rendered Text color for local name-pattern learning.
+
+    G files commonly carry the same color in ``lc``/``lcc`` (and sometimes in
+    ``fc``/``fcc``).  The bucket is intentionally coarse: the matcher only needs
+    to learn conventions such as red equipment names versus white annotations.
+    """
+    for attr in ("lcc", "lc", "fcc", "fc"):
+        raw = (text.get(attr) or "").strip().lower()
+        if not raw:
+            continue
+        values: tuple[int, int, int] | None = None
+        if raw.startswith("#"):
+            value = raw[1:]
+            if len(value) == 6:
+                try:
+                    values = (int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16))
+                except ValueError:
+                    values = None
+        else:
+            parts = [part.strip() for part in raw.split(",")]
+            if len(parts) >= 3:
+                try:
+                    values = tuple(max(0, min(255, int(float(part)))) for part in parts[:3])  # type: ignore[assignment]
+                except ValueError:
+                    values = None
+        if values is None:
+            continue
+        red, green, blue = values
+        if red >= 180 and red >= green * 1.25 and red >= blue * 1.25:
+            return "red"
+        if blue >= 150 and blue >= red * 1.25 and blue >= green * 1.10:
+            return "blue"
+        if red >= 180 and green >= 180 and blue >= 120 and abs(red - green) <= 45:
+            return "yellow"
+        if min(values) >= 180:
+            return "white"
+        return "other"
+    return "unknown"
+
+
+def _name_family_for_target(
+    element: ET.Element,
+    definition: StandardDefinition | None,
+    migration_type: str = "",
+) -> str:
+    """Return a stable family key used to learn naming conventions.
+
+    Different standard icons can implement the same business equipment.  Prefer
+    the normalized migration type so a family can learn from all of its variants;
+    fall back to the configured device type/devref only when no migration type is
+    available.
+    """
+    value = (migration_type or "").strip().upper()
+    if value:
+        return value
+    if definition is not None:
+        value = (definition.device_type or "").strip().upper()
+        if value:
+            return value
+        value = (definition.standard_devref or element.get("devref") or "").strip().upper()
+        if value:
+            return re.sub(r"[^A-Z0-9]+", "_", value)
+    return "UNKNOWN"
+
+
+def _text_format_bucket(text: ET.Element) -> str:
+    """Return a graphical character/style bucket for one visible Text.
+
+    The bucket intentionally uses only rendered Text properties.  It never reads
+    model-association attributes such as keyid/key_name/p_NameString.  Text shape
+    is useful on sites where numeric equipment IDs, coded names, and descriptive
+    names use different conventions.
+    """
+    value = re.sub(r"\s+", " ", _text_value(text).strip())
+    if not value:
+        return "unknown"
+    if re.fullmatch(r"\d{3,8}", value):
+        shape = "numeric"
+    elif re.fullmatch(r"[A-Za-z]{1,8}[-_ ]?\d{1,8}", value):
+        shape = "alpha_numeric_code"
+    elif re.fullmatch(r"[A-Za-z][A-Za-z0-9_./-]*", value):
+        shape = "alpha_code"
+    elif re.fullmatch(r"[\u4e00-\u9fffA-Za-z0-9 _./-]+", value):
+        shape = "mixed_text"
+    else:
+        shape = "other"
+
+    font = (text.get("ff") or text.get("font") or "").strip().casefold()
+    try:
+        size_value = float(text.get("fs") or text.get("p_FontHeight") or 0)
+    except (TypeError, ValueError):
+        size_value = 0.0
+    size = str(int(round(size_value))) if size_value > 0 else "unknown_size"
+    bold = str(text.get("bold") or text.get("p_BoldFontFlag") or "").strip().lower()
+    italic = str(text.get("italic") or text.get("p_ItalicFontFlag") or "").strip().lower()
+    weight = "bold" if bold in {"1", "true", "yes"} else "normal"
+    slant = "italic" if italic in {"1", "true", "yes"} else "normal"
+    return "|".join((shape, font or "unknown_font", size, weight, slant))
+
+
+def _learn_name_modes(
+    targets: list[ET.Element],
+    texts: list[ET.Element],
+    elements: list[ET.Element],
+    target_families: dict[int, str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Learn graphical name conventions from unambiguous global geometry.
+
+    This is deliberately local and deterministic, not an opaque ML model.  A Text
+    contributes only when it is clearly closer to one known equipment target than
+    to every other target.  Thus a nearby label collision cannot teach the wrong
+    color or character convention.  Each learned mode requires at least two
+    observations and a clear majority.
+    """
+    candidates = [text for text in texts if _is_global_device_name_text(text)]
+    if not targets or not candidates:
+        return {}, {}
+    line_by_id, attached_lines = _build_connection_index(elements)
+    color_observations: dict[str, Counter[str]] = defaultdict(Counter)
+    format_observations: dict[str, Counter[str]] = defaultdict(Counter)
+    for text in candidates:
+        ranked = sorted(
+            [
+                (
+                    _standalone_text_distance(target, text, line_by_id, attached_lines),
+                    target,
+                )
+                for target in targets
+            ],
+            key=lambda item: (item[0], id(item[1])),
+        )
+        if not ranked:
+            continue
+        best_distance, best_target = ranked[0]
+        second_distance = ranked[1][0] if len(ranked) > 1 else float("inf")
+        # A margin protects the learner from the exact collision cases this module
+        # is meant to resolve.  Long but clearly isolated labels remain usable.
+        if best_distance > 260.0 or second_distance - best_distance < 35.0:
+            continue
+        family = target_families.get(id(best_target), "UNKNOWN")
+        color_bucket = _text_color_bucket(text)
+        format_bucket = _text_format_bucket(text)
+        if family == "UNKNOWN":
+            continue
+        if color_bucket != "unknown":
+            color_observations[family][color_bucket] += 1
+        if format_bucket != "unknown":
+            format_observations[family][format_bucket] += 1
+
+    def _dominant(observations: dict[str, Counter[str]]) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for family, counts in observations.items():
+            if not counts:
+                continue
+            bucket, count = counts.most_common(1)[0]
+            total = sum(counts.values())
+            if count >= 2 and count / max(1, total) >= 0.60:
+                result[family] = bucket
+        return result
+
+    return _dominant(color_observations), _dominant(format_observations)
+
+
 def _assign_global_standalone_names(
     devices: list[ET.Element],
     texts: list[ET.Element],
     elements: list[ET.Element],
+    competing_targets: list[tuple[str, ET.Element]] | None = None,
+    target_families: dict[str, str] | None = None,
+    learned_color_modes: dict[str, str] | None = None,
+    learned_format_modes: dict[str, str] | None = None,
 ) -> dict[int, tuple[str, str, str, int, float]]:
-    """Assign visible names to all non-RMU devices by one global rule: distance.
+    """Assign visible names to all non-RMU devices by one global graphical rule.
 
     - search every eligible Text label in the whole G drawing;
     - no top/bottom/left/right preference and no directional penalty;
     - use the device-side electrical anchor when available;
-    - one concrete Text object can name only one device; when two devices compete,
-      the closer device wins and the other device advances to its next-nearest text;
+    - each concrete Text object is owned by the nearest real device globally;
+      optional RMU/unknown-device competitors are included in the same pool;
+      a device then chooses its nearest Text among the labels it actually owns;
+    - learned color/character conventions are soft tie-breakers only; they never
+      override a clearly nearer graphical target;
     - there is intentionally no hard search radius.  Long-distance fallbacks remain
       visible through LOW confidence instead of silently becoming NAME_MISSING.
     """
-    import heapq
-
     candidates = [text for text in texts if _is_global_device_name_text(text)]
+    # Defend the global matcher independently of its callers.  This prevents a
+    # topology primitive that happens to carry devref/custom metadata from ever
+    # entering the Text-to-device assignment pool.
+    devices = [device for device in devices if _is_nameable_device_element(device)]
     if not devices or not candidates:
         return {}
     line_by_id, attached_lines = _build_connection_index(elements)
@@ -1431,52 +1765,71 @@ def _assign_global_standalone_names(
         id(device): _device_anchor_points(device, line_by_id, attached_lines)
         for device in devices
     }
+    target_pairs = [(str(id(device)), device) for device in devices]
+    target_pairs.extend(competing_targets or [])
+    target_anchors = {
+        str(id(device)): tuple(anchors_by_device[id(device)])
+        for device in devices
+    }
+    # Competitors must use the same electrical-anchor distance as the primary
+    # devices.  Otherwise a small component box can win merely because its XML
+    # rectangle happens to be closer than its actual connection point.
+    for target_key, target in target_pairs:
+        if target_key not in target_anchors:
+            target_anchors[target_key] = tuple(_device_anchor_points(target, line_by_id, attached_lines))
 
-    ranked: dict[int, list[tuple[float, str, int, ET.Element]]] = {}
-    for device in devices:
-        anchors = anchors_by_device[id(device)]
-        items: list[tuple[float, str, int, ET.Element]] = []
-        for text in candidates:
-            value = _text_value(text)
-            distance = min(_point_to_box_distance(px, py, text) for px, py in anchors)
-            items.append((distance, value.casefold(), id(text), text))
-        items.sort(key=lambda item: (item[0], item[1], item[2]))
-        ranked[id(device)] = items
+    def _adjust_score(text: ET.Element, target_key: str, distance: float) -> float:
+        family = (target_families or {}).get(target_key, "")
+        adjusted = distance
+        expected_color = (learned_color_modes or {}).get(family, "")
+        actual_color = _text_color_bucket(text)
+        if expected_color and actual_color != "unknown":
+            # Color is a learned tie-breaker, never a hard exclusion.  Keep the
+            # correction bounded so a distant matching-color label cannot displace
+            # an obviously nearer graphical label.
+            adjusted += -20.0 if actual_color == expected_color else 20.0
+        expected_format = (learned_format_modes or {}).get(family, "")
+        actual_format = _text_format_bucket(text)
+        if expected_format and actual_format != "unknown":
+            # Character shape/font is weaker than geometry and color.  It is useful
+            # for distinguishing numeric transformer IDs from nearby station or
+            # device annotations when their positions are close.
+            adjusted += -12.0 if actual_format == expected_format else 12.0
+        return adjusted
 
-    # Heap reproduces a global ascending-distance assignment without materializing
-    # every device/text pair in a second giant list.
-    heap: list[tuple[float, str, int, int, int]] = []
-    for device_id, items in ranked.items():
-        if items:
-            distance, folded, text_id, _text = items[0]
-            heapq.heappush(heap, (distance, folded, device_id, text_id, 0))
-
-    assigned_devices: set[int] = set()
-    assigned_texts: set[int] = set()
+    owners = assign_global_text_owners(
+        candidates,
+        target_pairs,
+        target_anchors=target_anchors,
+        score_adjuster=_adjust_score,
+    )
     result: dict[int, tuple[str, str, str, int, float]] = {}
-    while heap:
-        distance, _folded, device_id, text_id, index = heapq.heappop(heap)
-        if device_id in assigned_devices:
+    for device in devices:
+        target_key = str(id(device))
+        owned = [owner for owner in owners.values() if owner.target_key == target_key]
+        if not owned:
             continue
-        items = ranked.get(device_id, [])
-        if index >= len(items):
-            continue
-        _d, _f, current_text_id, text = items[index]
-        if current_text_id != text_id:
-            continue
-        if text_id in assigned_texts:
-            next_index = index + 1
-            if next_index < len(items):
-                nd, nf, ntid, _nt = items[next_index]
-                heapq.heappush(heap, (nd, nf, device_id, ntid, next_index))
-            continue
-        value = _text_value(text)
+        owner = min(
+            owned,
+            key=lambda item: (
+                item.distance,
+                _text_value(item.text).casefold(),
+                id(item.text),
+            ),
+        )
+        value = _text_value(owner.text)
         if not value:
             continue
-        assigned_devices.add(device_id)
-        assigned_texts.add(text_id)
-        confidence = "HIGH" if distance <= 120.0 else ("MEDIUM" if distance <= 240.0 else "LOW")
-        result[device_id] = (value, "Nearby Text", confidence, text_id, round(distance, 2))
+        confidence = "HIGH" if owner.distance <= 120.0 else (
+            "MEDIUM" if owner.distance <= 240.0 else "LOW"
+        )
+        result[id(device)] = (
+            value,
+            "Nearby Text",
+            confidence,
+            id(owner.text),
+            round(owner.distance, 2),
+        )
     return result
 
 
@@ -1485,13 +1838,17 @@ def _nearest_display_label(
     texts: list[ET.Element],
     max_distance: float = 190.0,
     preferred_value: str = "",
+    excluded_text_ids: set[int] | None = None,
 ) -> tuple[str, float | str]:
     """Return a nearby visible label for audit; never promotes it to DeviceName by itself."""
     cx, cy = _center(element)
     candidates: list[tuple[float, str]] = []
     preferred: list[tuple[float, str]] = []
     preferred_value = (preferred_value or "").strip()
+    excluded_text_ids = excluded_text_ids or set()
     for text in texts:
+        if id(text) in excluded_text_ids:
+            continue
         value = _text_value(text)
         if not value or value.upper() in {"SMART", "SMR"}:
             continue
@@ -1548,26 +1905,17 @@ def _resolve_instance_name(
     rmu_name: str,
     texts: list[ET.Element],
     consumed_text_ids: set[int],
-) -> tuple[str, str, str]:
-    """Return (name, source, confidence) without guessing across long distances."""
-    # RMU internal component names are explicit and meaningful (Y1/Y2/Q1...).
-    if rmu_name:
-        for attr in ("p_NameString", "key_name"):
-            value = (element.get(attr) or "").strip()
-            if value:
-                return value, attr, "HIGH"
+) -> tuple[str, str, str, int | None]:
+    """Return a name from visible drawing Text only.
 
-    for attr in ("key_name", "p_NameString", "name", "NameString"):
-        value = (element.get(attr) or "").strip()
-        if not value or value.upper() in {"SMART", "SMR"}:
-            continue
-        # Avoid turning internal switch labels into an independent device name.
-        if _GENERIC_DEVICE_LABEL.fullmatch(value) and device_type not in {"LBS", "Circuit Breaker", "接地刀闸"}:
-            continue
-        return value, attr, "HIGH"
-
+    XML association fields are intentionally not a naming source.  RMU internal
+    Y/Q labels are allowed here because they are visible Text objects inside the
+    identified cabinet; they are still resolved by geometry and one-to-one Text
+    consumption below.
+    """
     cx, cy = _center(element)
     ew = max(1.0, _float(element, "w"))
+    allow_component_labels = bool(rmu_name)
     candidates: list[tuple[float, float, float, int, str, ET.Element]] = []
     for text in texts:
         if id(text) in consumed_text_ids:
@@ -1575,9 +1923,10 @@ def _resolve_instance_name(
         value = _text_value(text)
         if not value or value.upper() in {"SMART", "SMR"}:
             continue
-        if _GENERIC_DEVICE_LABEL.fullmatch(value):
+        is_component_label = bool(_GENERIC_DEVICE_LABEL.fullmatch(value))
+        if is_component_label and not allow_component_labels:
             continue
-        if _nearby_text_is_for_other_device(device_type, value):
+        if _nearby_text_is_for_other_device(device_type, value) and not is_component_label:
             continue
         tcx, tcy = _center(text)
         dx, dy = tcx - cx, tcy - cy
@@ -1601,7 +1950,7 @@ def _resolve_instance_name(
         # the conventional label above the symbol without making that a hard rule.
         candidates.append((score, distance, abs(dx), id(text), value, text, dy))
     if not candidates:
-        return "", "", "LOW"
+        return "", "", "LOW", None
     migration_type = _migration_device_type_from_values(device_type=device_type)
     if migration_type == "CB":
         numeric = [item for item in candidates if re.fullmatch(r"\d{1,8}", item[4].strip())]
@@ -1619,125 +1968,12 @@ def _resolve_instance_name(
     best = candidates[0]
     # If two unrelated labels are effectively tied, do not invent a name.
     if len(candidates) > 1 and abs(candidates[1][0] - best[0]) < 5.0 and candidates[1][4] != best[4]:
-        return "", "Nearby Text ambiguous", "LOW"
+        return "", "Nearby Text ambiguous", "LOW", None
     consumed_text_ids.add(best[3])
     confidence = "HIGH" if best[1] <= 120.0 else "MEDIUM"
-    return best[4], "Nearby Text", confidence
+    return best[4], "Nearby Text", confidence, best[3]
 
 
-
-
-def _element_rotation(element: ET.Element) -> int:
-    """Return the normalized visual rotation used by the G symbol."""
-    raw = (element.get("rotate") or "").strip()
-    if raw:
-        try:
-            return int(round(float(raw))) % 360
-        except ValueError:
-            pass
-    match = re.search(r"rotate\(\s*(-?\d+(?:\.\d+)?)\s*\)", element.get("tfr") or "", re.I)
-    if match:
-        try:
-            return int(round(float(match.group(1)))) % 360
-        except ValueError:
-            pass
-    return 0
-
-
-def _transformer_text_is_other_device_label(value: str) -> bool:
-    """Reject nearby labels that clearly belong to another device family."""
-    value = (value or "").strip()
-    if not value:
-        return True
-    upper = value.upper()
-    if upper in {"SMART", "SMR"} or _GENERIC_DEVICE_LABEL.fullmatch(value):
-        return True
-    if re.fullmatch(r"F\.?\s*C\.?", upper):
-        return True
-    if re.match(r"^LBS(?:[-\s]|$)", upper):
-        return True
-    return False
-
-
-def _transformer_text_pair_score(element: ET.Element, text: ET.Element) -> float | None:
-    """Score a transformer/name text pair using the G icon's visual anchor.
-
-    Transformer GIcons use a large 150x150 bounding box whose XML center is not the
-    rendered coil center.  Comparing text to that box center makes labels that are
-    visually above the coil look like side/below labels and causes cascading name
-    theft when each text is consumed sequentially.  The stable geometry in real G
-    drawings is the text position relative to the symbol's x/y anchor.
-    """
-    value = _text_value(text)
-    if _transformer_text_is_other_device_label(value):
-        return None
-
-    ex, ey = _float(element, "x"), _float(element, "y")
-    tx, ty = _center(text)
-    dx, dy = tx - ex, ty - ey
-
-    # Real transformer labels are normally close to the symbol anchor, but can be
-    # above, below, or slightly to the side depending on rotation/topology.
-    if abs(dx) > 280.0 or dy < -220.0 or dy > 190.0:
-        return None
-
-    rotation = _element_rotation(element)
-    target_dx = 55.0 if rotation in {90, 270} else 25.0
-
-    # Prefer the conventional label strip above the symbol.  A second strip below
-    # is intentionally supported (e.g. vertically connected transformers).  The
-    # side fallback handles legacy icons whose internal drawing is offset inside the
-    # 150x150 GIcon box without reverting to unrestricted nearest-text guessing.
-    above = abs(dx - target_dx) * 0.35 + abs(dy + 62.0) * 0.80
-    below = abs(dx - target_dx) * 0.35 + abs(dy - 66.0) * 0.80 + 32.0
-    side = abs(dx - target_dx) * 0.45 + abs(dy + 20.0) * 0.55 + 42.0
-    score = min(above, below, side)
-
-    stripped = value.strip()
-    if re.fullmatch(r"\(\s*\d+\s*\)", stripped):
-        score += 120.0
-    # Numeric transformer labels are extremely common in the Saudi G drawings and
-    # are a stronger candidate than a nearby descriptive annotation, but this is a
-    # preference only: alphanumeric transformer names remain supported.
-    if re.fullmatch(r"\d{3,7}", stripped):
-        score -= 8.0
-    return score
-
-
-def _assign_transformer_text_names(
-    transformers: list[ET.Element],
-    texts: list[ET.Element],
-) -> dict[int, tuple[str, str, str, int]]:
-    """Globally assign nearby text labels to transformers one-to-one.
-
-    The old per-element greedy resolver could let an earlier transformer consume the
-    next transformer's label; every following row then shifted by one and the final
-    transformer became unnamed.  Global lowest-score assignment removes that order
-    dependency while preserving one text -> one device semantics.
-    """
-    candidates: list[tuple[float, int, int, ET.Element, ET.Element]] = []
-    for element in transformers:
-        for text in texts:
-            score = _transformer_text_pair_score(element, text)
-            if score is None or score > 130.0:
-                continue
-            candidates.append((score, id(element), id(text), element, text))
-
-    candidates.sort(key=lambda item: (item[0], item[1], item[2]))
-    assigned_elements: set[int] = set()
-    assigned_texts: set[int] = set()
-    result: dict[int, tuple[str, str, str, int]] = {}
-    for score, element_id, text_id, _element, text in candidates:
-        if element_id in assigned_elements or text_id in assigned_texts:
-            continue
-        value = _text_value(text)
-        if not value:
-            continue
-        assigned_elements.add(element_id)
-        assigned_texts.add(text_id)
-        confidence = "HIGH" if score <= 55.0 else ("MEDIUM" if score <= 100.0 else "LOW")
-        result[element_id] = (value, "Nearby Text", confidence, text_id)
-    return result
 
 
 def _rmu_contexts(tree: ET.ElementTree, file_path: Path) -> tuple[list[_RmuContext], list[str]]:
@@ -1745,8 +1981,8 @@ def _rmu_contexts(tree: ET.ElementTree, file_path: Path) -> tuple[list[_RmuConte
         identification = identify_rmus(
             tree,
             file_path,
-            name_positions=("top", "bottom", "left", "right"),
-            name_resolution_mode="auto_cluster",
+            name_positions=("top",),
+            name_resolution_mode="selected_direction",
             smart_in_type=True,
         )
     except Exception as exc:  # extraction should continue even if composite RMU recognition is unavailable
@@ -1913,6 +2149,7 @@ def extract_file_inventory(
     source: Path,
     profile: SiteSmartProfile,
     feeder_database_service: OracleDatabaseService | None = None,
+    feeder_assignments: dict[str, dict[str, object]] | None = None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[str]]:
     profile = profile.normalized()
     definitions = _profile_definitions(profile)
@@ -1930,9 +2167,14 @@ def extract_file_inventory(
     selection_cache: dict[int, tuple[_RmuContext | None, StandardDefinition | None, str]] = {}
     standalone_name_targets: list[ET.Element] = []
     standalone_target_ids: set[int] = set()
+    standalone_target_families: dict[int, str] = {}
     for candidate in elements:
         current_devref = (candidate.get("devref") or "").strip()
         if not current_devref:
+            continue
+        if not _is_nameable_device_element(candidate):
+            # ConnectLine/FeedLine/BusDis/Bus are topology primitives even when
+            # legacy files attach devref-like metadata to them.
             continue
         candidate_context = _context_for_element(candidate, contexts)
         candidate_definition, candidate_match_source = _select_definition(candidate, definitions, candidate_context)
@@ -1956,8 +2198,100 @@ def extract_file_inventory(
             continue
         standalone_name_targets.append(candidate)
         standalone_target_ids.add(id(candidate))
+        standalone_target_families[id(candidate)] = _name_family_for_target(
+            candidate, candidate_definition, migration_type
+        )
 
-    standalone_text_names = _assign_global_standalone_names(standalone_name_targets, texts, elements)
+    # Use the same global Text ownership pool as RMU recognition. RMU frames and
+    # other *top-level business devices* compete with standalone devices.  Internal
+    # CBreakerDis/LBS pieces and topology primitives are deliberately excluded;
+    # otherwise a cabinet component can steal the name of a nearby pole device.
+    global_competing_targets: list[tuple[str, ET.Element]] = [
+        (f"rmu:{context.rect_id}", context.rect)
+        for context in contexts
+    ]
+    known_standalone_ids = {id(device) for device in standalone_name_targets}
+    for element in elements:
+        if (
+            id(element) in known_standalone_ids
+            or not _is_nameable_device_element(element)
+            or any(_center_inside(element, context.rect) for context in contexts)
+        ):
+            continue
+        cached_definition = selection_cache.get(id(element))
+        if cached_definition is None:
+            element_context = _context_for_element(element, contexts)
+            element_definition, element_match_source = _select_definition(
+                element, definitions, element_context
+            )
+            selection_cache[id(element)] = (element_context, element_definition, element_match_source)
+        else:
+            element_context, element_definition, _element_match_source = cached_definition
+        if element_definition is None or element_context is not None:
+            continue
+        if element_definition.symbol_usage not in {"设备", "设备组成图元"}:
+            continue
+        element_migration_type = _migration_device_type_from_values(
+            device_type=element_definition.device_type,
+            standard_file=element_definition.standard_file,
+            standard_devref=element_definition.standard_devref,
+            actual_devref=(element.get("devref") or "").strip(),
+            element_tag=local_name(element.tag),
+        )
+        if element_migration_type == "RMU":
+            continue
+        element_level = _effective_device_level_for(
+            element_definition, element_context, element_migration_type
+        )
+        if element_level not in {"独立设备", "组合设备"}:
+            continue
+        global_competing_targets.append((f"device:{id(element)}", element))
+        standalone_target_families[id(element)] = _name_family_for_target(
+            element, element_definition, element_migration_type
+        )
+
+    all_global_targets = list(standalone_name_targets) + [
+        target for _key, target in global_competing_targets
+        if local_name(target.tag) != "rect"
+    ]
+    learned_target_families = dict(standalone_target_families)
+    for competing_key, competing_target in global_competing_targets:
+        if local_name(competing_target.tag) == "rect":
+            learned_target_families.setdefault(id(competing_target), "RMU")
+    learned_color_modes, learned_format_modes = _learn_name_modes(
+        all_global_targets,
+        texts,
+        elements,
+        learned_target_families,
+    )
+
+    # Every standalone equipment family, including TransformerDis, participates
+    # in the same global one-to-one Text ownership pass.  A transformer must not
+    # reserve a nearby label before a visually closer CBreakerDis/SEC device gets
+    # to compete for it.  This is the key rule for mixed pole-device drawings.
+    generic_targets = list(standalone_name_targets)
+    generic_competing_targets = list(global_competing_targets)
+    generic_target_families = {
+        str(id(device)): standalone_target_families.get(id(device), "")
+        for device in generic_targets
+    }
+    generic_target_families.update({
+        key: learned_target_families.get(id(target), "")
+        for key, target in generic_competing_targets
+    })
+    generic_text_names = _assign_global_standalone_names(
+        generic_targets,
+        [
+            text for text in texts
+            if not any(_center_inside(text, context.rect) for context in contexts)
+        ],
+        elements,
+        generic_competing_targets,
+        target_families=generic_target_families,
+        learned_color_modes=learned_color_modes,
+        learned_format_modes=learned_format_modes,
+    )
+    standalone_text_names = generic_text_names
     # Reserve the exact Text objects already assigned to non-RMU devices so legacy
     # fallback logic used for RMU internals/diagnostic symbols cannot steal them.
     consumed_text_ids: set[int] = {item[3] for item in standalone_text_names.values()}
@@ -1978,41 +2312,61 @@ def extract_file_inventory(
             context, definition, match_source = cached
         tag = local_name(element.tag)
         if definition is None:
-            unmapped_rows.append({
-                "GFile": source.name,
-                "XML元素": tag,
-                "ElementID": (element.get("id") or "").strip(),
-                "实际devref": current_devref,
-                "keyid": (element.get("keyid") or "").strip(),
-                "key_name": (element.get("key_name") or "").strip(),
-                "p_NameString": (element.get("p_NameString") or "").strip(),
-                "所属RMU": context.name if context else "",
-                "匹配状态": match_source,
-                "x": _float(element, "x"),
-                "y": _float(element, "y"),
-            })
-            continue
+            fallback_definition = _observed_tag_fallback_definition(tag, current_devref)
+            if fallback_definition is None:
+                unmapped_rows.append({
+                    "GFile": source.name,
+                    "XML元素": tag,
+                    "ElementID": (element.get("id") or "").strip(),
+                    "实际devref": current_devref,
+                    "keyid": (element.get("keyid") or "").strip(),
+                    "key_name": (element.get("key_name") or "").strip(),
+                    "key_name1": (element.get("key_name1") or "").strip(),
+                    "key_name2": (element.get("key_name2") or "").strip(),
+                    "p_NameString": (element.get("p_NameString") or "").strip(),
+                    "p_EngcodeString": (element.get("p_EngcodeString") or "").strip(),
+                    "link": (element.get("link") or "").strip(),
+                    "node_area": (element.get("node_area") or "").strip(),
+                    "所属RMU": context.name if context else "",
+                    "匹配状态": match_source,
+                    "x": _float(element, "x"),
+                    "y": _float(element, "y"),
+                })
+                continue
+            definition = fallback_definition
+            match_source = "XML_TAG_FALLBACK"
 
         global_name = standalone_text_names.get(id(element))
         if global_name is not None:
             name, name_source, name_confidence, _reserved_text_id, global_distance = global_name
             display_label, display_label_distance = name, global_distance
         elif id(element) in standalone_target_ids:
-            # v2.18.127: for non-RMU devices visible geometry is authoritative.  Do
-            # not fall back to key_name/p_NameString when no eligible Text remains.
+            # For non-RMU devices visible geometry/Text is authoritative.  Do not
+            # fall back to model-association attributes when no eligible Text remains.
             name, name_source, name_confidence = "", "", "LOW"
-            display_label, display_label_distance = _nearest_display_label(element, texts)
+            # No assigned name means no display name either.  A nearby Text is only
+            # an equipment name after the global one-to-one ownership pass accepts
+            # it; never expose an unassigned/foreign label as this device's name.
+            display_label, display_label_distance = "", ""
         else:
-            name, name_source, name_confidence = _resolve_instance_name(
+            name, name_source, name_confidence, name_text_id = _resolve_instance_name(
                 element,
                 device_type=definition.device_type,
                 rmu_name=context.name if context else "",
                 texts=texts,
                 consumed_text_ids=consumed_text_ids,
             )
-            display_label, display_label_distance = _nearest_display_label(
-                element, texts, preferred_value=name if name_source == "Nearby Text" else ""
-            )
+            if name_source == "Nearby Text" and name and name_text_id is not None:
+                # The audit label mirrors the exact Text that was assigned as the
+                # actual name; it is not an independent nearest-text guess.
+                display_label = name
+                display_label_distance = _nearest_display_label(
+                    element, [text for text in texts if id(text) == name_text_id]
+                )[1]
+            else:
+                # Ambiguous or missing names remain blank.  In particular, do not
+                # show a nearby label belonging to another device.
+                display_label, display_label_distance = "", ""
         element_id = (element.get("id") or "").strip()
         validation_details = validation_by_id.get(element_id, []) if element_id else []
         issues = [str(item.get("IssueType", "") or "").strip() for item in validation_details if str(item.get("IssueType", "") or "").strip()]
@@ -2048,7 +2402,11 @@ def extract_file_inventory(
             "ElementID": element_id,
             "keyid": (element.get("keyid") or "").strip(),
             "key_name": (element.get("key_name") or "").strip(),
+            "key_name1": (element.get("key_name1") or "").strip(),
+            "key_name2": (element.get("key_name2") or "").strip(),
             "p_NameString": (element.get("p_NameString") or "").strip(),
+            "p_EngcodeString": (element.get("p_EngcodeString") or "").strip(),
+            "link": (element.get("link") or "").strip(),
             "标准图元文件": definition.standard_file,
             "标准devref": definition.standard_devref,
             "实际devref": current_devref,
@@ -2116,10 +2474,9 @@ def extract_file_inventory(
             "node_area": "",
         })
 
-    # v2.18.146: feeder DB lookup is deliberately limited to the three Bus-head
-    # devices of each discovered feeder branch.  Downstream device keyids are never
-    # sent to Oracle; after a valid head triplet resolves one BAY, the whole Bus-
-    # removed topology component inherits that feeder.
+    # Only the selected Bus-head CBreaker keyids are sent to Oracle. Downstream
+    # device keyids are never queried; a valid CBreaker BAY is propagated through
+    # the whole Bus-removed topology component.
     feeder_root_branches = _discover_feeder_root_branches(elements)
     anchor_contexts: dict[tuple[str, str], TopologyFeederAnchorContext] = {}
     anchor_issues: dict[tuple[str, str], str] = {}
@@ -2142,11 +2499,20 @@ def extract_file_inventory(
         contexts=contexts,
         device_rows=device_rows,
         symbol_rows=symbol_rows,
+        unmapped_rows=unmapped_rows,
         anchor_contexts=anchor_contexts,
         anchor_issues=anchor_issues,
         database_lookup_enabled=database_lookup_enabled,
         feeder_root_branches=feeder_root_branches,
     )
+    if feeder_assignments is not None:
+        feeder_assignments.update(
+            {
+                str(element_id): dict(fields)
+                for element_id, fields in (feeder_stats.get("element_feeder_fields", {}) or {}).items()
+                if str(element_id).strip()
+            }
+        )
     warnings.extend(str(item) for item in feeder_stats.get("warnings", []) if str(item).strip())
 
     return symbol_rows, device_rows, unmapped_rows, warnings
@@ -2205,6 +2571,7 @@ def extract_file_content_inventory(
     symbol_rows: list[dict[str, object]],
     device_rows: list[dict[str, object]],
     unmapped_rows: list[dict[str, object]],
+    feeder_assignments: dict[str, dict[str, object]] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Extract the complete XML/object hierarchy for one business G file."""
     tree = ET.parse(source)
@@ -2232,6 +2599,14 @@ def extract_file_content_inventory(
             category = "未定义图元"
         tag = local_name(element.tag)
         text = _text_value(element)
+        observed_metadata = _observed_content_metadata(tag)
+        # Bus is a boundary only and deliberately never receives a feeder/BAY.
+        # Every other XML object in a validated CBreaker component inherits the
+        # topology assignment, including lines, BusDis and unmapped objects.
+        feeder_fields = {}
+        if tag != "Bus" and element_id:
+            feeder_fields = dict((feeder_assignments or {}).get(element_id, {}))
+        mapped_feeder = mapped if tag != "Bus" and mapped is not None else {}
         row = {
             "GFile": source.name,
             "facID": (root.get("facID") or "").strip(),
@@ -2243,23 +2618,30 @@ def extract_file_content_inventory(
             "XML元素": tag,
             "ElementID": element_id,
             "内容分类": category,
-            "图元用途": str(mapped.get("图元用途", "") if mapped else ""),
-            "设备类型": str(mapped.get("设备类型", "") if mapped else ""),
-            "设备子类型": str(mapped.get("设备子类型", "") if mapped else ""),
-            "设备层级": str(mapped.get("设备层级", "") if mapped else ""),
+            "图元用途": str(mapped.get("图元用途", "") if mapped else observed_metadata["图元用途"]),
+            "设备类型": str(mapped.get("设备类型", "") if mapped else observed_metadata["设备类型"]),
+            "设备子类型": str(mapped.get("设备子类型", "") if mapped else observed_metadata["设备子类型"]),
+            "设备层级": str(mapped.get("设备层级", "") if mapped else observed_metadata["设备层级"]),
             "实例名称": str(mapped.get("实例名称", "") if mapped else ""),
             "所属RMU": str(mapped.get("所属RMU", "") if mapped else ""),
-            "所属馈线": str(mapped.get("所属馈线", "") if mapped else ""),
-            "馈线站名": str(mapped.get("馈线站名", "") if mapped else ""),
-            "馈线BayID": str(mapped.get("馈线BayID", "") if mapped else ""),
-            "馈线判断来源": str(mapped.get("馈线判断来源", "") if mapped else ""),
-            "馈线置信度": str(mapped.get("馈线置信度", "") if mapped else ""),
-            "馈线锚点表": str(mapped.get("馈线锚点表", "") if mapped else ""),
-            "馈线锚点keyid": str(mapped.get("馈线锚点keyid", "") if mapped else ""),
+            "所属馈线": str(feeder_fields.get("所属馈线", mapped_feeder.get("所属馈线", ""))),
+            "馈线站名": str(feeder_fields.get("馈线站名", mapped_feeder.get("馈线站名", ""))),
+            "馈线BayID": str(feeder_fields.get("馈线BayID", mapped_feeder.get("馈线BayID", ""))),
+            "馈线判断来源": str(feeder_fields.get("馈线判断来源", mapped_feeder.get("馈线判断来源", ""))),
+            "馈线置信度": str(feeder_fields.get("馈线置信度", mapped_feeder.get("馈线置信度", ""))),
+            "馈线锚点表": str(feeder_fields.get("馈线锚点表", mapped_feeder.get("馈线锚点表", ""))),
+            "馈线锚点keyid": str(feeder_fields.get("馈线锚点keyid", mapped_feeder.get("馈线锚点keyid", ""))),
+            "馈线Cluster": str(feeder_fields.get("馈线Cluster", mapped_feeder.get("馈线Cluster", ""))),
+            "馈线证据设备数": feeder_fields.get("馈线证据设备数", mapped_feeder.get("馈线证据设备数", 0)),
+            "馈线冲突": str(feeder_fields.get("馈线冲突", mapped_feeder.get("馈线冲突", ""))),
             "devref": (element.get("devref") or "").strip(),
             "keyid": (element.get("keyid") or "").strip(),
             "key_name": (element.get("key_name") or "").strip(),
+            "key_name1": (element.get("key_name1") or "").strip(),
+            "key_name2": (element.get("key_name2") or "").strip(),
             "p_NameString": (element.get("p_NameString") or "").strip(),
+            "p_EngcodeString": (element.get("p_EngcodeString") or "").strip(),
+            "link": (element.get("link") or "").strip(),
             "文本/值": text,
             "x": _float(element, "x"),
             "y": _float(element, "y"),
@@ -2454,7 +2836,7 @@ def _style_workbook(
             {"指标": "设备类型数", "数量": len(device_type_rows), "说明": "按设备类型/子类型/层级统计"},
             {"指标": "ADMS-SLD设备明细", "数量": len(migration_all_rows), "说明": "迁移标准化设备行：主设备 + RMU内部设备/部件"},
             {"指标": "ADMS-SLD主设备", "数量": len(migration_primary_rows), "说明": "独立设备 + RMU组合设备，不含RMU内部部件"},
-            {"指标": "已识别所属馈线主设备", "数量": totals["已识别所属馈线主设备"], "说明": "仅查询馈线顶部 407/408/409 三类入口设备；CBreaker(407) 有效 BAY 优先作为权威根，整条下游真实拓扑直接继承馈线，不查询下游设备 keyid"},
+            {"指标": "已识别所属馈线主设备", "数量": totals["已识别所属馈线主设备"], "说明": "仅查询馈线顶部 CBreaker(407)；有效 BAY 作为唯一权威根，Bus 之外整条下游真实拓扑直接继承馈线，不查询下游设备 keyid"},
             {"指标": "所属馈线留空主设备", "数量": totals["所属馈线留空主设备"], "说明": "没有任何设备证据或存在无法消解的馈线冲突时主动留空"},
             {"指标": "未命名迁移设备", "数量": sum(1 for row in migration_all_rows if not str(row.get("DeviceName", "")).strip()), "说明": "需要后续规则/标准补充的设备名称"},
             {"指标": "标准图元实例", "数量": totals["标准图元实例"], "说明": "已由 GLOBAL 标准识别的图元实例"},
@@ -2476,7 +2858,7 @@ def _style_workbook(
         "GFile", "facID", "facName", "FeederName",
         "DeviceType", "DeviceName", "IsSmart", "SmartType", "SmartSource",
         "DeviceForm", "ParentRMU", "RMUType", "DeviceSubtype", "ProfileDeviceType", "XML Element", "ElementID",
-        "keyid", "key_name", "p_NameString", "StandardFile", "StandardDevref", "ActualDevref", "SymbolValidation",
+        "keyid", "key_name", "key_name1", "key_name2", "p_NameString", "p_EngcodeString", "link", "node_area", "StandardFile", "StandardDevref", "ActualDevref", "SymbolValidation",
         "ValidationIssue", "NameSource", "NameConfidence", "DisplayLabel", "DisplayLabelDistance", "QualityStatus", "x", "y", "w", "h",
     ]
     add_sheet("ADMS-SLD设备明细", migration_all_rows, migration_columns)
@@ -2510,7 +2892,7 @@ def _style_workbook(
         "设备类型", "迁移设备类型", "设备子类型", "实例名称", "标准检查范围", "SMART/NORMAL",
         "是否智能", "智能类型", "智能判断来源", "设备层级", "设备形态", "所属RMU",
         "标准图元文件", "标准devref", "实际devref", "标准校验", "异常类型", "XML元素", "ElementID", "keyid",
-        "key_name", "p_NameString", "名称来源", "名称置信度", "图中文字标签", "标签距离", "x", "y", "w", "h",
+        "key_name", "key_name1", "key_name2", "p_NameString", "p_EngcodeString", "link", "node_area", "名称来源", "名称置信度", "图中文字标签", "标签距离", "x", "y", "w", "h",
     ]
     add_sheet("全部设备", primary_devices, device_columns)
     add_sheet("设备类型统计", device_type_rows, ["设备类型", "设备子类型", "设备层级", "实例数", "命名实例数", "文件数", "PASS", "MISMATCH", "示例名称"])
@@ -2522,20 +2904,20 @@ def _style_workbook(
         "图元用途", "设备类型", "迁移设备类型", "设备子类型", "设备层级", "设备形态",
         "标准检查范围", "SMART/NORMAL", "是否智能", "智能类型", "智能判断来源",
         "实例名称", "名称来源", "名称置信度", "图中文字标签", "标签距离", "所属RMU", "RMU类型", "XML元素", "ElementID", "keyid",
-        "key_name", "p_NameString", "标准图元文件", "标准devref", "实际devref", "标准校验", "异常类型",
+        "key_name", "key_name1", "key_name2", "p_NameString", "p_EngcodeString", "link", "标准图元文件", "标准devref", "实际devref", "标准校验", "异常类型",
         "匹配来源", "x", "y", "w", "h", "node_area",
     ]
     add_sheet("全部图元实例", symbol_rows, instance_columns)
     mismatch_rows = [row for row in symbol_rows if row.get("标准校验") == "MISMATCH"]
     add_sheet("图元校验异常", mismatch_rows, instance_columns)
-    unmapped_columns = ["GFile", "XML元素", "ElementID", "实际devref", "keyid", "key_name", "p_NameString", "所属RMU", "匹配状态", "x", "y"]
+    unmapped_columns = ["GFile", "XML元素", "ElementID", "实际devref", "keyid", "key_name", "key_name1", "key_name2", "p_NameString", "p_EngcodeString", "link", "node_area", "所属RMU", "所属馈线", "馈线站名", "馈线BayID", "馈线判断来源", "馈线置信度", "馈线锚点表", "馈线锚点keyid", "匹配状态", "x", "y"]
     add_sheet("未定义图元", unmapped_rows, unmapped_columns)
     add_sheet("图元引用统计", reference_rows, ["实际devref", "标准图元文件", "图元用途", "设备类型", "实例数", "PASS", "MISMATCH", "UNMAPPED"])
 
     content_columns = [
         "GFile", "facID", "facName", "层级深度", "XML路径", "父XML元素", "父ElementID", "XML元素", "ElementID", "内容分类",
-        "图元用途", "设备类型", "设备子类型", "设备层级", "实例名称", "所属RMU", "所属馈线", "馈线站名", "馈线BayID", "馈线判断来源", "馈线置信度", "馈线锚点表", "馈线锚点keyid",
-        "devref", "keyid", "key_name", "p_NameString",
+        "图元用途", "设备类型", "设备子类型", "设备层级", "实例名称", "所属RMU", "所属馈线", "馈线站名", "馈线BayID", "馈线判断来源", "馈线置信度", "馈线证据设备数", "馈线锚点表", "馈线锚点keyid", "馈线Cluster", "馈线冲突",
+        "devref", "keyid", "key_name", "key_name1", "key_name2", "p_NameString", "p_EngcodeString", "link", "node_area",
         "文本/值", "x", "y", "w", "h", "node_area", "子元素数", "属性数", "全部属性",
     ]
     add_sheet("全部内容清单", content_rows, content_columns)
@@ -2631,11 +3013,11 @@ def _write_html_report(
     device_columns = [
         "GFile", "facID", "facName", "所属馈线", "馈线站名", "馈线BayID", "馈线判断来源", "馈线置信度", "馈线证据设备数", "馈线锚点表", "馈线锚点keyid", "馈线Cluster", "馈线冲突",
         "设备类型", "设备子类型", "实例名称", "设备层级", "SMART/NORMAL", "所属RMU",
-        "标准图元文件", "标准devref", "实际devref", "标准校验", "异常类型", "XML元素", "ElementID", "keyid", "名称来源", "名称置信度", "x", "y", "w", "h",
+        "标准图元文件", "标准devref", "实际devref", "标准校验", "异常类型", "XML元素", "ElementID", "keyid", "key_name", "key_name1", "key_name2", "p_NameString", "p_EngcodeString", "link", "node_area", "名称来源", "名称置信度", "x", "y", "w", "h",
     ]
     content_columns = [
         "GFile", "层级深度", "XML路径", "XML元素", "ElementID", "内容分类", "图元用途", "设备类型", "实例名称", "所属RMU",
-        "所属馈线", "馈线站名", "馈线BayID", "馈线判断来源", "馈线置信度", "馈线锚点表", "馈线锚点keyid", "devref", "keyid", "key_name", "p_NameString", "文本/值", "x", "y", "w", "h", "子元素数", "全部属性",
+        "所属馈线", "馈线站名", "馈线BayID", "馈线判断来源", "馈线置信度", "馈线证据设备数", "馈线锚点表", "馈线锚点keyid", "馈线Cluster", "馈线冲突", "devref", "keyid", "key_name", "key_name1", "key_name2", "p_NameString", "p_EngcodeString", "link", "node_area", "文本/值", "x", "y", "w", "h", "子元素数", "全部属性",
     ]
     symbol_columns = [
         "GFile", "图元用途", "设备类型", "设备子类型", "设备层级", "实例名称", "所属RMU", "所属馈线", "馈线站名", "馈线BayID", "馈线判断来源", "馈线置信度", "馈线锚点表", "馈线锚点keyid", "XML元素", "ElementID",
@@ -2656,7 +3038,7 @@ def _write_html_report(
         _html_table("全部业务设备", primary_devices, device_columns, open_by_default=True),
         _html_table("RMU 组合设备", rmu_rows, device_columns),
         _html_table("图元标准异常", mismatches, symbol_columns, open_by_default=bool(mismatches)),
-        _html_table("未定义图元", unmapped_rows, ["GFile", "XML元素", "ElementID", "实际devref", "keyid", "key_name", "p_NameString", "所属RMU", "匹配状态", "x", "y"]),
+        _html_table("未定义图元", unmapped_rows, ["GFile", "XML元素", "ElementID", "实际devref", "keyid", "key_name", "key_name1", "key_name2", "p_NameString", "p_EngcodeString", "link", "node_area", "所属RMU", "匹配状态", "x", "y"]),
         _html_table("全部标准图元实例", symbol_rows, symbol_columns),
         _html_table("图元引用统计", reference_summary, ["实际devref", "标准图元文件", "图元用途", "设备类型", "实例数", "PASS", "MISMATCH", "UNMAPPED"]),
         _html_table("XML 元素/结构统计", xml_summary, ["XML元素", "内容分类", "对象数", "带devref对象"]),
@@ -2683,8 +3065,8 @@ th{{position:sticky;top:0;background:#e5efec;z-index:1}} tr:nth-child(even) td{{
 </style>
 <script>function filterTable(id,q){{q=(q||'').toLowerCase();document.querySelectorAll('#'+id+' tbody tr').forEach(function(r){{r.style.display=r.innerText.toLowerCase().includes(q)?'':'none';}});}}</script>
 </head><body><main>
-<h1>G 图形内容解析报告</h1><div class='subtitle'>全量设备、图元、文本、量测/信号、Poke/跳转、连接/拓扑与完整 XML 层级清单</div>
-<div class='note'><b>执行标准：</b>{escape(profile_title)}。业务 G 与服务器只读；报告只解析和校验，不修改源文件。设备类型以已确认的图元标准分类为准，RMU 继续作为组合设备单独汇总。所属馈线把 Bus 仅作为上游边界，并按真实 link/node_area 拓扑拆分馈线分支；每个分支只查询顶部 CBreaker/Disconnector/GroundDisconnector 三类入口 keyid，通过 long2_to_long1/get_tab_no + SYS_TABLE_INFO 校验 407/408/409，再查询设备 BAY_ID → BAY.NAME/ST_ID → SUBSTATION.NAME。CBreaker(407) 是权威馈线根：只要它取得有效 BAY，就从其非 Bus 一侧经 ConnectLine/FeedLine/BusDis/设备节点一直传播到真实拓扑终点，所有下游设备直接继承馈线，绝不再查询下游设备 keyid/关联状态。Disconnector/GroundDisconnector 仅作一致性/回退证据，未关联或旧 BAY 只告警，不会抹掉有效 CBreaker 馈线；不使用文件名/facID/facName/FeedLine文字/空间距离补猜。</div>
+<h1>G 图形内容解析与拓扑分析报告</h1><div class='subtitle'>全量设备、图元、文本、量测/信号、Poke/跳转、连接/拓扑与完整 XML 层级清单</div>
+<div class='note'><b>执行标准：</b>{escape(profile_title)}。业务 G 与服务器只读；报告只解析和校验，不修改源文件。设备类型以已确认的图元标准分类为准，RMU 继续作为组合设备单独汇总。所属馈线把 Bus 仅作为上游边界并排除在归属结果之外；每个分支只查询顶部 CBreaker(407) keyid，通过 long2_to_long1/get_tab_no + SYS_TABLE_INFO 校验后查询 BAY_ID → BAY.NAME/ST_ID → SUBSTATION.NAME。有效 CBreaker BAY 是唯一权威根，Bus 之外的连接线、BusDis、环网柜内部图元和未定义对象均继承同一馈线/BAY；不使用下游设备 keyid、文件名、facID/facName、FeedLine文字或空间距离补猜。CBreaker 未关联时，该分支 Feeder/BAY 保持空白并告警。</div>
 <div class='cards'>{cards}</div>{''.join(sections)}
 <div class='footer'>报告与 Excel 同次生成；“完整 G XML / 对象清单”记录每个 XML 节点的路径、父级、属性和业务分类，便于进一步追溯。</div>
 </main></body></html>"""
@@ -2720,8 +3102,12 @@ def process_symbol_inventory(
         progress(0)
     for index, source in enumerate(files, 1):
         log(f"[G 图形内容解析] {index}/{len(files)} {source.name}")
+        feeder_assignments: dict[str, dict[str, object]] = {}
         symbol_rows, device_rows, unmapped_rows, file_warnings = extract_file_inventory(
-            source, profile, feeder_database_service=feeder_database_service
+            source,
+            profile,
+            feeder_database_service=feeder_database_service,
+            feeder_assignments=feeder_assignments,
         )
         if feeder_database_service is not None:
             lookup_stats = getattr(feeder_database_service, "last_topology_feeder_lookup_stats", {}) or {}
@@ -2753,7 +3139,9 @@ def process_symbol_inventory(
                     samples = stat.get("sample_unmatched", []) or []
                     if samples:
                         log(f"    未解析示例 keyid: {', '.join(str(item) for item in samples)}")
-        content_rows, file_summary = extract_file_content_inventory(source, symbol_rows, device_rows, unmapped_rows)
+        content_rows, file_summary = extract_file_content_inventory(
+            source, symbol_rows, device_rows, unmapped_rows, feeder_assignments
+        )
         all_symbols.extend(symbol_rows)
         all_devices.extend(device_rows)
         all_unmapped.extend(unmapped_rows)

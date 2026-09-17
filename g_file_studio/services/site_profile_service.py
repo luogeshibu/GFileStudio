@@ -64,9 +64,9 @@ class SiteSmartProfile:
     geometry_templates: dict[str, list[dict[str, object]]] = field(default_factory=dict)
     custom_symbols: list[dict[str, object]] = field(default_factory=list)
     symbol_catalog: dict[str, dict[str, object]] = field(default_factory=dict)
-    # Authoritative user-uploaded icon-definition G files.  Files are copied into
+    # Authoritative server-derived icon-definition G files.  Files are copied into
     # a version-independent managed library so application upgrades cannot delete
-    # the standard.  One ACTIVE profile version references one file per device role.
+    # the standard. Legacy local records remain readable for migration only.
     managed_standard_files: list[dict[str, object]] = field(default_factory=list)
     standard_fingerprint: str = ""
     # A saved ACTIVE standard may be explicitly locked by the user. Locking is
@@ -708,7 +708,7 @@ class SiteProfileService:
         return text or "standard"
 
     def prepare_standard_file_records(self, files: list[Path]) -> list[dict[str, object]]:
-        """Validate user-uploaded authoritative symbol G files.
+        """Validate local or server-downloaded authoritative symbol G files.
 
         Business SLD G files are not accepted here.  Every selected file must be a
         parseable icon-definition G containing a body with w/h/AlignCenter.
@@ -755,7 +755,7 @@ class SiteProfileService:
             })
         if failures:
             raise ValueError(
-                "标准图元必须由用户上传真实图元定义 G 文件，业务单线图不能作为标准。\n"
+                "标准图元必须由有效的图元定义 G 文件提供，业务单线图不能作为标准。\n"
                 + "\n".join(failures[:10])
             )
         if not rows:
@@ -860,13 +860,13 @@ class SiteProfileService:
             configured += 1
             matches = by_devref.get(devref.casefold(), [])
             if len(matches) != 1:
-                issues.append(f"{label}: 必须且只能绑定 1 个用户上传的标准图元 G，当前 {len(matches)} 个。")
+                issues.append(f"{label}: 必须且只能绑定 1 个服务器标准图元 G，当前 {len(matches)} 个。")
                 continue
             row = matches[0]
             # The user-selected device role is authoritative. element_tag / file-name
             # inference is retained only as parsed metadata and never blocks binding.
             if not list(row.get("pins", [])):
-                issues.append(f"{label}: 上传标准图元没有可用 pin 定义，不能作为 RMU 电气设备标准。")
+                issues.append(f"{label}: 服务器标准图元没有可用 pin 定义，不能作为 RMU 电气设备标准。")
             managed = Path(str(row.get("managed_path") or ""))
             if not managed.is_file():
                 issues.append(f"{label}: 持久化标准文件不存在：{managed}")
@@ -889,7 +889,7 @@ class SiteProfileService:
             configured += 1
             matches = by_devref.get(devref.casefold(), [])
             if len(matches) != 1:
-                issues.append(f"图元 {role}: 必须且只能绑定 1 个用户上传的标准图元 G，当前 {len(matches)} 个。")
+                issues.append(f"图元 {role}: 必须且只能绑定 1 个服务器标准图元 G，当前 {len(matches)} 个。")
                 continue
             row = matches[0]
             managed = Path(str(row.get("managed_path") or ""))

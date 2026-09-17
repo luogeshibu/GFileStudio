@@ -23,11 +23,19 @@ def _tree() -> ET.ElementTree:
 def test_detail_filename_uses_main_prefix_facname_and_rmu_name():
     assert build_rmu_detail_filename(
         Path("JED-NTH-ABH-03.sln.pic.g"), "AH303", "34661"
-    ) == "JED-NTH-ABH-AH303-34661.sln.pic.g"
+    ) == "JED-NTH-ABH-AH303-34661.com.pic.g"
     # Uploaded/copied filenames must not leak the copy suffix into ahref.
     assert build_rmu_detail_filename(
         Path("JED-NTH-ABH-03.sln.pic(6).g"), "AH303", "40597"
-    ) == "JED-NTH-ABH-AH303-40597.sln.pic.g"
+    ) == "JED-NTH-ABH-AH303-40597.com.pic.g"
+
+
+def test_legacy_sln_template_is_normalized_to_com_target():
+    assert build_rmu_detail_filename(
+        Path("JED-NTH-ABH-03.sln.pic.g"), "AH303", "34661",
+        naming_mode="single",
+        naming_rule="JED-NTH-ABH-AH303-22522.sln.pic.g",
+    ) == "JED-NTH-ABH-AH303-34661.com.pic.g"
 
 
 def test_smart_rmu_poke_reuses_identification_and_is_idempotent():
@@ -49,7 +57,7 @@ def test_smart_rmu_poke_reuses_identification_and_is_idempotent():
     poke = pokes[0]
     assert list(layer)[0] is poke  # background layer: behind RMU/name graphics
     assert poke.get("id") == "17000001"
-    assert poke.get("ahref") == "JED-NTH-ABH-AH303-34661.sln.pic.g"
+    assert poke.get("ahref") == "JED-NTH-ABH-AH303-34661.com.pic.g"
     assert poke.get("switchapp") == "1"
     assert poke.get("switchappflag") == "1"
     assert poke.get("fm") == "0"

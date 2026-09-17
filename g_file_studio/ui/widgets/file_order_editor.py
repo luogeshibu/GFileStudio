@@ -25,6 +25,7 @@ from g_file_studio.engines.merge_frame_inspector import (
     FRAME_BUILTIN,
     FRAME_UNSUPPORTED,
 )
+from g_file_studio.ui.table_layout import configure_responsive_table
 from g_file_studio.ui.widgets.help_widgets import set_secondary
 
 
@@ -92,6 +93,7 @@ class CandidateImportDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        configure_responsive_table(self.table)
         root.addWidget(self.table, 1)
 
         bottom = QHBoxLayout()
@@ -316,6 +318,7 @@ class FileOrderEditor(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        configure_responsive_table(self.table)
         self.table.setMinimumHeight(230)
         root.addWidget(self.table)
 
@@ -380,7 +383,7 @@ class FileOrderEditor(QWidget):
             "正在加载并检查 G 文件……",
             "取消",
             0,
-            0,
+            100,
             self,
         )
         progress.setWindowTitle("加载中")
@@ -404,8 +407,8 @@ class FileOrderEditor(QWidget):
             pass
 
         def update(done: int, total: int, filename: str) -> None:
-            progress.setRange(0, max(1, total))
-            progress.setValue(done)
+            progress.setRange(0, 100)
+            progress.setValue(round(done * 100 / max(1, total)))
             progress.setLabelText(
                 f"正在加载并检查 G 文件…… {done}/{total}\n{filename}"
             )

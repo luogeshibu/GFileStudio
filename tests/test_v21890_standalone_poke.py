@@ -49,7 +49,8 @@ def test_existing_station_poke_is_reused_deduplicated_and_copies_jm2_reference_p
     file_path = tmp_path / 'sample.g'
     root = ET.Element('G')
     layer = ET.SubElement(root, 'Layer', {'name': '0'})
-    ET.SubElement(layer, 'FeedLine', {'id': '35000001', 'd': '120,100 130,100', 'x': '120', 'y': '97', 'w': '16', 'h': '6'})
+    ET.SubElement(layer, 'Node', {'id': '34000001'})
+    ET.SubElement(layer, 'FeedLine', {'id': '35000001', 'd': '120,100 130,100', 'x': '120', 'y': '97', 'w': '16', 'h': '6', 'link': '0,0,34000001'})
     ET.SubElement(layer, 'poke', {
         'id': '17000001', 'x': '130', 'y': '90', 'w': '100', 'h': '31',
         'lc': '173,173,173', 'lcc': '#adadad', 'fc': '163,163,163', 'fcc': '#a3a3a3',
@@ -86,11 +87,12 @@ def test_existing_station_poke_is_reused_deduplicated_and_copies_jm2_reference_p
     assert poke.get('h') == '31'
 
 
-def test_no_existing_poke_can_be_created_from_line_endpoint_without_color_dependency(tmp_path: Path) -> None:
+def test_station_jump_requires_colored_background_even_at_line_endpoint(tmp_path: Path) -> None:
     file_path = tmp_path / 'sample.g'
     root = ET.Element('G')
     layer = ET.SubElement(root, 'Layer', {'name': '0'})
-    ET.SubElement(layer, 'FeedLine', {'id': '35000001', 'd': '10,10 100,100', 'x': '10', 'y': '10', 'w': '90', 'h': '90'})
+    ET.SubElement(layer, 'Node', {'id': '34000001'})
+    ET.SubElement(layer, 'FeedLine', {'id': '35000001', 'd': '10,10 100,100', 'x': '10', 'y': '10', 'w': '90', 'h': '90', 'link': '0,0,34000001'})
     ET.SubElement(layer, 'Text', {'id': '80000001', 'x': '105', 'y': '95', 'w': '90', 'h': '25', 'ts': 'FRSH-44'})
     tree = ET.ElementTree(root)
 
@@ -101,11 +103,10 @@ def test_no_existing_poke_can_be_created_from_line_endpoint_without_color_depend
         current_station_name='ABH',
         station_resolver=lambda key: SimpleNamespace(station_full_name='JED-NTH-FRSH'),
     )
-    assert result.added_count == 1
-    poke = next(e for e in list(layer) if e.tag == 'poke')
-    assert poke.get('ahref') == 'JED-NTH-FRSH.sln.pic.g'
-    for key, value in _STATION_JUMP_POKE_REFERENCE_ATTRS.items():
-        assert poke.get(key) == value, key
+    assert result.added_count == 0
+    assert result.skipped_count == 1
+    assert not any(e.tag == 'poke' for e in list(layer))
+    assert '彩色背景' in result.records[0].reason
 
 
 def test_rmu_poke_line_color_is_always_blue() -> None:

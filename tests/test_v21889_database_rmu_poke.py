@@ -48,7 +48,7 @@ def test_database_prefix_builds_expected_rmu_target():
         naming_mode='database_prefix',
         naming_rule='JED-NTH-ABH-AH303',
     )
-    assert target == 'JED-NTH-ABH-AH303-34661.sln.pic.g'
+    assert target == 'JED-NTH-ABH-AH303-34661.com.pic.g'
 
 
 def test_rmu_page_no_longer_requires_manual_poke_template():

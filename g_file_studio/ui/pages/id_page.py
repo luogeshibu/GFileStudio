@@ -39,6 +39,7 @@ from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.help_content import APP_HELP, FIELD_HELP
 from g_file_studio.ui.pages.base_page import BasePage
 from g_file_studio.ui.path_validation import validate_existing_directory, validate_input_source
+from g_file_studio.ui.table_layout import configure_responsive_table
 from g_file_studio.ui.widgets import InfoBanner, InputSourceSelector, PathRow, TaskPanel
 from g_file_studio.ui.widgets.help_widgets import set_secondary
 
@@ -196,6 +197,7 @@ class IdPage(BasePage):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.horizontalHeader().setStretchLastSection(True)
+        configure_responsive_table(self.table)
         template_layout.addWidget(self.table)
         self.layout.addWidget(template_box)
 
@@ -332,7 +334,7 @@ class IdPage(BasePage):
         files = discover_g_inputs(self.source.path(), self.source.mode())
         rules = self.rule_service.load_rules()
         self.task.log_view.clear()
-        self.task.progress.setValue(0)
+        self.task.set_progress(0)
         self.task.append_log(f"开始扫描当前 G，共 {len(files)} 个文件。")
         output_dir = begin_managed_run(self.output_path, "id", "scan")
         candidates: dict[str, IdRule] = {}
@@ -343,7 +345,7 @@ class IdPage(BasePage):
         observed_all: set[str] = set()
         uninferable: set[str] = set()
         type_max_ids: dict[str, int] = {}
-        progress_dialog = QProgressDialog("正在扫描当前 G 文件并检查 ID 规则……", "取消", 0, max(len(files), 1), self)
+        progress_dialog = QProgressDialog("正在扫描当前 G 文件并检查 ID 规则……", "取消", 0, 100, self)
         progress_dialog.setWindowTitle("扫描当前 G")
         progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         progress_dialog.setMinimumDuration(0)
@@ -383,8 +385,9 @@ class IdPage(BasePage):
                     for value in item.sample_ids:
                         if value not in bucket:
                             bucket.append(value)
-                progress_dialog.setValue(index)
-                self.task.progress.setValue(round(index * 100 / max(len(files), 1)))
+                pct = round(index * 100 / max(len(files), 1))
+                progress_dialog.setValue(pct)
+                self.task.set_progress(pct)
                 self.task.append_log(f"[{index}/{len(files)}] 已扫描：{path.name}")
                 QApplication.processEvents()
         except Exception as exc:
@@ -468,7 +471,7 @@ class IdPage(BasePage):
         self.task.open_button.setEnabled(True)
         self.task.append_log(f"CSV 报告：{csv_path}")
         self.task.append_log(f"HTML 报告：{html_path}")
-        self.task.progress.setValue(100)
+        self.task.set_progress(100)
         update_run_status(output_dir, "SUCCESS")
         QMessageBox.information(
             self,

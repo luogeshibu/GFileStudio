@@ -32,6 +32,14 @@ def test_ajwd_five_existing_station_strips_are_detected_and_long_design_label_is
     labels = ["JM2-J2", "5MR-23", "FEL 03", "BWD2-49", "SALAB-12"]
     for idx, label in enumerate(labels):
         _add_strip(layer, poke_id=17001000 + idx, text_id=80001000 + idx, x=100 + idx * 220, y=800, w=170, label=label)
+        center_x = 185 + idx * 220
+        node_id = 34001000 + idx
+        ET.SubElement(layer, "Node", {"id": str(node_id)})
+        ET.SubElement(layer, "FeedLine", {
+            "id": str(35001000 + idx),
+            "d": f"{center_x},830.5 {center_x + 10},830.5",
+            "link": f"0,0,{node_id}",
+        })
 
     # A nearby design/equipment label that used to enter the line-endpoint fallback.
     ET.SubElement(layer, "FeedLine", {"id": "35009999", "d": "10,100 20,100", "x": "10", "y": "97", "w": "16", "h": "6"})
@@ -54,7 +62,6 @@ def test_ajwd_five_existing_station_strips_are_detected_and_long_design_label_is
         _empty_identification(file_path),
         current_station_name="AJWD",
         station_resolver=lambda key: SimpleNamespace(station_full_name=resolved[key]),
-        strict_topology=False,
     )
 
     assert result.candidate_count == 5

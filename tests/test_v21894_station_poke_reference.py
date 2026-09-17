@@ -22,10 +22,14 @@ def test_station_jump_poke_uses_reference_properties_but_keeps_dynamic_geometry(
     file_path = tmp_path / "sample.g"
     root = ET.Element("G")
     layer = ET.SubElement(root, "Layer", {"name": "0"})
+    ET.SubElement(layer, "Node", {"id": "34000001"})
+    ET.SubElement(layer, "FeedLine", {
+        "id": "35000001", "d": "89.5,46.5 99.5,46.5", "link": "0,0,34000001",
+    })
     ET.SubElement(layer, "poke", {
         "id": "17000001", "x": "10", "y": "20", "w": "160", "h": "43",
         "fc": "1,2,3", "fcc": "#010203", "lc": "0,0,255", "lcc": "#0000ff",
-        "RectStyle": "0", "p_RectStyle": "0", "fm": "0", "ls": "0",
+        "RectStyle": "0", "p_RectStyle": "0", "fm": "1", "ls": "0",
         "unexpected": "remove-me",
     })
     ET.SubElement(layer, "Text", {
@@ -41,7 +45,6 @@ def test_station_jump_poke_uses_reference_properties_but_keeps_dynamic_geometry(
         identification,
         current_station_name="AJWD",
         station_resolver=lambda key: SimpleNamespace(station_full_name="JED-CTL-JM2"),
-        strict_topology=False,
     )
     assert result.updated_count == 1
     poke = next(e for e in list(layer) if e.tag == "poke")

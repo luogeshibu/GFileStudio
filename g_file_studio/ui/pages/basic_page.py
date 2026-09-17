@@ -58,7 +58,7 @@ class BasicPage(BasePage):
         self.layout.addWidget(
             InfoBanner(
                 "输入可以是单个 G 文件，也可以是 G 文件目录。属性替换、元素删除、"
-                "馈线名称定位、同类图元版本升级以及线路与母线样式修改，"
+                "同类图元版本升级以及线路与母线样式修改，"
                 "都在点击“开始基础处理”后统一执行。ID 检查/修复已移到全局“ID 检查与修复”模块。"
                 "图元及电气 Pin 的标准检查/纠正统一在“图元标准检查”模块执行。目录模式下每个文件独立处理。"
             )
@@ -111,7 +111,6 @@ class BasicPage(BasePage):
 
         self._build_graphic_merge_options()
         self._build_color_options()
-        self._build_feeder_title_options()
         self._build_icon_upgrade_options()
         self._restore_options()
 
@@ -275,7 +274,7 @@ class BasicPage(BasePage):
 
         description = QLabel(
             "直接解析 G 文件，不使用 OCR。只有 rect 框内同时存在 BusDis、CBreakerDis 和 ZhaiWaiJieDiDaoZha 才认定为环网柜；"
-            "柜名只从勾选方向上的绿色 Text 中选择。柜型优先按 Y1/Y2/... 与 Q1/Q2/... 名称计数，名称无法判断时才回退到设备 devref。"
+            "柜名只从环网柜框正上方的 Text 中选择，并且同一个 Text 只能分配给一个环网柜。柜型优先按 Y1/Y2/... 与 Q1/Q2/... 名称计数，名称无法判断时才回退到设备 devref。"
             "柜型始终输出如 2L1T、3L1T；SMART 单独识别成一列，不参与柜型字符串。"
         )
         description.setWordWrap(True)
@@ -287,7 +286,7 @@ class BasicPage(BasePage):
         layout.addWidget(self.identify_rmu)
 
         name_row = QHBoxLayout()
-        name_row.addWidget(QLabel("柜名可能位置："))
+        name_row.addWidget(QLabel("柜名位置："))
         self.rmu_name_top = QCheckBox("上方")
         self.rmu_name_bottom = QCheckBox("下方")
         self.rmu_name_left = QCheckBox("左侧")
@@ -296,6 +295,11 @@ class BasicPage(BasePage):
         for item in (self.rmu_name_top, self.rmu_name_bottom, self.rmu_name_left, self.rmu_name_right):
             item.setProperty("optionChoice", True)
             name_row.addWidget(item)
+        self.rmu_name_top.setText("上方（固定）")
+        self.rmu_name_top.setEnabled(False)
+        for item in (self.rmu_name_bottom, self.rmu_name_left, self.rmu_name_right):
+            item.setChecked(False)
+            item.setEnabled(False)
         name_row.addStretch(1)
         layout.addLayout(name_row)
 
@@ -306,7 +310,7 @@ class BasicPage(BasePage):
         )
         layout.addWidget(self.rmu_smart_in_type)
 
-        for item in (self.rmu_name_top, self.rmu_name_bottom, self.rmu_name_left, self.rmu_name_right, self.rmu_smart_in_type):
+        for item in (self.rmu_name_bottom, self.rmu_name_left, self.rmu_name_right, self.rmu_smart_in_type):
             item.setEnabled(False)
             self.identify_rmu.toggled.connect(item.setEnabled)
 
@@ -362,33 +366,6 @@ class BasicPage(BasePage):
             layout.addWidget(row)
         self.layout.addWidget(box)
 
-
-    def _build_feeder_title_options(self) -> None:
-        box = QGroupBox("母线馈线名称定位")
-        layout = QVBoxLayout(box)
-        layout.setContentsMargins(16, 18, 16, 14)
-        layout.setSpacing(10)
-
-        description = QLabel(
-            "识别有效的水平 <Bus>，将上下平行且范围重叠的双母线视为一组；"
-            "再依据 Text 的内容、字号和局部几何位置选择唯一可确认的馈线名称，"
-            "移动到最上方母线的正上方并水平居中。识别不使用 key_name 或 keyid；"
-            "无法唯一判断时跳过。该操作只修改目标 Text 的 x、y，不修改文字内容、字体、颜色、"
-            "母线、设备、连接线、ID 或模型关联属性。"
-        )
-        description.setWordWrap(True)
-        description.setObjectName("mutedText")
-        layout.addWidget(description)
-
-        self.move_feeder_titles_above_bus = QCheckBox("将馈线名称移动到母线上方")
-        self.move_feeder_titles_above_bus.setProperty("optionChoice", True)
-        self.move_feeder_titles_above_bus.setToolTip(
-            "勾选后随‘开始基础处理’执行；不勾选时完全跳过。纯数字、设备标签和说明文字不会移动。"
-        )
-        layout.addWidget(self.move_feeder_titles_above_bus)
-        self.layout.addWidget(box)
-
-
     def _build_icon_upgrade_options(self) -> None:
         box = QGroupBox("同类图元版本升级")
         layout = QVBoxLayout(box)
@@ -424,9 +401,6 @@ class BasicPage(BasePage):
         self.remove_all_graphic_merges.setChecked(
             self.user_settings.get_bool("basic/remove_all_graphic_merges", False)
         )
-        self.move_feeder_titles_above_bus.setChecked(
-            self.user_settings.get_bool("basic/move_feeder_titles_above_bus", False)
-        )
         self.upgrade_icon_geometry.setChecked(
             self.user_settings.get_bool("basic/upgrade_icon_geometry", False)
         )
@@ -455,10 +429,6 @@ class BasicPage(BasePage):
     def _persist_options(self) -> None:
         self.user_settings.set_value(
             "basic/remove_all_graphic_merges", self.remove_all_graphic_merges.isChecked()
-        )
-        self.user_settings.set_value(
-            "basic/move_feeder_titles_above_bus",
-            self.move_feeder_titles_above_bus.isChecked(),
         )
         self.user_settings.set_value(
             "basic/upgrade_icon_geometry", self.upgrade_icon_geometry.isChecked()
@@ -517,7 +487,6 @@ class BasicPage(BasePage):
                 "old_icon_files": self.icon_upgrade_editor.old_paths(),
                 "new_icon_files": self.icon_upgrade_editor.new_paths(),
                 "icon_upgrade_pairs": self.icon_upgrade_editor.pairs(),
-                "move_feeder_titles_above_bus": self.move_feeder_titles_above_bus.isChecked(),
                 "remove_all_graphic_merges": self.remove_all_graphic_merges.isChecked(),
                 "lower_rmu_rects_after_merge_cleanup": True,
                 "change_feedline_color": self.feedline_color.is_enabled(),

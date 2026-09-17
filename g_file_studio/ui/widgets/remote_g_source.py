@@ -30,6 +30,7 @@ from g_file_studio.services.remote_g_source import (
     human_size,
 )
 from g_file_studio.services.user_settings_service import UserSettingsService
+from g_file_studio.ui.table_layout import configure_responsive_table
 from g_file_studio.ui.widgets.help_widgets import set_secondary
 from g_file_studio.ui.widgets.wheel_safe_line_edit import WheelSafeLineEdit
 
@@ -156,6 +157,7 @@ class RemoteGSourceWidget(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
+        configure_responsive_table(self.table)
         self.table.setMinimumHeight(230)
         root.addWidget(self.table)
 

@@ -6,6 +6,7 @@ from g_file_studio.ui.pages.margin_page import MarginPage
 from g_file_studio.ui.pages.rmu_page import RmuPage
 from g_file_studio.ui.pages.small_element_page import SmallElementPage
 from g_file_studio.ui.pages.merge_page import MergePage
+from g_file_studio.ui.pages.orthogonalize_page import OrthogonalizePage
 
 __all__ = [
     "BasicPage",
@@ -14,6 +15,7 @@ __all__ = [
     "IdPage",
     "MarginPage",
     "MergePage",
+    "OrthogonalizePage",
     "RmuPage",
     "SmallElementPage",
 ]

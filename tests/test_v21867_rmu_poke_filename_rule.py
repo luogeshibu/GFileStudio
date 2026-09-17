@@ -17,7 +17,7 @@ def test_auto_prefix_uses_filename_only_ah3_plus_feeder():
     # Legacy facName positional argument is deliberately ignored.
     assert build_rmu_detail_filename(
         Path('JED-NTH-ABH-03.sln.pic.g'), 'WRONG-FAC', '34661'
-    ) == 'JED-NTH-ABH-AH303-34661.sln.pic.g'
+    ) == 'JED-NTH-ABH-AH303-34661.com.pic.g'
 
 
 def test_invalid_main_filename_fails_without_manual_override():
@@ -35,7 +35,7 @@ def test_manual_override_accepts_prefix_or_sample_detail_filename():
     ) == 'JED-NTH-ABH-AH303'
     assert build_rmu_detail_filename(
         bad_source, '40597', target_override='JED-NTH-ABH-AH303-22522.sln.pic.g'
-    ) == 'JED-NTH-ABH-AH303-40597.sln.pic.g'
+    ) == 'JED-NTH-ABH-AH303-40597.com.pic.g'
 
 
 def _multi_smart_tree():
@@ -63,6 +63,6 @@ def test_one_sample_override_generates_distinct_targets_for_multiple_smart_rmus(
     assert result.added_count == 2
     targets = sorted((e.get('ahref') or '') for e in tree.getroot().iter() if e.tag == 'poke')
     assert targets == [
-        'JED-NTH-ABH-AH303-22522.sln.pic.g',
-        'JED-NTH-ABH-AH303-34661.sln.pic.g',
+        'JED-NTH-ABH-AH303-22522.com.pic.g',
+        'JED-NTH-ABH-AH303-34661.com.pic.g',
     ]

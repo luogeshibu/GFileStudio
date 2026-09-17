@@ -84,8 +84,8 @@ def test_rmu_poke_can_use_different_database_feeder_prefix_per_rmu(tmp_path: Pat
     assert result.added_count == 2
     targets = sorted(r.target_file for r in result.records)
     assert targets == [
-        "JED-NTH-ABH-AH303-16781.sln.pic.g",
-        "JED-NTH-ABH-AH306-15953.sln.pic.g",
+        "JED-NTH-ABH-AH303-16781.com.pic.g",
+        "JED-NTH-ABH-AH306-15953.com.pic.g",
     ]
 
 
@@ -171,7 +171,7 @@ def test_process_rmu_pokes_blank_facid_resolves_each_rmu_name(tmp_path: Path, mo
     assert result.statistics["rmu_added"] == 1
     tree = ET.parse(out / source.name)
     poke = next(e for e in tree.getroot().iter() if e.tag == "poke" and e.get("gfs_rmu_poke") == "1")
-    assert poke.get("ahref") == "JED-NTH-ABH-AH303-16781.sln.pic.g"
+    assert poke.get("ahref") == "JED-NTH-ABH-AH303-16781.com.pic.g"
 
 
 def test_station_poke_without_facid_does_not_create_self_jump_from_local_title(tmp_path: Path) -> None:

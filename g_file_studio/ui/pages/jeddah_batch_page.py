@@ -148,8 +148,8 @@ class JeddahBatchPage(BasePage):
         settings_layout.addLayout(threshold_form)
 
         auto_name_note = QLabel(
-            "RMU 柜名识别：自动 Cluster。系统按 RMU 的重复排列自动判断上/下/左/右名称布局，"
-            "学习当前组的主导名称风格并一对一分配；孤立或不规则 RMU 自动全方向匹配。"
+            "RMU 柜名识别：严格检查有效环网柜，并且只从环网柜外框正上方的 Text 按一对一规则分配；"
+            "没有匹配到上方名称时保持为空。"
         )
         auto_name_note.setObjectName("mutedText")
         auto_name_note.setWordWrap(True)

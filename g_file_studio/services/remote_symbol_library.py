@@ -107,9 +107,10 @@ class RemoteSymbolLibraryService:
     """Read-only remote symbol-library index + incremental local cache.
 
     The remote server is never modified. The service recursively lists ``*.g``
-    metadata, downloads only requested symbol definitions, parses them locally, and
-    remembers size/mtime/hash metadata in an atomic manifest. Duplicate basenames
-    are accepted only when their downloaded content hashes are identical.
+    metadata, downloads either requested definitions or the complete catalog,
+    parses them locally, and remembers size/mtime/hash metadata in an atomic
+    manifest. Duplicate basenames are accepted only when their downloaded content
+    hashes are identical.
     """
 
     def __init__(self, cache_root: str | Path | None = None) -> None:
@@ -244,12 +245,23 @@ class RemoteSymbolLibraryService:
         username: str,
         password: str,
         root: str = DEFAULT_REMOTE_SYMBOL_ROOT,
-        expected_names: Iterable[str],
+        expected_names: Iterable[str] | None,
         log: Callable[[str], None] | None = None,
         progress: Callable[[int], None] | None = None,
     ) -> RemoteSymbolLibrarySyncResult:
         log = log or (lambda _msg: None)
-        expected = sorted({Path(str(name).strip()).name for name in expected_names if Path(str(name).strip()).name}, key=str.casefold)
+        # ``None`` means the complete server catalog.  An explicit empty iterable
+        # retains the historical no-op behavior used by callers that only want to
+        # resolve a known set of filenames.
+        sync_all = expected_names is None
+        expected = (
+            []
+            if sync_all
+            else sorted(
+                {Path(str(name).strip()).name for name in expected_names if Path(str(name).strip()).name},
+                key=str.casefold,
+            )
+        )
         root = str(root or DEFAULT_REMOTE_SYMBOL_ROOT).strip() or DEFAULT_REMOTE_SYMBOL_ROOT
         result = RemoteSymbolLibrarySyncResult(
             host=str(host).strip(),
@@ -260,7 +272,7 @@ class RemoteSymbolLibraryService:
         )
         if progress:
             progress(0)
-        if not expected:
+        if not expected and not sync_all:
             if progress:
                 progress(100)
             return result
@@ -270,6 +282,13 @@ class RemoteSymbolLibraryService:
         with ReadOnlySshClient(host, int(port), username, password) as client:
             remote_files = _list_g_files_recursive(client, root)
             result.scanned_remote_files = len(remote_files)
+            if sync_all:
+                # Keep one logical work item per basename while the manifest still
+                # retains every relative remote path.  Duplicate basenames are
+                # resolved below and are reported as conflicts when their bytes
+                # differ, so no path is silently discarded.
+                expected = sorted({item.name for item in remote_files}, key=str.casefold)
+                result.requested_names = list(expected)
             if progress:
                 progress(15)
             by_name: dict[str, list[RemoteGFile]] = {}
@@ -369,3 +388,31 @@ class RemoteSymbolLibraryService:
         if progress:
             progress(100)
         return result
+
+    def sync_all(
+        self,
+        *,
+        host: str,
+        port: int,
+        username: str,
+        password: str,
+        root: str = DEFAULT_REMOTE_SYMBOL_ROOT,
+        log: Callable[[str], None] | None = None,
+        progress: Callable[[int], None] | None = None,
+    ) -> RemoteSymbolLibrarySyncResult:
+        """Read and incrementally cache every icon-definition G below ``root``.
+
+        The server remains strictly read-only.  PNG previews and non-G files are
+        ignored by the recursive indexer; every parseable ``.g`` is downloaded on
+        first use and reused thereafter until its remote size/mtime changes.
+        """
+        return self.sync_expected(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            root=root,
+            expected_names=None,
+            log=log,
+            progress=progress,
+        )

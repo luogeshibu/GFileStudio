@@ -48,7 +48,7 @@ def test_rmu_poke_uses_name_box_and_deduplicates_related_pokes_only():
     assert len(related) == 1
     poke = related[0]
     assert poke.get('id') == '17000051'
-    assert poke.get('ahref') == 'JED-NTH-ABH-AH303-34661.sln.pic.g'
+    assert poke.get('ahref') == 'JED-NTH-ABH-AH303-34661.com.pic.g'
     assert poke.get('x') == '130'
     assert poke.get('y') == '150'
     assert poke.get('w') == '125'

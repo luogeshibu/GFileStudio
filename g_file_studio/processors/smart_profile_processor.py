@@ -13,7 +13,6 @@ from g_file_studio.engines.smart_profile_engine import (
 )
 from g_file_studio.engines.standard_connection_cleanup import (
     inspect_standard_device_connections,
-    normalize_standard_device_connections_file,
 )
 from g_file_studio.models import InputMode, ProcessingResult
 from g_file_studio.processors.common import LogCallback, ProgressCallback, discover_g_inputs
@@ -57,11 +56,11 @@ def _check_only(
     profile: SiteSmartProfile,
     progress: ProgressCallback | None = None,
 ):
-    """Run a read-only comparison against the uploaded standard icon files only.
+    """Run a read-only comparison against the locally frozen standard icon files.
 
     The business drawing is never used to learn/fill the expected geometry. The
     target devrefs come from role bindings and width/height/pin anchors come only
-    from the managed user-uploaded icon-definition G files.
+    from the managed server-derived icon-definition G files.
     """
     managed = bool(profile.managed_standard_files)
     connection_geometry_templates = (
@@ -109,11 +108,11 @@ def _check_only(
 
 
 def _standard_connection_scope(profile: SiteSmartProfile) -> tuple[set[str], set[str]]:
-    """Return standard-covered devrefs and roles known to have one electrical pin.
+    """Return standard devrefs for the separate topology-repair workflow.
 
-    The symbol-standard correction may touch connection topology only for symbols
-    already covered by the current authoritative standard.  One-pin knowledge is
-    derived from the uploaded standard geometry rather than from site-specific names.
+    This compatibility helper remains available to read-only connection inspection
+    and the Jeddah pipeline. The symbol-standard correction itself does not invoke
+    connection normalization or alter line/topology objects.
     """
     devrefs = {
         value.strip() for value in (
@@ -225,7 +224,7 @@ def process_smart_profile_consistency(
         standard_ready, standard_issues = SiteProfileService().validate_authoritative_standard(profile)
         if not standard_ready:
             raise ValueError(
-                "当前 ACTIVE 图元标准不是完整的用户上传标准库，不能执行检查：\n"
+                "当前 ACTIVE 图元标准不是完整的服务器标准库，不能执行检查：\n"
                 + "\n".join(standard_issues[:10])
             )
 
@@ -278,7 +277,7 @@ def process_smart_profile_consistency(
     if profile.normal_ground_devref:
         log(f"[图元标准检查] NORMAL 接地刀闸 devref：{profile.normal_ground_devref}")
     if profile.managed_standard_files:
-        log(f"[图元标准检查] 权威标准图元文件：{len(profile.managed_standard_files)} 个（仅使用用户上传的持久化副本）")
+        log(f"[图元标准检查] 权威标准图元文件：{len(profile.managed_standard_files)} 个（仅使用服务器来源的本地冻结副本）")
         for row in profile.managed_standard_files[:12]:
             log(
                 f"  - {row.get('original_name') or '-'} | {row.get('devref') or '-'} | "
@@ -516,7 +515,7 @@ def process_smart_profile_consistency(
             f"<br>普通 LBS：{html.escape(profile.normal_lbs_devref or '-')}<br>普通断路器：{html.escape(profile.normal_breaker_devref or '-')}"
             f"<br>普通接地刀闸：{html.escape(profile.normal_ground_devref or '-')}"
             f"<br>自定义设备标准：{sum(1 for row in profile.custom_symbols if bool(row.get('enabled', True)))} 项"
-            f"<br><br><b>用户上传的权威标准图元文件</b><br>{standard_files_html}"
+            f"<br><br><b>服务器来源的权威标准图元文件</b><br>{standard_files_html}"
         )
         labels = {
             "overview": "检查概览", "files": "检查文件", "nonstd_files": "存在问题文件",
@@ -584,8 +583,8 @@ def process_smart_profile_consistency(
     if drift:
         title = "Standard Drift Candidates" if english else "图元标准漂移候选"
         note = (
-            "If the project standard has changed, upload the authoritative icon G for that role. Business drawings are never learned or promoted into the standard."
-            if english else "如项目标准已变化，请在对应设备角色中重新上传权威图元 G；业务单线图永远不会被学习或提升为标准。"
+            "If the server standard has changed, save a new local standard version. Business drawings are never learned or promoted into the standard."
+            if english else "如服务器标准已变化，请保存新的本地标准版本；业务单线图永远不会被学习或提升为标准。"
         )
         drift_html = f"<section><h3>{title}</h3><ul>" + "".join(
             f"<li>{html.escape(item)}</li>" for item in drift
@@ -640,8 +639,8 @@ def process_smart_profile_consistency(
         progress(100)
     nonstandard_total = len(detail_rows)
     # Business drawings are inspection targets only. v2.18.79 deliberately does
-    # not build/persist an unmapped-symbol catalog from them; new standards must be
-    # added by explicitly uploading an authoritative icon G in the standard table.
+    # not build/persist an unmapped-symbol catalog from them; standards come only
+    # from the server-derived frozen icon repository.
     unmanaged_symbol_count = 0
     return ProcessingResult(
         success=True,
@@ -702,7 +701,7 @@ def process_smart_profile_correction(
         standard_ready, standard_issues = SiteProfileService().validate_authoritative_standard(profile)
         if not standard_ready:
             raise ValueError(
-                "当前 ACTIVE 图元标准不是完整的用户上传标准库，不能执行检查：\n"
+                "当前 ACTIVE 图元标准不是完整的服务器标准库，不能执行检查：\n"
                 + "\n".join(standard_issues[:10])
             )
 
@@ -735,8 +734,9 @@ def process_smart_profile_correction(
         f"源 G 只读，纠正副本输出到：{corrected_dir}"
     )
     log(
-        "[图元标准纠正] 仅处理 ACTIVE 标准已定义的图元。连接锚点可可靠拟合时，"
-        "保持 ConnectLine 绝对端点不动并反算图元 x/y/w/h；未纳入标准或无法可靠映射的图元不猜测。"
+        "[图元标准纠正] 仅处理 ACTIVE 标准已定义的设备图元。目标图元几何可可靠拟合时，"
+        "保持现有电气锚点绝对位置并反算设备 x/y/w/h；不删除、重画或正交化 ConnectLine/FeedLine/Bus。"
+        "未纳入标准或无法可靠映射的图元不猜测。"
     )
 
     outputs: list[Path] = []
@@ -750,7 +750,6 @@ def process_smart_profile_correction(
     connection_devices_realigned = 0
     connection_endpoints_connected = 0
     connection_topology_links_repaired = 0
-    eligible_devrefs, single_pin_devrefs = _standard_connection_scope(profile)
     correction_span = 62
     file_total = max(1, len(files))
     for index, source in enumerate(files, 1):
@@ -768,18 +767,6 @@ def process_smart_profile_correction(
                 lambda value, start=file_start, span=file_span: progress(start + round(value * span / 100))
             ) if progress else None,
         )
-        connection_cleanup = normalize_standard_device_connections_file(
-            target,
-            target,
-            eligible_devrefs=eligible_devrefs,
-            single_pin_devrefs=single_pin_devrefs,
-            geometry_templates=connection_geometry_templates,
-        )
-        redundant_lines_removed += connection_cleanup.removed_redundant_lines
-        connection_lines_straightened += connection_cleanup.straightened_lines
-        connection_devices_realigned += connection_cleanup.moved_devices
-        connection_endpoints_connected += connection_cleanup.connected_endpoints
-        connection_topology_links_repaired += connection_cleanup.repaired_topology_links
         outputs.append(target)
         warnings.extend(applied.warnings)
         file_corrected = sum(
@@ -789,15 +776,12 @@ def process_smart_profile_correction(
         corrected_elements += file_corrected
         devref_changes += applied.changed_count
         geometry_changes += applied.geometry_adjusted_count
-        if applied.changed_count or applied.geometry_adjusted_count or connection_cleanup.changed:
+        if applied.changed_count or applied.geometry_adjusted_count:
             changed_files += 1
         log(
             f"[图元标准纠正] {source.name}：发现/处理 {file_corrected} 个标准差异；"
-            f"devref/变体纠正 {applied.changed_count}，连接锚点/几何纠正 {applied.geometry_adjusted_count}；"
-            f"重复贯穿线删除 {connection_cleanup.removed_redundant_lines}，"
-            f"双 Pin 端点吸附 {connection_cleanup.connected_endpoints}，"
-            f"拓扑引用补齐 {connection_cleanup.repaired_topology_links}，"
-            f"单连接点设备正交修复 {connection_cleanup.straightened_lines}。"
+            f"devref/变体纠正 {applied.changed_count}，设备图元几何纠正 {applied.geometry_adjusted_count}；"
+            "线路与拓扑关系保持不变。"
         )
         if progress:
             progress(file_end)

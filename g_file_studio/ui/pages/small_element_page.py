@@ -34,6 +34,7 @@ from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.help_content import APP_HELP
 from g_file_studio.ui.path_validation import validate_input_source
 from g_file_studio.ui.pages.base_page import BasePage
+from g_file_studio.ui.table_layout import configure_responsive_table, schedule_fit_responsive_table
 from g_file_studio.ui.widgets import InfoBanner, InputSourceSelector, IntegerInput, PathRow, TaskPanel
 from g_file_studio.ui.widgets.help_widgets import set_secondary
 
@@ -128,6 +129,7 @@ class SmallElementPage(BasePage):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.horizontalHeader().setStretchLastSection(True)
+        configure_responsive_table(self.table)
         self.table.setMinimumHeight(260)
         self.table.setToolTip("首列勾选决定哪些图元参与处理；其余单元格可像表格一样单选/框选，按 Ctrl+C 复制。")
         result_layout.addWidget(self.table)
@@ -167,7 +169,7 @@ class SmallElementPage(BasePage):
 
     def scan(self) -> None:
         self.task.log_view.clear()
-        self.task.progress.setValue(0)
+        self.task.set_progress(0)
         if not validate_input_source(
             self,
             self.source,
@@ -186,9 +188,9 @@ class SmallElementPage(BasePage):
             return
         output_dir = begin_managed_run(self.output_path, "small-elements", "scan")
         threshold = self.threshold.value()
-        self.task.progress.setValue(0)
+        self.task.set_progress(0)
         self.task.append_log(f"开始扫描异常小尺寸图元，共 {len(paths)} 个文件；阈值：w<{threshold} 且 h<{threshold}。")
-        progress = QProgressDialog("正在扫描异常短线图元……", "取消", 0, len(paths), self)
+        progress = QProgressDialog("正在扫描异常短线图元……", "取消", 0, 100, self)
         progress.setWindowTitle("异常小尺寸图元检测")
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setMinimumDuration(0)
@@ -211,8 +213,8 @@ class SmallElementPage(BasePage):
                 QMessageBox.critical(self, "扫描失败", f"{path.name}\n{exc}")
                 return
             pct = round(index * 100 / len(paths))
-            self.task.progress.setValue(pct)
-            progress.setValue(index)
+            self.task.set_progress(pct)
+            progress.setValue(pct)
         progress.close()
         self.issues = list(issues)
         self.all_issues = list(issues)
@@ -265,6 +267,7 @@ class SmallElementPage(BasePage):
                 self.table.setItem(row, col, cell)
         self.table.blockSignals(False)
         self.table.resizeColumnsToContents()
+        schedule_fit_responsive_table(self.table)
         self._update_process_state()
 
     def _checked_issues(self) -> list[SmallElementIssue]:

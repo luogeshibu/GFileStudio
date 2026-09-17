@@ -21,27 +21,20 @@ from g_file_studio.engines.rmu_poke_engine import (
 
 
 # Station-jump labels are intentionally kept stricter than ordinary drawing
-# text.  A confirmed strip is normally a compact ``STATION-SUFFIX`` or
-# ``STATION SUFFIX`` label.  The station token may start with a digit (5MR),
-# and the drawing-side suffix may be alphanumeric (JM2-J2).  Requiring exactly
-# one separator prevents long equipment/design labels such as V2-W-J-H-0017
-# from becoming station-jump candidates merely because they end in digits.
+# text.  A confirmed label is a compact ``STATION-SUFFIX`` or
+# ``STATION SUFFIX`` string containing both letters and digits. Requiring
+# exactly one separator prevents long equipment/design labels from becoming
+# station-jump candidates merely because they end in digits.
 _STATION_LABEL_RE = re.compile(
     r"^\s*(?P<station>[A-Za-z0-9][A-Za-z0-9_]*)\s*(?:[-–—]|\s)\s*(?P<suffix>[A-Za-z0-9][A-Za-z0-9_]*)\s*$"
 )
 
-# A station terminal is commonly followed by the standard RMU name on the
-# next/previous line, for example ``DHN-40`` + ``(14858)``.  Some drawings
-# omit the parentheses and some include a display-only ``RMU`` suffix.  Keep
-# this deliberately narrow: a nearby arbitrary numeric annotation must not
-# become a locate target by accident.
+# A station label is commonly followed by the standard RMU name on the
+# next/previous line, for example ``ANS2-44`` + ``(35033)``. Only a
+# parenthesized pure-number label is allowed to become a locate target; a
+# plain number or a number with a suffix is never used.
 _PARENTHESIZED_RMU_LABEL_RE = re.compile(
-    r"^[\(（]\s*(?P<label>[0-9]+)\s*(?:RMU)?\s*[\)）]$",
-    re.IGNORECASE,
-)
-_PLAIN_RMU_LABEL_RE = re.compile(
-    r"^\s*(?P<label>[0-9]+)\s*(?:RMU)?\s*$",
-    re.IGNORECASE,
+    r"^[\(（]\s*(?P<label>[0-9]+)\s*[\)）]$",
 )
 
 
@@ -153,6 +146,7 @@ class StationPokeChange:
     target_file: str
     action: str
     confidence: str
+    adjacent_rmu_names: str = ""
     recognition_source: str = ""
     removed_duplicates: int = 0
     locate_label: str = ""
@@ -163,6 +157,7 @@ class StationPokeRecord:
     label_text: str
     station_key: str
     station_full_name: str = ""
+    adjacent_rmu_names: str = ""
     text_id: str = ""
     poke_id: str = ""
     target_file: str = ""
@@ -189,29 +184,18 @@ class StationPokeResult:
     warnings: list[str] = field(default_factory=list)
 
 
-@dataclass(frozen=True)
-class _TopologyEndpoint:
-    line_id: str
-    x: float
-    y: float
-    component_id: str
-
-
 def extract_rmu_locate_label(label: str) -> str:
     """Return a standard RMU locate label from a nearby drawing Text.
 
-    The drawing convention is either ``(14020)``/``（14020）`` or the plain
-    ``14020`` form.  ``(42764 RMU)`` is also accepted, with the display-only
-    ``RMU`` suffix removed.  Non-numeric-leading labels are intentionally not
-    accepted because they are much more likely to be station/equipment text.
+    Only the drawing convention ``(14020)``/``（14020）`` is accepted. Plain
+    numbers and labels with a suffix are intentionally rejected because they
+    can be ordinary operating annotations rather than a locate target.
     """
     value = re.sub(r"\s+", " ", str(label or "").strip())
     match = _PARENTHESIZED_RMU_LABEL_RE.fullmatch(value)
     if match is None:
-        match = _PLAIN_RMU_LABEL_RE.fullmatch(value)
-    if match is None:
         return ""
-    return match.group("label").strip(" -_—–")
+    return match.group("label")
 
 
 def _is_parenthesized_rmu_label(label: str) -> bool:
@@ -222,29 +206,11 @@ def _is_parenthesized_rmu_label(label: str) -> bool:
 def _is_standard_rmu_label_text(element: ET.Element, locate_label: str) -> bool:
     """Reject compact operating annotations such as the yellow ``240``.
 
-    Plain numeric RMU names use the same larger white Text style as
-    parenthesized names in the source drawings (for example ``31104``), while
-    voltage/type annotations such as ``240``/``340`` are small and yellow.
-    Parenthesized labels remain accepted by their explicit syntax even when a
-    fixture omits presentation attributes.
+    The parenthesized syntax is the hard boundary. Presentation attributes are
+    deliberately not used to turn a plain number into a locate target.
     """
     raw = re.sub(r"\s+", " ", str(element.get("ts") or "").strip())
-    if _is_parenthesized_rmu_label(raw):
-        return True
-    if not re.fullmatch(r"\d+", raw):
-        return False
-    box = _box(element)
-    if box is None:
-        return True
-    if box.height < 28.0 or box.height > 40.0 or box.width < 50.0:
-        return False
-    # Standard plain RMU names in the supplied drawings are white.  Do not
-    # reject a fixture with omitted color metadata, but never treat yellow
-    # compact annotations as a locate target.
-    color = (element.get("lcc") or "").strip().casefold()
-    if color and color not in {"#ffffff", "#fff", "white"}:
-        return False
-    return True
+    return _is_parenthesized_rmu_label(raw) and bool(locate_label)
 
 
 def extract_station_key(label: str) -> str:
@@ -258,6 +224,8 @@ def extract_station_key(label: str) -> str:
     match = _STATION_LABEL_RE.fullmatch(value)
     if not match:
         return ""
+    if not re.search(r"[A-Za-z]", value) or not re.search(r"\d", value):
+        return ""
     station = re.sub(r"\s+", " ", match.group("station").strip(" -–—"))
     # Avoid classifying device labels such as Y-1 / Q-1 as stations.
     letters = sum(ch.isalpha() for ch in station)
@@ -269,7 +237,13 @@ def extract_station_key(label: str) -> str:
 def build_station_target_file(station_full_name: str, locate_label: str = "") -> str:
     """Build the station overview ahref, optionally focusing on a remote RMU."""
     target = f"{str(station_full_name or '').strip()}.sln.pic.g"
-    locate = extract_rmu_locate_label(locate_label)
+    # ``extract_rmu_locate_label`` validates drawing Text such as ``(35033)``.
+    # The station matcher stores the already-normalized value as ``35033``;
+    # accept that internal form here so the query is not silently discarded.
+    raw_locate = str(locate_label or "").strip()
+    locate = extract_rmu_locate_label(raw_locate)
+    if not locate and re.fullmatch(r"\d+", raw_locate):
+        locate = raw_locate
     if locate:
         target += f"?locateLabel={locate}&&scaleFlag=true"
     return target
@@ -310,155 +284,13 @@ def _is_inside_rmu(text_box: _Box, identification: RmuIdentificationResult) -> b
     return False
 
 
-def _parse_polyline_points(value: str) -> list[tuple[float, float]]:
-    points: list[tuple[float, float]] = []
-    for token in re.split(r"\s+", (value or "").strip()):
-        if not token or "," not in token:
-            continue
-        x, y = token.split(",", 1)
-        try:
-            points.append((float(x), float(y)))
-        except ValueError:
-            continue
-    return points
-
-
-def _topology_reference_ids(value: str) -> list[str]:
-    references: list[str] = []
-    for group in str(value or "").split(";"):
-        fields = [field.strip() for field in group.split(",")]
-        if len(fields) >= 3 and fields[-1]:
-            references.append(fields[-1])
-    return references
-
-
-def _build_explicit_topology_endpoints(layer: ET.Element) -> list[_TopologyEndpoint]:
-    """Index line endpoints using only explicit link/node_area topology.
-
-    Text, Poke and drawing geometry are deliberately excluded from this graph.
-    A station terminal is represented by a line whose explicit topology has one
-    connected neighbour (a leaf line).  Internal branch lines with two or more
-    connected neighbours are not terminal evidence, even if a drawing endpoint
-    happens to be close to a station label.  Dangling visual lines therefore
-    cannot authorize a locate target in strict mode.
-    """
-    elements = {
-        (element.get("id") or "").strip(): element
-        for element in list(layer)
-        if (element.get("id") or "").strip()
-        and local_name(element.tag) not in {"Text", "DText", "poke"}
-    }
-    graph: dict[str, set[str]] = {element_id: set() for element_id in elements}
-    for element_id, element in elements.items():
-        for attribute in ("link", "node_area"):
-            for reference_id in _topology_reference_ids(element.get(attribute) or ""):
-                if reference_id not in elements or reference_id == element_id:
-                    continue
-                graph[element_id].add(reference_id)
-                graph[reference_id].add(element_id)
-
-    component_by_id: dict[str, str] = {}
-    for start in sorted(elements):
-        if start in component_by_id:
-            continue
-        component_id = start
-        stack = [start]
-        component_by_id[start] = component_id
-        while stack:
-            current = stack.pop()
-            for neighbour in graph[current]:
-                if neighbour not in component_by_id:
-                    component_by_id[neighbour] = component_id
-                    stack.append(neighbour)
-
-    endpoints: list[_TopologyEndpoint] = []
-    for line_id, line in elements.items():
-        if local_name(line.tag) not in {"FeedLine", "ConnectLine"}:
-            continue
-        if len(graph[line_id]) != 1:
-            continue
-        points = _parse_polyline_points(line.get("d") or "")
-        if len(points) < 2:
-            continue
-        component_id = component_by_id[line_id]
-        for x, y in (points[0], points[-1]):
-            endpoints.append(_TopologyEndpoint(line_id, x, y, component_id))
-    return endpoints
-
-
-def _has_unique_topology_anchor(text_box: _Box, endpoints: list[_TopologyEndpoint]) -> bool:
-    """Require one explicit-topology endpoint near the station label.
-
-    Endpoint duplicates at the same drawing coordinate are one physical anchor
-    only when they belong to the same explicit connected component.  Separate
-    components or multiple physical anchors are treated as ambiguous.
-    """
-    cx, cy = _center(text_box)
-    matches = [
-        endpoint for endpoint in endpoints
-        if math.hypot(cx - endpoint.x, cy - endpoint.y) <= 64.0
-    ]
-    if not matches:
-        return False
-    # A short line can have both of its endpoints inside the radius.  Keep only
-    # the nearest endpoint from each line first; endpoints materially farther
-    # away along that same line must not turn an otherwise unique anchor
-    # ambiguous.
-    nearest_by_line: dict[str, _TopologyEndpoint] = {}
-    for endpoint in matches:
-        distance = math.hypot(cx - endpoint.x, cy - endpoint.y)
-        previous = nearest_by_line.get(endpoint.line_id)
-        if previous is None or distance < math.hypot(cx - previous.x, cy - previous.y):
-            nearest_by_line[endpoint.line_id] = endpoint
-    matches = list(nearest_by_line.values())
-    nearest_distance = min(math.hypot(cx - endpoint.x, cy - endpoint.y) for endpoint in matches)
-    matches = [
-        endpoint for endpoint in matches
-        if math.hypot(cx - endpoint.x, cy - endpoint.y) <= nearest_distance + 8.0
-    ]
-
-    clusters: list[list[_TopologyEndpoint]] = []
-    for endpoint in matches:
-        for cluster in clusters:
-            if any(math.hypot(endpoint.x - item.x, endpoint.y - item.y) <= 4.0 for item in cluster):
-                cluster.append(endpoint)
-                break
-        else:
-            clusters.append([endpoint])
-    if len(clusters) != 1:
-        return False
-    return len({item.component_id for item in clusters[0]}) == 1
-
-
-def _line_endpoints(layer: ET.Element) -> list[tuple[float, float]]:
-    endpoints: list[tuple[float, float]] = []
-    for element in list(layer):
-        if local_name(element.tag) not in {"FeedLine", "ConnectLine"}:
-            continue
-        points = _parse_polyline_points(element.get("d") or "")
-        if len(points) >= 2:
-            endpoints.extend((points[0], points[-1]))
-            continue
-        box = _box(element)
-        if box is not None:
-            endpoints.extend(((box.left, box.top), (box.right, box.bottom)))
-    return endpoints
-
-
-def _nearest_endpoint_distance(text_box: _Box, endpoints: list[tuple[float, float]]) -> float:
-    if not endpoints:
-        return math.inf
-    cx, cy = _center(text_box)
-    return min(math.hypot(cx - x, cy - y) for x, y in endpoints)
-
-
 def _rmu_locate_label_score(station_box: _Box, label_box: _Box) -> tuple[float, float, float] | None:
     """Score a likely standard RMU label adjacent to a station label.
 
     RMU labels in the source drawings are laid out immediately above/below
     (and occasionally beside) the station terminal.  Require directional
     adjacency and alignment rather than using unrestricted nearest-text
-    matching, which could steal a feeder/device number from the topology.
+    matching, which could steal a feeder/device number from the drawing.
     """
     max_gap = 80.0
     alignment_limit = max(45.0, min(100.0, max(station_box.width, label_box.width) * 0.75))
@@ -530,27 +362,56 @@ def _station_rmu_locate_label_candidates(
     return candidates
 
 
-def _compact_background_contains(layer: ET.Element, text_box: _Box) -> bool:
-    """Fallback structural cue independent from fill color.
+def _has_explicit_background_color(element: ET.Element) -> bool:
+    """Return whether an element explicitly carries a visible fill color."""
+    fill_mode = (element.get("fm") or "").strip().casefold()
+    if fill_mode in {"0", "false", "none", "transparent"}:
+        return False
+    for attribute in ("fcc", "fc", "fill", "fillColor", "background", "bgcolor"):
+        value = (element.get(attribute) or "").strip().casefold()
+        if value and value not in {"none", "transparent", "null"}:
+            return True
+    return False
 
-    Some drawings use a rect/rounded object behind the terminal label instead of
-    a <poke>, and the fill color is not stable across projects.  A compact shape
-    that geometrically contains the candidate text is therefore a supporting
-    cue, but never sufficient by itself: the station name must also resolve
-    uniquely in Oracle before any Poke is written.
+
+def _colored_background_contains(
+    layer: ET.Element,
+    text_box: _Box,
+    related_pokes: list[ET.Element] | None = None,
+) -> bool:
+    """Require a colored background object to support a station label.
+
+    The supplied drawings use a gray colored ``poke`` behind the station Text.
+    A compact colored rect/roundrect/ellipse is also supported for drawings
+    that store the background as a shape.  Geometry alone or an uncolored
+    legacy Poke is not sufficient.
     """
-    for element in list(layer):
-        if local_name(element.tag) not in {"rect", "roundrect", "ellipse"}:
+    candidates = list(related_pokes or []) + list(layer)
+    seen: set[int] = set()
+    for element in candidates:
+        marker = id(element)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        tag = local_name(element.tag).casefold()
+        if tag == "poke" and (element.get("gfs_rmu_poke") or "") == "1":
+            continue
+        if tag not in {"poke", "rect", "roundrect", "ellipse"}:
+            continue
+        if not _has_explicit_background_color(element):
             continue
         box = _box(element)
         if box is None or box.width <= 0 or box.height <= 0:
+            # A metadata-linked existing station Poke is still a valid
+            # background even if an old file omitted its geometry attributes.
+            if tag == "poke" and element in (related_pokes or []):
+                return True
             continue
         if box.width > 500 or box.height > 160:
             continue
         if _contains(box, text_box, tolerance=6.0) or _overlap_ratio_text(box, text_box) >= 0.55:
             return True
     return False
-
 
 def _related_station_pokes(layer: ET.Element, text_box: _Box, station_key: str, text_id: str) -> list[ET.Element]:
     candidates: list[ET.Element] = []
@@ -665,22 +526,17 @@ def apply_station_pokes(
     *,
     current_station_name: str,
     station_resolver: Callable[[str], Any],
-    endpoint_distance_limit: float = 320.0,
-    strict_topology: bool = True,
     allow_same_station_terminals: bool = False,
 ) -> StationPokeResult:
     """Create/update station-jump Pokes such as DHN-40 -> JED-CTL-DHN.
 
-    Recognition intentionally does not depend on a particular background color.
-    Priority is: an existing overlapping non-RMU Poke; otherwise a feeder/line
-    endpoint near the label; otherwise a compact background shape.  Every visual
-    candidate must still resolve uniquely through SUBSTATION.NAME -> SUBAREA_ID ->
-    SUBCONTROLAREA.NAME before it is allowed to modify XML.  In strict mode,
-    A strict-mode station-jump candidate itself must be a unique
-    explicit-topology line terminal; only then can one adjacent standard RMU
-    label authorize a ``locateLabel`` query.  When enabled, a same-station
-    terminal is allowed only if an existing Poke and that same strict proof are
-    present.
+    Station recognition uses only the user-defined graphic constraints: the
+    label must contain both letters and digits and have a colored background.
+    Line geometry and connection references are not used. Database resolution
+    remains the existing SUBSTATION.NAME ->
+    SUBAREA_ID -> SUBCONTROLAREA.NAME chain.  A nearby parenthesized
+    pure-number Text is used as ``locateLabel`` only when it is unique; with no
+    such number the target is the plain station overview.
     """
     result = StationPokeResult(file_path=file_path)
     root = tree.getroot()
@@ -689,8 +545,6 @@ def apply_station_pokes(
     current_key = (current_station_name or "").strip().casefold()
 
     for layer in direct_layers(root):
-        endpoints = _line_endpoints(layer)
-        topology_endpoints = _build_explicit_topology_endpoints(layer)
         for text in list(layer):
             if local_name(text.tag) != "Text":
                 continue
@@ -707,50 +561,70 @@ def apply_station_pokes(
             text_id = (text.get("id") or "").strip()
             related = _related_station_pokes(layer, text_box, station_key, text_id)
             locate_candidates = _station_rmu_locate_label_candidates(layer, text)
-            topology_anchor = (
-                not strict_topology
-                or _has_unique_topology_anchor(text_box, topology_endpoints)
+            adjacent_rmu_names = ", ".join(
+                f"({candidate[1]})" for candidate in locate_candidates
             )
-            locate_label = ""
-            if len(locate_candidates) == 1 and topology_anchor:
-                locate_label = locate_candidates[0][1]
-            elif locate_candidates and strict_topology and topology_anchor:
-                reason = (
-                    f"站点跳转候选 {label!r} 的相邻柜名无法通过唯一拓扑端点确认，"
-                    "本次不写入 locateLabel，仅保留普通站点跳转。"
-                )
-                result.warnings.append(reason)
+            colored_background = _colored_background_contains(
+                layer,
+                text_box,
+                related_pokes=related,
+            )
+            locate_label = (
+                locate_candidates[0][1]
+                if len(locate_candidates) == 1
+                else ""
+            )
             # Same-station labels are normally local feeder titles and remain
-            # protected.  A pre-existing terminal Poke with one proven
-            # locateLabel is the narrow exception: it is an explicit terminal
-            # navigation target, not a guessed new self-jump.
+            # protected. A pre-existing Poke with one proven locateLabel is
+            # the narrow exception: it is an explicit navigation target, not
+            # a guessed new self-jump.
             same_station_terminal = bool(
                 allow_same_station_terminals
                 and related
+                and colored_background
                 and locate_label
             )
             if current_key and station_key.casefold() == current_key and not same_station_terminal:
                 continue
 
             result.candidate_count += 1
-            endpoint_distance = _nearest_endpoint_distance(text_box, endpoints)
-            compact_background = _compact_background_contains(layer, text_box)
 
-            if strict_topology and not topology_anchor:
+            if not colored_background:
                 result.skipped_count += 1
                 reason = (
-                    f"站点跳转候选 {label!r} 未证明为显式拓扑末端，"
-                    "严格模式不创建或更新站点跳转 Poke。"
+                    f"站点跳转候选 {label!r} 缺少明确的彩色背景，"
+                    "约束条件不满足，不创建或更新站点跳转 Poke。"
                 )
                 result.warnings.append(reason)
                 result.records.append(StationPokeRecord(
                     label_text=label,
                     station_key=station_key,
+                    adjacent_rmu_names=adjacent_rmu_names,
                     text_id=text_id,
                     poke_id=(related[0].get("id") or "").strip() if related else "",
                     action="skipped",
                     confidence="HIGH" if related else "",
-                    recognition_source="topology_terminal",
+                    recognition_source="background_color",
+                    reason=reason,
+                ))
+                continue
+
+            if len(locate_candidates) > 1:
+                result.skipped_count += 1
+                reason = (
+                    f"站点跳转候选 {label!r} 的相邻括号纯数字不唯一，"
+                    "约束条件不满足，不写入不确定的站点跳转。"
+                )
+                result.warnings.append(reason)
+                result.records.append(StationPokeRecord(
+                    label_text=label,
+                    station_key=station_key,
+                    adjacent_rmu_names=adjacent_rmu_names,
+                    text_id=text_id,
+                    poke_id=(related[0].get("id") or "").strip() if related else "",
+                    action="skipped",
+                    confidence="HIGH" if related else "MEDIUM",
+                    recognition_source="locate_label",
                     reason=reason,
                 ))
                 continue
@@ -758,25 +632,9 @@ def apply_station_pokes(
             if related:
                 confidence = "HIGH"
                 recognition_source = "existing_poke"
-            elif endpoint_distance <= endpoint_distance_limit:
-                confidence = "MEDIUM"
-                recognition_source = "line_endpoint"
-            elif compact_background:
-                confidence = "MEDIUM"
-                recognition_source = "compact_background"
             else:
-                result.skipped_count += 1
-                reason = f"站点跳转候选 {label!r} 缺少 Poke/线路末端/紧凑背景结构支撑，已跳过。"
-                result.warnings.append(reason)
-                result.records.append(StationPokeRecord(
-                    label_text=label,
-                    station_key=station_key,
-                    text_id=text_id,
-                    action="skipped",
-                    recognition_source="none",
-                    reason=reason,
-                ))
-                continue
+                confidence = "MEDIUM"
+                recognition_source = "background_color"
 
             cache_key = station_key.casefold()
             try:
@@ -791,6 +649,7 @@ def apply_station_pokes(
                 result.records.append(StationPokeRecord(
                     label_text=label,
                     station_key=station_key,
+                    adjacent_rmu_names=adjacent_rmu_names,
                     text_id=text_id,
                     action="skipped",
                     confidence=confidence,
@@ -807,6 +666,7 @@ def apply_station_pokes(
                 result.records.append(StationPokeRecord(
                     label_text=label,
                     station_key=station_key,
+                    adjacent_rmu_names=adjacent_rmu_names,
                     text_id=text_id,
                     action="skipped",
                     confidence=confidence,
@@ -832,6 +692,7 @@ def apply_station_pokes(
                 result.records.append(StationPokeRecord(
                     label_text=label,
                     station_key=station_key,
+                    adjacent_rmu_names=adjacent_rmu_names,
                     station_full_name=station_full_name,
                     text_id=text_id,
                     action="skipped",
@@ -890,6 +751,7 @@ def apply_station_pokes(
                 label_text=label,
                 station_key=station_key,
                 station_full_name=station_full_name,
+                adjacent_rmu_names=adjacent_rmu_names,
                 text_id=text_id,
                 poke_id=(poke.get("id") or "").strip(),
                 target_file=target_file,
@@ -908,13 +770,12 @@ def apply_station_pokes(
             if related and removed:
                 reason += f" 同时删除重复 Poke {removed} 个。"
             if locate_label:
-                reason += f" 已通过唯一拓扑端点确认定位柜名 {locate_label}。"
-            elif locate_candidates and strict_topology:
-                reason += " 相邻柜名未通过唯一拓扑端点确认，未写入 locateLabel。"
+                reason += f" 已识别相邻环网柜名 ({locate_label})，并写入 locateLabel。"
             result.records.append(StationPokeRecord(
                 label_text=label,
                 station_key=station_key,
                 station_full_name=station_full_name,
+                adjacent_rmu_names=adjacent_rmu_names,
                 text_id=text_id,
                 poke_id=(poke.get("id") or "").strip(),
                 target_file=target_file,

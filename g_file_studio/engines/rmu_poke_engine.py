@@ -10,6 +10,11 @@ from g_file_studio.engines.id_engine import direct_layers, local_name
 from g_file_studio.engines.rmu_identification_engine import RmuIdentificationResult
 
 
+_RMU_DETAIL_SUFFIX = ".com.pic.g"
+_LEGACY_RMU_DETAIL_SUFFIX = ".sln.pic.g"
+_RMU_DETAIL_SUFFIX_RE = re.compile(r"\.(?:sln|com)\.pic\.g$", re.IGNORECASE)
+
+
 @dataclass(frozen=True)
 class _Box:
     left: float
@@ -172,10 +177,15 @@ def _clean_rule(rule: str, *, label: str) -> str:
 
 
 def _validate_ahref_filename(value: str, *, label: str = "Poke ahref") -> str:
+    # Existing saved templates and old Pokes may still contain .sln.pic.g.
+    # Normalize only the RMU detail target suffix; station-jump targets use a
+    # separate engine and remain .sln.pic.g.
+    if _RMU_DETAIL_SUFFIX_RE.search(value):
+        value = _RMU_DETAIL_SUFFIX_RE.sub(_RMU_DETAIL_SUFFIX, value)
     if "/" in value or "\\" in value or re.search(r'[<>:"|?*]', value):
         raise ValueError(f"{label} 生成了非法文件名：{value!r}")
-    if not value.lower().endswith(".sln.pic.g"):
-        raise ValueError(f"{label} 必须以 .sln.pic.g 结尾：{value!r}")
+    if not value.lower().endswith(_RMU_DETAIL_SUFFIX):
+        raise ValueError(f"{label} 必须以 {_RMU_DETAIL_SUFFIX} 结尾：{value!r}")
     return value
 
 
@@ -196,22 +206,22 @@ def render_single_rmu_rule(rule: str, rmu_name: str) -> str:
     if re.search(r"\{rmu\}", value, flags=re.I):
         rendered = re.sub(r"\{rmu\}", name, value, flags=re.I)
     elif re.search(r"(?:^|-)RMU(?:\.sln\.pic\.g)?$", value, flags=re.I):
-        if value.lower().endswith(".sln.pic.g"):
-            rendered = re.sub(r"RMU(?=\.sln\.pic\.g$)", name, value, flags=re.I)
+        if _RMU_DETAIL_SUFFIX_RE.search(value):
+            rendered = re.sub(r"RMU(?=\.(?:sln|com)\.pic\.g$)", name, value, flags=re.I)
         else:
-            rendered = re.sub(r"RMU$", name, value, flags=re.I) + ".sln.pic.g"
-    elif value.lower().endswith(".sln.pic.g"):
+            rendered = re.sub(r"RMU$", name, value, flags=re.I) + _RMU_DETAIL_SUFFIX
+    elif _RMU_DETAIL_SUFFIX_RE.search(value):
         # A concrete sample filename: the final '-' token is the sample RMU.
-        match = re.fullmatch(r"(.+)-([^-]+)\.sln\.pic\.g", value, flags=re.I)
+        match = re.fullmatch(r"(.+)-([^-]+)\.(?:sln|com)\.pic\.g", value, flags=re.I)
         if not match:
             raise ValueError(
                 "单文件完整样例应类似 JED-NTH-ABH-AH303-34661.sln.pic.g，"
                 "程序会把最后一段样例 RMU 替换为当前识别到的 RMU。"
             )
-        rendered = f"{match.group(1)}-{name}.sln.pic.g"
+        rendered = f"{match.group(1)}-{name}{_RMU_DETAIL_SUFFIX}"
     else:
         # Fixed prefix form, e.g. JED-NTH-ABH-AH303.
-        rendered = f"{value.rstrip('-')}-{name}.sln.pic.g"
+        rendered = f"{value.rstrip('-')}-{name}{_RMU_DETAIL_SUFFIX}"
     return _validate_ahref_filename(rendered, label="单文件 Poke ahref")
 
 
@@ -231,8 +241,8 @@ def render_batch_rmu_rule(source_file: Path, rule: str, rmu_name: str) -> str:
     fields = [item.lower() for item in re.findall(r"\{([A-Za-z0-9_]+)\}", value)]
     if not fields:
         # User supplies only the stable site/feeder prefix part, e.g. ...-AH3.
-        prefix = re.sub(r"\.sln\.pic\.g$", "", value, flags=re.I).rstrip("-")
-        rendered = f"{prefix}{feeder}-{name}.sln.pic.g"
+        prefix = _RMU_DETAIL_SUFFIX_RE.sub("", value).rstrip("-")
+        rendered = f"{prefix}{feeder}-{name}{_RMU_DETAIL_SUFFIX}"
         return _validate_ahref_filename(rendered, label="批处理 Poke ahref")
 
     allowed = {"feeder", "rmu", "region1", "region2", "station"}
@@ -344,7 +354,7 @@ def build_rmu_detail_prefix(source_file: Path, target_override: str = "") -> str
     override = (target_override or "").strip()
     if override and "{" not in override:
         sample = override.replace("\\", "/").rsplit("/", 1)[-1].strip().strip('"').strip("'")
-        match = re.fullmatch(r"(.+)-([^-]+)\.sln\.pic\.g", sample, flags=re.I)
+        match = re.fullmatch(r"(.+)-([^-]+)\.(?:sln|com)\.pic\.g", sample, flags=re.I)
         if match:
             return _validate_manual_detail_prefix(match.group(1))
         return _validate_manual_detail_prefix(sample)
@@ -406,7 +416,7 @@ def build_rmu_detail_filename(
             raise ValueError("数据库馈线完整名称为空，无法生成智能 RMU Poke ahref。")
         if re.search(r'[<>:"/\\|?*]', prefix):
             raise ValueError(f"数据库馈线完整名称含 Windows 文件名非法字符：{prefix!r}")
-        return _validate_ahref_filename(f"{prefix}-{name}.sln.pic.g", label="智能 RMU Poke ahref")
+        return _validate_ahref_filename(f"{prefix}-{name}{_RMU_DETAIL_SUFFIX}", label="智能 RMU Poke ahref")
     if mode == "facname_template":
         # Legacy/manual compatibility path.
         fac = (fac_name_or_rmu_name or "").strip() if rmu_name is not None else ""
@@ -423,7 +433,7 @@ def build_rmu_detail_filename(
     if "{" in override:
         return _render_custom_detail_template(source_file, override, name)
     prefix = build_rmu_detail_prefix(source_file, override)
-    return f"{prefix}-{name}.sln.pic.g"
+    return f"{prefix}-{name}{_RMU_DETAIL_SUFFIX}"
 
 
 def _find_layer_for_rect(root: ET.Element, rect_id: str) -> ET.Element | None:

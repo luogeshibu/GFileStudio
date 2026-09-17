@@ -100,10 +100,9 @@ def test_generic_standard_rows_resolve_jeddah_roles_without_legacy_learning_fiel
 def test_ui_exposes_explicit_global_version_selection_and_jeddah_uses_it():
     standard_page = Path("g_file_studio/ui/pages/site_profile_page.py").read_text(encoding="utf-8")
     jeddah_page = Path("g_file_studio/ui/pages/jeddah_batch_page.py").read_text(encoding="utf-8")
-    inventory_page = Path("g_file_studio/ui/pages/symbol_inventory_page.py").read_text(encoding="utf-8")
     assert 'QPushButton("设为全局版本")' in standard_page
     assert "set_global_profile_version" in standard_page
     assert "get_global_profile_selection" in jeddah_page
     assert "jeddah_role_issues" in jeddah_page
     assert "标准学习未完整" not in jeddah_page
-    assert "get_global_profile_selection" in inventory_page
+    assert not Path("g_file_studio/ui/pages/symbol_inventory_page.py").exists()

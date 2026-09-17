@@ -216,15 +216,15 @@ class RmuPage(BasePage):
         description = QLabel(
             "每次运行固定识别全部有效 RMU 并生成 RMU 汇总 CSV / HTML，不提供关闭或识别范围开关。"
             "只有 rect 框内同时存在 BusDis、CBreakerDis 和 ZhaiWaiJieDiDaoZha 才认定为 RMU；"
-            "后续组合、外框、柜名处理和台账对比统一复用这份基础识别结果；本页面柜名采用 auto_cluster 自动布局识别。"
+            "后续组合、外框、柜名处理和台账对比统一复用这份基础识别结果；柜名固定只从环网柜框正上方识别。"
         )
         description.setWordWrap(True)
         description.setObjectName("mutedText")
         layout.addWidget(description)
 
         auto_name = QLabel(
-            "柜名识别方式：自动。系统按 RMU 重复排列自动分组，分别推断上/下/左/右名称布局与主导文字风格，"
-            "再做组内一对一匹配；单个或不规则 RMU 自动采用全方向候选回退，无需人工指定柜名方向。"
+            "柜名识别方式：固定上方。系统只检查环网柜外框正上方的可见 Text，"
+            "按全图最近距离进行一对一归属；未匹配到上方名称时保持为空，不向下方、左侧或右侧回退。"
         )
         auto_name.setWordWrap(True)
         auto_name.setObjectName("mutedText")
@@ -263,7 +263,7 @@ class RmuPage(BasePage):
         self.layout.addWidget(box)
 
     def _refresh_rmu_name_controls(self) -> None:
-        # RMU 基础识别始终开启；柜名方向由 auto_cluster 自动推断。
+        # RMU 基础识别始终开启；柜名方向固定为外框上方。
         for item in (self.rmu_name_exclusions, self.rmu_intelligent_markers):
             item.setEnabled(True)
 
@@ -397,8 +397,8 @@ class RmuPage(BasePage):
         self.rmu_channel_status_position.setEnabled(self.rmu_reposition_channel_status.isChecked())
         self.rmu_channel_status_margin.setEnabled(self.rmu_reposition_channel_status.isChecked())
         self.rmu_name_white.setChecked(self.user_settings.get_bool("basic/rmu/name_text_white", False))
-        # RMU 基础识别固定开启；柜名方向由 auto_cluster 自动推断。
-        # 历史 basic/rmu/name_* 配置保留在用户配置中供旧流程兼容，但本页面不再读取。
+        # RMU 基础识别固定开启；柜名方向固定为外框上方。
+        # 历史 basic/rmu/name_* 配置保留在用户配置中供旧流程兼容，但不参与识别。
         self.rmu_name_exclusions.setText(self.user_settings.get_value("basic/rmu/name_exclusions", ""))
         self.rmu_intelligent_markers.setText(
             self.user_settings.get_value("basic/rmu/intelligent_markers", "SMART, SMR") or "SMART, SMR"
@@ -426,7 +426,7 @@ class RmuPage(BasePage):
         self.user_settings.set_value("basic/rmu/name_text_white", self.rmu_name_white.isChecked())
         self.user_settings.set_value("basic/rmu/identify_name_type", True)
         # 本页面不再写入历史 basic/rmu/name_top/bottom/left/right；
-        # auto_cluster 在运行时自动判断每个 RMU Cluster 的名称方向。
+        # 运行时固定只检查 RMU 外框上方的名称。
         self.user_settings.set_value("basic/rmu/name_exclusions", self.rmu_name_exclusions.text().strip())
         self.user_settings.set_value("basic/rmu/intelligent_markers", self.rmu_intelligent_markers.text().strip())
         self.user_settings.set_value("basic/rmu/smart_in_type", True)
@@ -478,13 +478,13 @@ class RmuPage(BasePage):
             add_smart_rmu_poke=False,  # Poke 已独立到 Poke 跳转处理模块。
             smart_rmu_poke_ahref_template="",
             identify_rmu_name_and_type=True,
-            rmu_name_resolution_mode="auto_cluster",
-            # Legacy direction fields remain on BasicSettings for compatibility with
-            # other callers, but are ignored by auto_cluster.
+            rmu_name_resolution_mode="selected_direction",
+            # Legacy direction fields remain on BasicSettings for compatibility;
+            # the shared recognizer forces the top direction only.
             rmu_name_top=True,
-            rmu_name_bottom=True,
-            rmu_name_left=True,
-            rmu_name_right=True,
+            rmu_name_bottom=False,
+            rmu_name_left=False,
+            rmu_name_right=False,
             rmu_name_exclusions=self.rmu_name_exclusions.text().strip(),
             rmu_intelligent_markers=self.rmu_intelligent_markers.text().strip() or "SMART, SMR",
             rmu_smart_in_type=True,

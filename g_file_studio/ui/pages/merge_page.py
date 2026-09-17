@@ -16,6 +16,7 @@ from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.help_content import APP_HELP, FIELD_HELP
 from g_file_studio.ui.pages.base_page import BasePage
 from g_file_studio.ui.path_validation import validate_existing_directory
+from g_file_studio.ui.table_layout import configure_responsive_table
 from g_file_studio.ui.widgets import (
     FileOrderEditor,
     HelpLabel,
@@ -360,6 +361,7 @@ class MergePage(BasePage):
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setMinimumSectionSize(120)
+        configure_responsive_table(table)
         for row, name in enumerate(names):
             table.setItem(row, 0, QTableWidgetItem(name))
             table.setItem(row, 1, QTableWidgetItem("未分组"))

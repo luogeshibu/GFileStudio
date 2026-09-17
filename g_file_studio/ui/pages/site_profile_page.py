@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from uuid import uuid4
 
@@ -18,7 +19,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMenu,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -52,7 +52,8 @@ from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.help_content import APP_HELP
 from g_file_studio.ui.pages.base_page import BasePage
 from g_file_studio.ui.path_validation import validate_input_source
-from g_file_studio.ui.widgets import InfoBanner, InputSourceSelector, PathRow, TaskPanel, WheelSafeComboBox
+from g_file_studio.ui.table_layout import configure_responsive_table
+from g_file_studio.ui.widgets import InfoBanner, InputSourceSelector, PathRow, SmoothProgressBar, TaskPanel, WheelSafeComboBox
 from g_file_studio.ui.widgets.help_widgets import set_secondary
 from g_file_studio.workers import FunctionWorker
 
@@ -68,6 +69,7 @@ class SiteProfilePage(BasePage):
 
     activeProfileChanged = Signal(str)
     connectionSettingsRequested = Signal()
+    orthogonalizeRequested = Signal()
 
     def __init__(self, user_settings: UserSettingsService, parent=None) -> None:
         self.user_settings = user_settings
@@ -76,10 +78,14 @@ class SiteProfilePage(BasePage):
         self._last_report_path: Path | None = None
         self._scan_worker: FunctionWorker | None = None
         self._server_sync_worker: FunctionWorker | None = None
+        self._profile_operation_worker: FunctionWorker | None = None
+        self._profile_operation_callback = None
+        self._profile_operation_title = ""
         self._last_server_sync_payload: dict[str, object] = {}
         self._scan_pool = QThreadPool.globalInstance()
         self._selected_version: int | None = None
         self._selected_is_active = False
+        self._selected_profile_locked = False
         self._task_busy = False
         self._candidate_counts: dict[int, dict[str, int]] = {}
         self._symbol_catalog: dict[str, dict[str, object]] = {}
@@ -91,6 +97,12 @@ class SiteProfilePage(BasePage):
         # changes any remote business G or server symbol-library file.
         self._discovery_decisions: dict[str, str] = {}
         self._pending_standard_file_records: list[dict[str, object]] = []
+        # The server element tree is a read-only catalog, independent of the
+        # currently edited Profile.  It is refreshed from every remote .g file and
+        # then used to enrich the editor without treating a business-G scan as a
+        # prerequisite.
+        self._server_catalog_records: dict[str, dict[str, object]] = {}
+        self._server_catalog_ignored: set[str] = set()
         # v2.18.119: a fresh-rescan draft is isolated from the saved ACTIVE/GLOBAL
         # version until the operator explicitly saves it as V(N+1).  The saved
         # profile is never mutated merely by scanning business G files.
@@ -102,21 +114,21 @@ class SiteProfilePage(BasePage):
         help_title, help_html = APP_HELP["site_profile"]
         super().__init__(
             "图元标准检查",
-            "维护图元标准版本并检查业务 G；详细规则请查看“页面帮助”。",
+            "维护服务器图元标准版本并检查业务 G 的标准一致性；可按设备类型单独分析，源文件保持只读。",
             help_title,
             help_html,
             parent,
         )
         self.layout.addWidget(
             InfoBanner(
-                "业务 G 只用于发现和检查；标准 G 来自只读服务器或人工上传。正式版本会冻结到本地版本库，源 G 不覆盖。"
+                "标准图元只来自只读服务器 element 目录；业务 G 仅用于最后的标准检查。正式版本会冻结到本地版本库，源 G 不覆盖。"
             )
         )
         # Detailed rules intentionally live in Page Help/tooltips instead of the main
         # operator surface. Keep these established semantics explicit for maintenance:
-        # - 先扫描图形 G 自动发现实际使用的图元候选；候选本身不是标准。
-        # - w×h、AlignCenter、Pins 会自动从标准图元读取。
-        # - 业务单线图不会参与 devref、尺寸、AlignCenter 或 pin 标准的生成。
+        # - 服务器 element 目录是唯一标准源，解析成功的 .g 直接进入标准表。
+        # - w×h、AlignCenter、Pins 会自动从服务器标准图元读取。
+        # - 待检查业务 G 不参与 devref、尺寸、AlignCenter 或 pin 标准的生成。
         # - “检查图元标准”不修改 G；纠正仅生成 workspace 副本。
         # - 历史版本导出/恢复只读取本地冻结对象，绝不以服务器当前同名文件替代。
 
@@ -131,7 +143,7 @@ class SiteProfilePage(BasePage):
         standard_layout.addWidget(self.active_profile_summary)
 
         intro = QLabel(
-            "流程：扫描候选 → 匹配/上传标准 G → 确认分类 → 保存版本。"
+            "流程：用户点击按钮读取服务器 element 图元目录 → 解析成功图元直接作为标准 → 保存版本；待检查 G 只在下方执行检查时读取。"
         )
         intro.setWordWrap(True)
         intro.setObjectName("mutedText")
@@ -152,7 +164,7 @@ class SiteProfilePage(BasePage):
         set_secondary(self.profile_manage_button)
         self.profile_menu = QMenu(self.profile_manage_button)
         self.new_action = self.profile_menu.addAction("新建标准")
-        self.scan_action = self.profile_menu.addAction("为选中图元上传标准图元 G")
+        self.scan_action = self.profile_menu.addAction("服务器标准图元（只读）")
         self.profile_menu.addSeparator()
         self.version_details_action = self.profile_menu.addAction("查看版本库详情")
         self.verify_version_action = self.profile_menu.addAction("验证版本完整性")
@@ -164,6 +176,10 @@ class SiteProfilePage(BasePage):
         self.delete_action = self.profile_menu.addAction("删除整个标准（全部版本）")
         self.new_action.triggered.connect(self._new_profile)
         self.scan_action.triggered.connect(self._scan_samples)
+        # The authoritative source is the read-only server element tree.  Keep the
+        # legacy action object for compatibility with older signal paths, but do not
+        # expose a local-upload workflow in the current page.
+        self.scan_action.setVisible(False)
         self.version_details_action.triggered.connect(self._show_version_repository_details)
         self.verify_version_action.triggered.connect(self._verify_selected_version_repository)
         self.export_version_action.triggered.connect(lambda: self._export_selected_version_repository(zip_output=False))
@@ -186,8 +202,8 @@ class SiteProfilePage(BasePage):
         self.version_switch_status.setWordWrap(True)
         self.version_switch_status.setVisible(False)
         standard_layout.addWidget(self.version_switch_status)
-        self.version_switch_progress = QProgressBar()
-        self.version_switch_progress.setRange(0, 0)
+        self.version_switch_progress = SmoothProgressBar()
+        self.version_switch_progress.setRange(0, 100)
         self.version_switch_progress.setTextVisible(False)
         self.version_switch_progress.setFixedHeight(8)
         self.version_switch_progress.setVisible(False)
@@ -217,25 +233,31 @@ class SiteProfilePage(BasePage):
         self.normal_ground_combo = WheelSafeComboBox()
 
         standard_note = QLabel(
-            "w×h、AlignCenter、Pins 只从标准 G 读取；业务 G 仅提供候选和使用位置。"
+            "w×h、AlignCenter、Pins 只从服务器标准图元读取；待检查 G 不参与标准建立。"
         )
         standard_note.setWordWrap(True)
         standard_note.setObjectName("mutedText")
         standard_layout.addWidget(standard_note)
 
-        # v2.18.113: authoritative symbol files can be discovered from the shared
-        # read-only server library. Manual upload remains a fallback for unmatched
-        # or deliberately local standards. The remote library is never written to.
-        server_box = QGroupBox("服务器标准图元库（只读自动同步）")
+        # v2.18.113: the shared read-only server library is the sole authoritative
+        # source for standard symbols. The remote library is never written to.
+        server_box = QGroupBox("服务器标准图元库（手动读取，严格只读）")
         server_layout = QVBoxLayout(server_box)
         server_layout.setContentsMargins(12, 16, 12, 10)
         server_layout.setSpacing(8)
-        self.server_standard_enabled = QCheckBox("自动从服务器图元库匹配标准 G（推荐）")
+        self.server_standard_enabled = QCheckBox("读取服务器 element 全部图元")
         self.server_standard_enabled.setChecked(
             self.user_settings.get_bool("site_profile/remote_symbol_library_enabled", True)
         )
         self.server_standard_enabled.toggled.connect(self._server_library_enabled_changed)
         server_layout.addWidget(self.server_standard_enabled)
+        # The standard source is intentionally not an operator choice. Keep the
+        # setting for backward-compatible persisted preferences, but force the
+        # current workflow to use the server element tree.
+        self.server_standard_enabled.blockSignals(True)
+        self.server_standard_enabled.setChecked(True)
+        self.server_standard_enabled.blockSignals(False)
+        self.server_standard_enabled.setVisible(False)
 
         server_root_row = QHBoxLayout()
         server_root_row.addWidget(QLabel("图元库根目录"))
@@ -251,9 +273,19 @@ class SiteProfilePage(BasePage):
         set_secondary(self.server_connection_button)
         self.server_connection_button.clicked.connect(self.connectionSettingsRequested.emit)
         server_root_row.addWidget(self.server_connection_button)
-        self.server_sync_button = QPushButton("检查 / 同步服务器图元库")
+        self.server_sync_button = QPushButton("读取 / 同步服务器全部图元")
         set_secondary(self.server_sync_button)
-        self.server_sync_button.clicked.connect(lambda: self._start_server_symbol_sync(background=False, auto_bind=True))
+        self.server_sync_button.setToolTip(
+            "手动读取服务器 element 图元并更新本地缓存；本次直接采用当前默认信息，不执行历史版本比较。"
+        )
+        # Manual reads are deliberately explicit: read/cache the server
+        # definitions and use the current defaults, without comparing against
+        # historical versions. No background refresh is started by this page.
+        self.server_sync_button.clicked.connect(
+            lambda: self._start_server_symbol_sync(
+                background=False, auto_bind=True, compare_profile=False
+            )
+        )
         server_root_row.addWidget(self.server_sync_button)
         self.server_new_version_button = QPushButton("基于当前版本创建新版本")
         set_secondary(self.server_new_version_button)
@@ -267,14 +299,14 @@ class SiteProfilePage(BasePage):
         server_root_row.addWidget(self.server_cache_button)
         server_layout.addLayout(server_root_row)
 
-        self.server_library_progress = QProgressBar()
+        self.server_library_progress = SmoothProgressBar()
         self.server_library_progress.setRange(0, 100)
         self.server_library_progress.setValue(0)
         self.server_library_progress.setFormat("服务器图元库同步 %p%")
         self.server_library_progress.setVisible(False)
         server_layout.addWidget(self.server_library_progress)
         self.server_library_status = QLabel(
-            "尚未检查服务器图元库。扫描候选后可自动匹配标准 G。"
+            "尚未读取服务器图元库；请点击“读取 / 同步服务器全部图元”后再读取 element 目录下的 .g。"
         )
         self.server_library_status.setWordWrap(True)
         self.server_library_status.setObjectName("mutedText")
@@ -285,20 +317,26 @@ class SiteProfilePage(BasePage):
         server_notice.setWordWrap(True)
         server_notice.setObjectName("infoBanner")
         server_layout.addWidget(server_notice)
+        self.local_storage_summary = QLabel(
+            "本地存储：服务器缓存、标准版本仓库和检查运行目录均在本机；服务器 G 永不回写。"
+        )
+        self.local_storage_summary.setWordWrap(True)
+        self.local_storage_summary.setObjectName("mutedText")
+        server_layout.addWidget(self.local_storage_summary)
         standard_layout.addWidget(server_box)
 
         self._server_library_timer = QTimer(self)
         self._server_library_timer.setInterval(5 * 60 * 1000)
-        self._server_library_timer.timeout.connect(
-            lambda: self._start_server_symbol_sync(background=True, auto_bind=True)
-        )
+        # The timer is retained as a compatibility object, but automatic server
+        # reads are intentionally disabled.  Every server-library read must be
+        # initiated by the explicit button above.
 
-        discovery_box = QGroupBox("图形 G 图元发现（只发现候选，不生成标准）")
+        discovery_box = QGroupBox("业务 G 使用情况分析（可选）")
         discovery_layout = QVBoxLayout(discovery_box)
         discovery_layout.setContentsMargins(12, 16, 12, 10)
         discovery_layout.setSpacing(8)
         discovery_note = QLabel(
-            "选择业务 G 后扫描候选；需要重新建立下一版本时使用“全量重新扫描 → 新版本草稿”。"
+            "服务器图元目录需要用户手动读取；这里仅用于统计业务 G 实际使用的图元、次数、文件和位置，不是建立标准的前置步骤。需要重新建立下一版本时使用“全量重新扫描 → 新版本草稿”。"
         )
         discovery_note.setWordWrap(True)
         discovery_note.setObjectName("mutedText")
@@ -347,7 +385,7 @@ class SiteProfilePage(BasePage):
         )
         discovery_input_layout.addWidget(self.discovery_source)
         discovery_actions = QHBoxLayout()
-        self.discovery_scan_button = QPushButton("扫描当前版本候选")
+        self.discovery_scan_button = QPushButton("分析业务 G 使用情况")
         self.discovery_scan_button.setToolTip(
             "普通模式：更新当前可编辑候选；新版本草稿模式：重新读取所选业务 G 并生成 V(N+1) DRAFT。"
             "两种模式都只读业务 G，不会把业务 G 当作标准图元。"
@@ -363,14 +401,14 @@ class SiteProfilePage(BasePage):
         self.discovery_filter.setPlaceholderText("筛选表格：设备类型 / XML / devref / 文件名")
         self.discovery_filter.textChanged.connect(self._apply_standard_table_filter)
         discovery_actions.addWidget(self.discovery_filter, 1)
-        self.pending_only_checkbox = QCheckBox("只看待上传候选")
+        self.pending_only_checkbox = QCheckBox("只看待确认 / 待上传")
         self.pending_only_checkbox.toggled.connect(self._apply_standard_table_filter)
         discovery_actions.addWidget(self.pending_only_checkbox)
         discovery_input_layout.addLayout(discovery_actions)
         # v2.18.112: discovery progress lives directly under the scan action so it
         # is visible immediately when scanning starts, rather than below the wide
         # standard table where the user may not see it until much later.
-        self.scan_progress = QProgressBar()
+        self.scan_progress = SmoothProgressBar()
         self.scan_progress.setRange(0, 100)
         self.scan_progress.setValue(0)
         self.scan_progress.setFormat("扫描图形 G 图元 %p%")
@@ -378,17 +416,23 @@ class SiteProfilePage(BasePage):
         self.scan_progress.setVisible(False)
         discovery_input_layout.addWidget(self.scan_progress)
         discovery_layout.addWidget(self.discovery_input_panel)
-        self.discovery_locked_note = QLabel("当前 ACTIVE 标准已锁定：图形 G 图元发现输入已隐藏。点击“解锁当前版本”后会自动恢复输入方式、SSH/本地文件选择及扫描操作。")
+        self.discovery_locked_note = QLabel("服务器图元库已作为唯一标准源；本页面不提供图元上传或图元扫描。")
         self.discovery_locked_note.setWordWrap(True)
         self.discovery_locked_note.setObjectName("mutedText")
         self.discovery_locked_note.setVisible(False)
         discovery_layout.addWidget(self.discovery_locked_note)
         standard_layout.addWidget(discovery_box)
+        discovery_box.setVisible(False)
 
         custom_actions = QHBoxLayout()
         self.upload_standard_button = QPushButton("为选中图元上传 / 更新标准 G")
         self.upload_standard_button.clicked.connect(self._scan_samples)
         custom_actions.addWidget(self.upload_standard_button)
+        self.confirm_server_button = QPushButton("确认选中服务器图元")
+        set_secondary(self.confirm_server_button)
+        self.confirm_server_button.setToolTip("将当前服务器目录中已解析的图元确认加入编辑中的标准版本；保存后才会进入版本库。")
+        self.confirm_server_button.clicked.connect(self._confirm_selected_server_symbol)
+        custom_actions.addWidget(self.confirm_server_button)
         # v2.18.105: no fixed SMART/NORMAL role pairs are pre-created. Scope is
         # learned/suggested from the graphic G candidate itself, then confirmed on
         # that generic row. Keep a hidden compatibility object so archived profile
@@ -404,6 +448,17 @@ class SiteProfilePage(BasePage):
         set_secondary(self.delete_custom_button)
         self.delete_custom_button.clicked.connect(self._delete_selected_custom_standard)
         custom_actions.addWidget(self.delete_custom_button)
+        # Standard rows are sourced exclusively from the server catalog. Keep the
+        # legacy widgets for compatibility with saved layouts and signal paths, but
+        # do not expose local upload/manual mutation actions.
+        for button in (
+            self.upload_standard_button,
+            self.confirm_server_button,
+            self.add_custom_button,
+            self.delete_custom_button,
+        ):
+            button.setVisible(False)
+            button.setEnabled(False)
         custom_actions.addStretch(1)
         self.lock_standard_button = QPushButton("锁定当前版本")
         set_secondary(self.lock_standard_button)
@@ -415,16 +470,29 @@ class SiteProfilePage(BasePage):
         self.standard_table_overview = QLabel("图元标准表（左侧为序号）：共 0 项图元")
         self.standard_table_overview.setObjectName("sectionCaption")
         self.standard_table_overview.setWordWrap(True)
-        self.standard_table_overview.setToolTip("统计当前标准表中的图元种类、当前显示项、已配置标准、待配置标准以及扫描到的实例总数。")
+        self.standard_table_overview.setToolTip(
+            "统计服务器标准目录形成的当前标准表；业务 G 实例只在实际执行检查后统计，不参与标准数量。"
+        )
         standard_layout.addWidget(self.standard_table_overview)
 
-        self.standard_table = QTableWidget(0, 17)
+        standard_search_row = QHBoxLayout()
+        standard_search_row.addWidget(QLabel("搜索图元 G 文件"))
+        self.standard_table_search = QLineEdit()
+        self.standard_table_search.setPlaceholderText("输入标准图元 G 文件名、devref 或 XML，例如 RMU_LBS_S.zwk.icn.g")
+        self.standard_table_search.setClearButtonEnabled(True)
+        self.standard_table_search.setToolTip("只筛选当前服务器标准表，不会重新扫描或修改服务器文件。")
+        self.standard_table_search.textChanged.connect(self._apply_standard_table_filter)
+        standard_search_row.addWidget(self.standard_table_search, 1)
+        standard_layout.addLayout(standard_search_row)
+
+        self.standard_table = QTableWidget(0, 18)
         self.standard_table.setHorizontalHeaderLabels(
             [
                 "检查范围", "业务类型 / 设备类型", "检查对象 XML", "标准图元文件",
                 "主体 ID", "w×h", "AlignCenter", "Pins", "标准来源", "状态",
                 "图元用途", "设备子类型", "设备层级", "扫描图元 G 文件全名",
                 "图形 G 发现 devref", "发现次数", "样本位置",
+                "下载图元",
             ]
         )
         self.standard_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -462,6 +530,7 @@ class SiteProfilePage(BasePage):
         self.standard_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.standard_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.standard_table.setMinimumHeight(380)
+        configure_responsive_table(self.standard_table)
         # v2.18.105 continues the discovery-driven standard library.  There are no
         # built-in/system rows and no user-entered locator rule/condition columns.
         self._standard_specs = []
@@ -469,7 +538,7 @@ class SiteProfilePage(BasePage):
         standard_layout.addWidget(self.standard_table)
 
         save_row = QHBoxLayout()
-        self.save_button = QPushButton("保存当前标准")
+        self.save_button = QPushButton("保存服务器标准版本")
         self.save_button.clicked.connect(self._save_profile)
         save_row.addWidget(self.save_button)
         self.profile_status = QLabel("")
@@ -483,6 +552,14 @@ class SiteProfilePage(BasePage):
         self.scan_summary.setWordWrap(True)
         standard_layout.addWidget(self.scan_summary)
 
+        # The server catalog and the standard table are the primary workflow.
+        # Business-G discovery is retained in code for backward compatibility but
+        # is not exposed: it is not needed to construct the server standard.
+        standard_layout.removeWidget(discovery_box)
+        standard_layout.addWidget(discovery_box)
+        standard_layout.removeWidget(server_box)
+        standard_layout.insertWidget(2, server_box)
+
         self.layout.addWidget(standard_box)
 
         source_box = QGroupBox("待检查 G 文件")
@@ -490,7 +567,7 @@ class SiteProfilePage(BasePage):
         source_layout.setContentsMargins(14, 18, 14, 12)
         source_layout.setSpacing(10)
         source_note = QLabel(
-            "选择待检查业务 G；源文件只读，结果写入 workspace。"
+            "选择待检查 G；服务器源文件只读，程序只下载本地快照，检查/纠正结果写入 workspace。"
         )
         source_note.setWordWrap(True)
         source_note.setObjectName("mutedText")
@@ -522,7 +599,7 @@ class SiteProfilePage(BasePage):
 
         self.layout.addWidget(source_box)
 
-        apply_box = QGroupBox("图元标准检查")
+        apply_box = QGroupBox("标准一致性检查与纠正")
         apply_layout = QVBoxLayout(apply_box)
         apply_layout.setContentsMargins(14, 18, 14, 12)
         apply_layout.setSpacing(10)
@@ -534,11 +611,26 @@ class SiteProfilePage(BasePage):
         apply_layout.addWidget(self.current_profile_label)
 
         execute_note = QLabel(
-            "检查只读；纠正仅生成 workspace 副本，不覆盖源 G；连接修复会按 ACTIVE 标准 Pin 计算设备真实断点：双 Pin 两侧线已到 Pin 时删除旁路贯穿 ConnectLine，并补齐 link/node_area；单 Pin 轻微斜线自动做水平/垂直正交修复。"
+            "检查只读；纠正仅生成 workspace 副本，不覆盖源 G。这里仅处理标准图元自身的类型、devref、尺寸、Pin 几何和设备锚点；"
+            "不负责全图拓扑判定，不删除或重画 ConnectLine/FeedLine/Bus，也不执行全图拓扑分析。"
         )
         execute_note.setWordWrap(True)
         execute_note.setObjectName("mutedText")
         apply_layout.addWidget(execute_note)
+
+        workflow_row = QHBoxLayout()
+        workflow_note = QLabel("后续处理：")
+        workflow_note.setObjectName("mutedText")
+        workflow_row.addWidget(workflow_note)
+        self.orthogonalize_button = QPushButton("进入线路正交化")
+        set_secondary(self.orthogonalize_button)
+        self.orthogonalize_button.setToolTip(
+            "进入线路正交化，执行线路横平竖直、连接点对齐和安全重画。"
+        )
+        self.orthogonalize_button.clicked.connect(self.orthogonalizeRequested.emit)
+        workflow_row.addWidget(self.orthogonalize_button)
+        workflow_row.addStretch(1)
+        apply_layout.addLayout(workflow_row)
 
         self.result_summary = QLabel("尚未执行图元标准检查。")
         self.result_summary.setObjectName("mutedText")
@@ -558,7 +650,7 @@ class SiteProfilePage(BasePage):
         self.check_button = QPushButton("检查图元标准")
         self.check_button.clicked.connect(self._check_profile)
         self.task.buttons_layout.insertWidget(0, self.check_button)
-        self.correct_button = QPushButton("纠正标准问题")
+        self.correct_button = QPushButton("生成标准纠正副本")
         set_secondary(self.correct_button)
         self.correct_button.clicked.connect(self._correct_profile)
         self.task.buttons_layout.insertWidget(1, self.correct_button)
@@ -580,14 +672,16 @@ class SiteProfilePage(BasePage):
         apply_layout.addWidget(self.task)
         self.layout.addWidget(apply_box, 1)
 
-        # Workflow order: choose business G -> maintain/select the single standard table -> run check/correction.
+        # Workflow order: read/maintain the server standard catalog -> choose a
+        # local or server-snapshotted G for check/correction.
         for widget in (source_box, standard_box, apply_box):
             self.layout.removeWidget(widget)
-        self.layout.insertWidget(1, source_box)
-        self.layout.insertWidget(2, standard_box)
+        self.layout.insertWidget(1, standard_box)
+        self.layout.insertWidget(2, source_box)
         self.layout.insertWidget(3, apply_box)
 
         self._reload_profiles()
+        self._refresh_local_storage_summary()
         self._update_action_state()
 
     @staticmethod
@@ -671,7 +765,10 @@ class SiteProfilePage(BasePage):
             versions = self.service.load_profile_versions(profile_name) or [current]
             for profile in reversed(versions):
                 is_active = profile.profile_version == current.profile_version
-                ready, _issues = self.service.validate_authoritative_standard(profile)
+                # Listing versions must stay lightweight. Full SHA256/file integrity
+                # validation is performed only when a version is executed or made
+                # GLOBAL, never once for every row during a UI refresh.
+                ready = profile.authoritative_ready
                 standard_rows = self._profile_standard_rows(profile)
                 configured = sum(
                     1 for row in standard_rows
@@ -769,7 +866,7 @@ class SiteProfilePage(BasePage):
         self._refresh_standard_table_overview()
 
     def _refresh_standard_table_overview(self) -> None:
-        """Refresh row serial numbers and a compact symbol-count summary."""
+        """Refresh row serial numbers and separate standard/instance counts."""
         if not hasattr(self, "standard_table"):
             return
         table = self.standard_table
@@ -791,18 +888,70 @@ class SiteProfilePage(BasePage):
                     instances += max(0, int(marker.data(Qt.ItemDataRole.UserRole + 5) or 0))
                 except (TypeError, ValueError):
                     pass
-                if bool(marker.data(Qt.ItemDataRole.UserRole + 3)) and not self._standard_file_devref(row):
-                    pending += 1
+            if not self._standard_file_devref(row):
+                pending += 1
         if labels:
             table.setVerticalHeaderLabels(labels)
-        text = (
-            f"图元标准表（左侧为序号）：共 {total} 项图元 | 当前显示 {visible} 项 | "
-            f"已配置标准 {configured} 项 | 待配置标准 {pending} 项"
-        )
+        text = f"图元标准表（左侧为序号）：共 {total} 项图元 | 当前显示 {visible} 项"
+        if self._server_catalog_records:
+            text += f" | 服务器解析 {len(self._server_catalog_records)} 项"
+        text += f" | 已绑定标准 {configured} 项 | 待处理 {pending} 项"
         if instances:
-            text += f" | 扫描实例 {instances} 个"
+            text += f" | 业务 G 检查实例 {instances} 个"
+        else:
+            text += " | 业务 G 检查实例待执行"
         if hasattr(self, "standard_table_overview"):
             self.standard_table_overview.setText(text)
+
+    @staticmethod
+    def _unique_standard_file_count(records: object) -> int:
+        """Count unique standard G basenames without treating table rows as files."""
+        names = {
+            Path(str(row.get("original_name", "")).strip()).name.casefold()
+            for row in records
+            if isinstance(row, dict) and Path(str(row.get("original_name", "")).strip()).name
+        } if isinstance(records, list) else set()
+        return len(names)
+
+    def _refresh_standard_source_summary(self) -> None:
+        """Show authoritative server/catalog metrics separately from business-G metrics."""
+        if not hasattr(self, "scan_summary"):
+            return
+        name, version, _active = self._selected_profile_key() if hasattr(self, "profile_selector") else ("", None, False)
+        profile = self.service.get_profile_version(name, version) if name and version is not None else None
+        records = list(profile.managed_standard_files) if profile is not None else []
+
+        table_rows = self.standard_table.rowCount() if hasattr(self, "standard_table") else 0
+        bound = sum(1 for row in range(table_rows) if self._standard_file_devref(row))
+        pending = max(0, table_rows - bound)
+        standard_files = self._unique_standard_file_count(records)
+
+        payload = self._last_server_sync_payload if isinstance(self._last_server_sync_payload, dict) else {}
+        matched = payload.get("matched_records", {})
+        parsed = len(matched) if isinstance(matched, dict) else 0
+        remote_total = int(payload.get("scanned_remote_files", 0) or 0)
+        conflicts = payload.get("conflicts", {})
+        errors = payload.get("errors", {})
+        issue_count = (
+            (len(conflicts) if isinstance(conflicts, dict) else 0)
+            + (len(errors) if isinstance(errors, dict) else 0)
+        )
+        if remote_total or parsed:
+            source_text = f"服务器目录：远程 {remote_total} 个 .g，解析成功 {parsed} 项"
+            if issue_count:
+                source_text += f"，冲突/失败 {issue_count} 项"
+        elif self._server_catalog_records:
+            source_text = f"服务器目录：当前解析成功 {len(self._server_catalog_records)} 项"
+        else:
+            source_text = f"服务器快照：已保存 {len(records)} 条标准记录"
+
+        fingerprint = (profile.standard_fingerprint if profile is not None else "") or "-"
+        version_label = "当前版本" if profile is not None else "当前未保存草稿"
+        self.scan_summary.setText(
+            f"{source_text}；{version_label}：标准文件 {standard_files} 个、标准表条目 {table_rows} 项、"
+            f"已绑定 {bound} 项、待处理 {pending} 项；业务 G 候选不计入标准统计；"
+            f"标准指纹 {fingerprint[:16]}。"
+        )
 
     @staticmethod
     def _observed_symbol_g_filename(devref: str) -> str:
@@ -855,6 +1004,102 @@ class SiteProfilePage(BasePage):
                 "key_name": "",
             }
         return catalog
+
+    def _rebuild_symbol_catalog(self, records: list[dict[str, object]] | None = None) -> None:
+        """Keep server metadata available while profile records remain authoritative."""
+        server = self._catalog_from_standard_records(list(self._server_catalog_records.values()))
+        if records is None:
+            records = self._editor_standard_records()
+        # A deliberately uploaded/confirmed Profile record wins over a same-devref
+        # server catalog row.  The server copy is still retained in the separate
+        # catalog for provenance and change detection.
+        server.update(self._catalog_from_standard_records(records))
+        self._symbol_catalog = server
+
+    @staticmethod
+    def _server_catalog_entry(record: dict[str, object]) -> dict[str, object]:
+        """Render one parsed server symbol as an authoritative editor row."""
+        devref = str(record.get("devref", "")).strip()
+        file_name = Path(str(record.get("original_name", "")).strip()).name
+        element_tag = str(record.get("element_tag", "")).strip()
+        element_id = str(record.get("element_id", "")).strip()
+        role = infer_device_type(
+            role=element_id,
+            source_file=file_name,
+            element_tag=element_tag,
+            element_id=element_id,
+        )
+        usage = infer_symbol_usage(role=role, source_file=file_name, element_tag=element_tag)
+        return {
+            "uid": "server-" + uuid4().hex,
+            "candidate_only": False,
+            "server_catalog_only": False,
+            "server_devref": "",
+            "scope": "ANY",
+            "role": role or "服务器图元",
+            "device_type": role or "服务器图元",
+            "device_subtype": "",
+            "device_level": default_device_level(usage),
+            "symbol_usage": usage,
+            "element_tag": element_tag,
+            "standard_devref": devref,
+            "match_attr": "devref",
+            "match_value": devref,
+            "observed_devref": devref,
+            "observed_symbol_file": file_name,
+            "observed_count": 0,
+            "observed_files": [],
+            "observed_examples": [],
+        }
+
+    def _merge_server_catalog_rows(self) -> None:
+        """Make the parseable server catalog the complete unlocked standard table."""
+        if not self._server_catalog_records or not hasattr(self, "standard_table"):
+            return
+        name, version, active = self._selected_profile_key()
+        profile = self.service.get_profile_version(name, version) if name and version is not None else None
+        if profile is not None and (not active or profile.locked):
+            return
+
+        # Preserve only operator classification fields from an already displayed
+        # row.  Identity and all geometry/provenance fields always come from the
+        # current server record.  Rows that are not present in the server catalog
+        # (including legacy business-G candidates) are deliberately removed from
+        # the editable snapshot.
+        previous_by_ref: dict[str, dict[str, object]] = {}
+        previous_by_name: dict[str, dict[str, object]] = {}
+        for previous in self._collect_custom_symbols():
+            devref = str(previous.get("standard_devref", "")).strip()
+            if devref:
+                previous_by_ref[devref.casefold()] = dict(previous)
+            for value in (
+                previous.get("source_file", ""),
+                previous.get("observed_symbol_file", ""),
+            ):
+                file_name = Path(str(value).strip()).name
+                if file_name:
+                    previous_by_name[file_name.casefold()] = dict(previous)
+
+        server_entries: list[dict[str, object]] = []
+        for devref, record in sorted(self._server_catalog_records.items(), key=lambda item: item[0].casefold()):
+            entry = self._server_catalog_entry(record)
+            file_name = Path(str(record.get("original_name", "")).strip()).name
+            previous = previous_by_ref.get(devref.casefold()) or previous_by_name.get(file_name.casefold())
+            if previous is not None:
+                for key in ("scope", "role", "device_type", "device_subtype", "device_level", "symbol_usage"):
+                    if str(previous.get(key, "")).strip():
+                        entry[key] = previous[key]
+            server_entries.append(entry)
+
+        self._server_catalog_ignored.clear()
+        self._pending_standard_file_records = [
+            dict(record)
+            for record in self._server_catalog_records.values()
+            if str(record.get("devref", "")).strip()
+        ]
+        self._load_custom_symbols(server_entries)
+        self._apply_standard_table_filter()
+        self._fit_standard_table_columns()
 
     def _editor_standard_records(self) -> list[dict[str, object]]:
         """Return current ACTIVE files plus pending uploads, with pending files winning.
@@ -1070,7 +1315,7 @@ class SiteProfilePage(BasePage):
                 f"devref：{devref or '-'}",
                 f"XML：{str(meta.get('element_tag', '')).strip() or '-'}",
                 f"主体 ID：{str(meta.get('element_id', '')).strip() or '-'}",
-                "绑定方式：从图形 G 发现候选后，优先按完整文件名从只读服务器图元库自动匹配；服务器未找到/冲突时可人工上传。",
+            "绑定方式：直接使用只读服务器 element 目录中已解析的图元。",
             ])
         )
         return item
@@ -1081,13 +1326,128 @@ class SiteProfilePage(BasePage):
             return ""
         return str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
 
-    def _insert_custom_standard_row(self, entry: dict[str, object] | None = None) -> int:
+    def _standard_download_source(self, row: int) -> Path | None:
+        """Return the local read-only source that can be exported for a row.
+
+        Server G files are downloaded into the local symbol cache during the
+        server-only sync.  Exporting a row therefore copies that cache file (or
+        a local managed snapshot for a historical row); it never opens a write
+        channel to the server.
+        """
+        devref = self._standard_file_devref(row)
+        marker = self.standard_table.item(row, 0)
+        if not devref and marker is not None:
+            devref = str(marker.data(Qt.ItemDataRole.UserRole + 8) or "").strip()
+        if not devref:
+            return None
+        meta = self._symbol_meta(devref)
+        # A historical or locked version must export its frozen local object;
+        # an editable ACTIVE draft should export the latest server cache instead.
+        _name, _version, active = self._selected_profile_key()
+        frozen_version = bool(_name and (not active or self._selected_profile_locked))
+        source_keys = ("managed_path", "cache_path") if frozen_version else ("cache_path", "managed_path")
+        for key in source_keys:
+            raw = str(meta.get(key, "") or "").strip()
+            if not raw:
+                continue
+            source = Path(raw)
+            if source.is_file():
+                return source
+        return None
+
+    def _refresh_standard_download_button(self, row: int) -> None:
+        """Keep the per-row export action enabled only when a local source exists."""
+        if row < 0 or row >= self.standard_table.rowCount():
+            return
+        button = self.standard_table.cellWidget(row, 17)
+        if not isinstance(button, QPushButton):
+            button = QPushButton("下载")
+            button.setAutoDefault(False)
+            button.clicked.connect(self._download_standard_row)
+            self.standard_table.setCellWidget(row, 17, button)
+        source = self._standard_download_source(row)
+        button.setEnabled(source is not None)
+        if source is not None:
+            button.setToolTip(f"下载服务器/本地标准图元：{source.name}")
+        else:
+            button.setToolTip("当前行尚无本地图元缓存，请先读取/同步服务器全部图元。")
+
+    def _download_standard_row(self) -> None:
+        """Copy one cached standard G to a user-selected local path."""
+        button = self.sender()
+        if not isinstance(button, QPushButton):
+            return
+        row = next(
+            (
+                index
+                for index in range(self.standard_table.rowCount())
+                if self.standard_table.cellWidget(index, 17) is button
+            ),
+            -1,
+        )
+        source = self._standard_download_source(row) if row >= 0 else None
+        if source is None:
+            QMessageBox.information(
+                self,
+                "图元尚未缓存",
+                "当前行没有可用的本地图元文件，请先读取/同步服务器全部图元。\n服务器始终只读，不会由此操作修改服务器。",
+            )
+            self._refresh_standard_download_button(row)
+            return
+
+        default_path = default_workspace() / "symbol-downloads" / source.name
+        target_name, _ = QFileDialog.getSaveFileName(
+            self,
+            "下载标准图元",
+            str(default_path),
+            "G 图元文件 (*.g);;所有文件 (*)",
+        )
+        if not target_name:
+            return
+        target = Path(target_name)
+        try:
+            if target.resolve(strict=False) == source.resolve(strict=False):
+                QMessageBox.information(self, "无需复制", "目标位置就是当前本地图元缓存，无需重复复制。")
+                return
+        except OSError:
+            pass
+        if target.exists() and QMessageBox.question(
+            self,
+            "确认覆盖本地文件",
+            f"本地文件已存在：\n{target}\n\n是否覆盖？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        temp = target.with_name(f".{target.name}.{uuid4().hex}.download")
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, temp)
+            temp.replace(target)
+        except Exception as exc:
+            temp.unlink(missing_ok=True)
+            QMessageBox.warning(self, "下载图元失败", str(exc))
+            return
+        QMessageBox.information(
+            self,
+            "图元下载完成",
+            f"已将图元文件复制到本地：\n{target}\n\n服务器文件未被修改。",
+        )
+
+    def _insert_custom_standard_row(
+        self, entry: dict[str, object] | None = None, *, refresh_layout: bool = True
+    ) -> int:
         entry = dict(entry or {})
         row = self.standard_table.rowCount()
         self.standard_table.insertRow(row)
 
-        candidate_only = bool(entry.get("candidate_only", False)) and not str(entry.get("standard_devref", "")).strip()
+        server_catalog_only = bool(entry.get("server_catalog_only", False)) and not str(entry.get("standard_devref", "")).strip()
+        server_devref = str(entry.get("server_devref", "")).strip() if server_catalog_only else ""
+        candidate_only = (bool(entry.get("candidate_only", False)) and not str(entry.get("standard_devref", "")).strip()) or server_catalog_only
         observed_devref = str(entry.get("observed_devref", "")).strip()
+        if server_catalog_only and not observed_devref:
+            observed_devref = server_devref
         # Compatibility: only a legacy devref locator can safely stand in for
         # discovery evidence. Old p_NameString/key_name values must never be
         # rendered as if they were scanned symbol-G filenames.
@@ -1112,6 +1472,7 @@ class SiteProfilePage(BasePage):
         marker.setData(Qt.ItemDataRole.UserRole + 5, observed_count)
         marker.setData(Qt.ItemDataRole.UserRole + 6, observed_files)
         marker.setData(Qt.ItemDataRole.UserRole + 7, observed_examples)
+        marker.setData(Qt.ItemDataRole.UserRole + 8, server_devref)
         self.standard_table.setItem(row, 0, marker)
 
         role_default = str(entry.get("role", entry.get("device_type", entry.get("suggested_device_type", "")))).strip()
@@ -1141,7 +1502,7 @@ class SiteProfilePage(BasePage):
         # after upload, the authoritative devref is also accepted by the engine so
         # repeated checks validate the corrected/new symbol as well.
         self._set_readonly_cell(row, 8, "图形 G 发现" if candidate_only else "-")
-        self._set_readonly_cell(row, 9, "待匹配/上传标准 G" if candidate_only else "待确认")
+        self._set_readonly_cell(row, 9, "待服务器匹配" if candidate_only else "待确认")
 
         meta = self._symbol_meta(selected_devref)
         auto_usage = not str(entry.get("symbol_usage", entry.get("suggested_usage", ""))).strip()
@@ -1186,7 +1547,9 @@ class SiteProfilePage(BasePage):
         usage_combo.activated.connect(usage_changed)
 
         self._refresh_custom_standard_row(row)
-        self._fit_standard_table_columns()
+        self._refresh_standard_download_button(row)
+        if refresh_layout:
+            self._fit_standard_table_columns()
         return row
 
     @staticmethod
@@ -1244,13 +1607,32 @@ class SiteProfilePage(BasePage):
         if row < len(self._standard_specs) or row >= self.standard_table.rowCount():
             return
         devref = self._standard_file_devref(row)
+        marker_item = self.standard_table.item(row, 0)
+        server_devref = (
+            str(marker_item.data(Qt.ItemDataRole.UserRole + 8) or "").strip()
+            if marker_item is not None else ""
+        )
+        display_devref = devref or server_devref
         self._set_standard_file_cell(row, devref)
-        meta = self._symbol_meta(devref)
+        meta = self._symbol_meta(display_devref)
+        if not devref and server_devref:
+            source_file = Path(str(meta.get("source_file", "")).strip()).name
+            standard_item = self.standard_table.item(row, 3)
+            if standard_item is not None:
+                standard_item.setText(source_file or self._devref_short(server_devref))
+                standard_item.setToolTip(
+                    "\n".join([
+                        f"文件：{source_file or '-'}",
+                        f"devref：{server_devref}",
+                        f"服务器：{meta.get('remote_host', '-') or '-'}",
+                        f"远程路径：{meta.get('remote_path', '-') or '-'}",
+                        "状态：服务器已读取，尚未确认进入当前标准版本。",
+                    ])
+                )
         tag_item = self.standard_table.item(row, 2)
         if tag_item is not None and not tag_item.text().strip() and meta.get("element_tag"):
             tag_item.setText(str(meta.get("element_tag", "")))
-        self._refresh_symbol_properties(row, devref)
-        marker_item = self.standard_table.item(row, 0)
+        self._refresh_symbol_properties(row, display_devref)
         usage_combo = self.standard_table.cellWidget(row, 10)
         level_combo = self.standard_table.cellWidget(row, 12)
         if (
@@ -1284,7 +1666,10 @@ class SiteProfilePage(BasePage):
         observed_devref = str(marker_item.data(Qt.ItemDataRole.UserRole + 4) or "").strip() if marker_item is not None else ""
         observed_file_item = self.standard_table.item(row, 13) or self._set_readonly_cell(row, 13, "-")
         observed_file_item.setText(self._observed_symbol_g_filename(observed_devref) or "-")
-        if devref and source_file and standard_source == "server":
+        if not devref and server_devref:
+            source_item.setText("服务器图元库 · 待确认")
+            source_item.setToolTip("服务器图元目录已读取；点击“确认选中服务器图元”后才会纳入当前编辑版本。")
+        elif devref and source_file and standard_source == "server":
             remote_path = str(meta.get("remote_path", "")).strip()
             remote_mtime = int(meta.get("remote_mtime", 0) or 0)
             synced_at = str(meta.get("synced_at", "")).strip()
@@ -1303,13 +1688,15 @@ class SiteProfilePage(BasePage):
             source_item.setToolTip(source_file)
         elif candidate_only:
             source_item.setText("图形 G 发现")
-            source_item.setToolTip("候选来自业务/图形 G；服务器未自动匹配时可人工上传权威标准图元 G。")
+            source_item.setToolTip("历史候选记录仅作兼容展示；当前标准只接受只读服务器 element 目录中的图元。")
         else:
             source_item.setText("未上传" if not devref else "-")
             source_item.setToolTip(source_file or "未上传")
         status_item = self.standard_table.item(row, 9) or self._set_readonly_cell(row, 9, "待确认")
-        if not devref:
-            status_item.setText(f"发现 {observed_count} 次 · 待匹配/上传标准 G" if candidate_only else "缺少标准图元")
+        if not devref and server_devref:
+            status_item.setText("服务器已读取 · 待确认")
+        elif not devref:
+            status_item.setText(f"发现 {observed_count} 次 · 待服务器匹配" if candidate_only else "缺少服务器标准图元")
         elif not (self.standard_table.item(row, 2) and self.standard_table.item(row, 2).text().strip()):
             status_item.setText("缺少 XML 元素")
         elif standard_source == "server" and observed_count:
@@ -1320,6 +1707,7 @@ class SiteProfilePage(BasePage):
             status_item.setText(f"READY · 业务G发现 {observed_count} 次")
         else:
             status_item.setText("就绪")
+        self._refresh_standard_download_button(row)
 
     def _add_custom_standard(self) -> None:
         row = self._insert_custom_standard_row()
@@ -1327,10 +1715,50 @@ class SiteProfilePage(BasePage):
         self.standard_table.scrollToItem(self.standard_table.item(row, 1))
         self._update_action_state()
 
+    def _confirm_selected_server_symbol(self) -> None:
+        row = self.standard_table.currentRow()
+        if row < len(self._standard_specs) or row < 0:
+            QMessageBox.information(self, "请选择服务器图元", "请先选择一个服务器图元目录中的待确认行。")
+            return
+        marker = self.standard_table.item(row, 0)
+        server_devref = (
+            str(marker.data(Qt.ItemDataRole.UserRole + 8) or "").strip()
+            if marker is not None else ""
+        )
+        if not server_devref:
+            QMessageBox.information(self, "无需确认", "当前行不是尚未确认的服务器图元。")
+            return
+        if self._selected_profile_key()[0] and not self._selected_profile_key()[2]:
+            QMessageBox.information(self, "历史版本只读", "历史版本不能确认服务器图元，请先恢复为新的编辑版本。")
+            return
+        if marker is not None:
+            marker.setData(Qt.ItemDataRole.UserRole + 8, "")
+            marker.setData(Qt.ItemDataRole.UserRole + 3, False)
+        server_record = self._server_catalog_records.get(server_devref)
+        if server_record is not None:
+            pending_by_devref = {
+                str(item.get("devref", "")).casefold(): dict(item)
+                for item in self._pending_standard_file_records
+                if str(item.get("devref", "")).strip()
+            }
+            pending_by_devref[server_devref.casefold()] = dict(server_record)
+            self._pending_standard_file_records = list(pending_by_devref.values())
+        self._set_standard_file_cell(row, server_devref)
+        self._refresh_custom_standard_row(row)
+        self._rebuild_symbol_catalog()
+        self.profile_status.setText(
+            f"待保存：已确认服务器图元 {server_devref}。保存后才会进入当前标准版本。"
+        )
+        self._update_action_state()
+
     def _delete_selected_custom_standard(self) -> None:
         row = self.standard_table.currentRow()
         if row >= 0:
             marker = self.standard_table.item(row, 0)
+            server_devref = (
+                str(marker.data(Qt.ItemDataRole.UserRole + 8) or "").strip()
+                if marker is not None else ""
+            )
             observed_devref = (
                 str(marker.data(Qt.ItemDataRole.UserRole + 4) or "").strip()
                 if marker is not None else ""
@@ -1341,9 +1769,11 @@ class SiteProfilePage(BasePage):
             # still-persisted discovery_catalog and the row appeared again even though
             # the user had not rescanned.  Treat Delete as an explicit Profile-level
             # ignore decision and remove the current in-memory discovery entry too.
-            if observed_devref:
+            if observed_devref and not server_devref:
                 self._discovery_decisions[observed_devref] = "ignored"
                 self._graphic_discovery_catalog.pop(observed_devref, None)
+            if server_devref:
+                self._server_catalog_ignored.add(server_devref.casefold())
             self.standard_table.removeRow(row)
         self._apply_standard_table_filter()
         self._update_action_state()
@@ -1352,9 +1782,9 @@ class SiteProfilePage(BasePage):
         """Legacy entry retained for compatibility; business G can no longer become a standard."""
         QMessageBox.information(
             self,
-            "必须上传标准图元",
+            "缺少服务器标准图元",
             "业务单线图中发现的 devref 只能作为检查线索，不能直接加入图元标准。\n"
-            "请通过“标准管理 → 上传标准图元 G”上传对应的真实图元定义文件，再将其绑定到业务类型/图元角色。",
+            "请先读取服务器 element 目录，确认对应图元定义文件可解析，再将其绑定到业务类型/图元角色。",
         )
 
     def _collect_custom_symbols(self) -> list[dict[str, object]]:
@@ -1374,10 +1804,15 @@ class SiteProfilePage(BasePage):
             role = (self.standard_table.item(row, 1).text() if self.standard_table.item(row, 1) else "").strip()
             element_tag = (self.standard_table.item(row, 2).text() if self.standard_table.item(row, 2) else "").strip()
             candidate_only = bool(marker_item.data(Qt.ItemDataRole.UserRole + 3)) if marker_item else False
+            server_catalog_only = bool(
+                marker_item is not None
+                and str(marker_item.data(Qt.ItemDataRole.UserRole + 8) or "").strip()
+                and not devref
+            )
             # A discovered business-G row is intentionally allowed to stay pending.
             # It is not part of the authoritative standard until the user uploads
             # a real icon-definition G into the row.
-            if candidate_only and not devref:
+            if (candidate_only or server_catalog_only) and not devref:
                 continue
             if not devref and not role and not element_tag:
                 continue
@@ -1413,7 +1848,9 @@ class SiteProfilePage(BasePage):
     def _load_custom_symbols(self, entries: list[dict[str, object]]) -> None:
         self._clear_custom_standard_rows()
         for entry in entries:
-            self._insert_custom_standard_row(entry)
+            self._insert_custom_standard_row(entry, refresh_layout=False)
+        self._fit_standard_table_columns()
+        self._apply_standard_table_filter()
 
     @staticmethod
     def _discovery_entry(meta: dict[str, object]) -> dict[str, object]:
@@ -1462,13 +1899,11 @@ class SiteProfilePage(BasePage):
         }
 
     def _apply_discovery_to_rows(self) -> None:
-        """Merge business-G discovery into generic rows only.
-
-        v2.18.105 deliberately has no privileged/system device slots.  Every
-        observed ``XML + devref`` is represented as the same kind of candidate row;
-        the user then chooses which candidates to promote by uploading the real
-        authoritative symbol G.
-        """
+        """Retained compatibility hook; server-only mode never imports discovery rows."""
+        # The current standard workflow is server-only.  Keep the legacy method
+        # for old callers, but never resurrect historical business-G candidates
+        # into the authoritative server standard table.
+        return
         represented: set[str] = set()
         row_by_ref: dict[str, int] = {}
         for row in self._custom_standard_rows():
@@ -1522,7 +1957,8 @@ class SiteProfilePage(BasePage):
         self._fit_standard_table_columns()
 
     def _apply_standard_table_filter(self, *_args) -> None:
-        query = self.discovery_filter.text().strip().casefold() if hasattr(self, "discovery_filter") else ""
+        standard_query = self.standard_table_search.text().strip().casefold() if hasattr(self, "standard_table_search") else ""
+        discovery_query = self.discovery_filter.text().strip().casefold() if hasattr(self, "discovery_filter") else ""
         pending_only = bool(self.pending_only_checkbox.isChecked()) if hasattr(self, "pending_only_checkbox") else False
         for row in range(self.standard_table.rowCount()):
             marker = self.standard_table.item(row, 0)
@@ -1536,7 +1972,17 @@ class SiteProfilePage(BasePage):
             if pending_only and not is_candidate:
                 self.standard_table.setRowHidden(row, True)
                 continue
-            if query:
+            matches = True
+            if standard_query:
+                filename_values: list[str] = []
+                for column in (2, 3, 13, 14):
+                    item = self.standard_table.item(row, column)
+                    if item is not None:
+                        filename_values.append(item.text())
+                        if column == 3:
+                            filename_values.append(str(item.data(Qt.ItemDataRole.UserRole) or ""))
+                matches = standard_query in " ".join(filename_values).casefold()
+            if matches and discovery_query:
                 values: list[str] = []
                 for column in range(self.standard_table.columnCount()):
                     item = self.standard_table.item(row, column)
@@ -1546,9 +1992,8 @@ class SiteProfilePage(BasePage):
                     if isinstance(widget, WheelSafeComboBox):
                         values.append(widget.currentText())
                 haystack = " ".join(values).casefold()
-                self.standard_table.setRowHidden(row, query not in haystack)
-            else:
-                self.standard_table.setRowHidden(row, False)
+                matches = discovery_query in haystack
+            self.standard_table.setRowHidden(row, not matches)
         self._refresh_standard_table_overview()
 
     def _refresh_global_connection_settings(self) -> None:
@@ -1559,6 +2004,28 @@ class SiteProfilePage(BasePage):
         self.server_symbol_root.setText(root)
         if hasattr(self, "discovery_source"):
             self.discovery_source.remote.refresh_shared_settings()
+        self._refresh_local_storage_summary()
+
+    def _refresh_local_storage_summary(self) -> None:
+        """Show the local-only locations used by server cache and version snapshots."""
+        if not hasattr(self, "local_storage_summary"):
+            return
+        cache_text = "连接配置后确定"
+        try:
+            cfg = self._server_library_config() if hasattr(self, "discovery_source") else {}
+            host = str(cfg.get("host", "")).strip()
+            root = str(cfg.get("root", self.server_symbol_root.text())).strip()
+            if host and root:
+                cache_text = str(RemoteSymbolLibraryService().library_dir(host, root))
+        except Exception:
+            pass
+        self.local_storage_summary.setText(
+            "本地只读边界：服务器只执行列目录/读属性/下载；解析和版本冻结只写本机。\n"
+            f"图元缓存：{cache_text}\n"
+            f"标准版本仓库：{self.service.repository.root}\n"
+            f"标准配置记录：{self.service.path}\n"
+            f"检查/纠正输出：{default_workspace()}"
+        )
 
     def _persist_server_library_settings(self) -> None:
         self.user_settings.set_value(
@@ -1575,10 +2042,11 @@ class SiteProfilePage(BasePage):
         self.server_sync_button.setEnabled(bool(enabled) and self._server_sync_worker is None and self._scan_worker is None)
         if not enabled:
             self._server_library_timer.stop()
-            self.server_library_status.setText("服务器图元库自动匹配已关闭；仍可使用人工上传标准 G。")
+            self.server_library_status.setText("服务器图元库是唯一标准源，当前读取开关不可关闭。")
         elif self.isVisible():
-            self._server_library_timer.start()
-            QTimer.singleShot(250, lambda: self._start_server_symbol_sync(background=True, auto_bind=True))
+            self.server_library_status.setText(
+                "服务器图元库读取仅由“读取 / 同步服务器全部图元”按钮触发。"
+            )
 
     def _server_library_config(self) -> dict[str, object]:
         # Reuse the application's shared SSH credentials. The symbol library only
@@ -1637,7 +2105,13 @@ class SiteProfilePage(BasePage):
                 changed.add(Path(str(name)).name)
         return changed
 
-    def _apply_server_library_payload(self, payload: dict[str, object], *, auto_bind: bool) -> None:
+    def _apply_server_library_payload(
+        self,
+        payload: dict[str, object],
+        *,
+        auto_bind: bool,
+        compare_profile: bool = True,
+    ) -> None:
         self._last_server_sync_payload = dict(payload)
         matched_raw = payload.get("matched_records", {})
         matched = {
@@ -1645,16 +2119,27 @@ class SiteProfilePage(BasePage):
             for name, record in matched_raw.items()
             if isinstance(record, dict)
         } if isinstance(matched_raw, dict) else {}
+        # Keep the complete parseable server catalog separate from the persisted
+        # Profile.  For an unlocked/new profile the catalog is copied into the
+        # editing snapshot below; locked profiles remain immutable.
+        self._server_catalog_records = {
+            str(record.get("devref", "")).strip(): dict(record)
+            for record in matched.values()
+            if str(record.get("devref", "")).strip()
+        }
+        self._rebuild_symbol_catalog()
         conflicts = payload.get("conflicts", {}) if isinstance(payload.get("conflicts", {}), dict) else {}
         errors = payload.get("errors", {}) if isinstance(payload.get("errors", {}), dict) else {}
         conflict_keys = {Path(str(name)).name.casefold() for name in conflicts}
         error_keys = {Path(str(name)).name.casefold() for name in errors}
         unmatched = [str(item) for item in payload.get("unmatched_names", []) if str(item).strip()] if isinstance(payload.get("unmatched_names", []), list) else []
-        changed = self._server_profile_changed_names(payload)
+        changed = self._server_profile_changed_names(payload) if compare_profile else set()
         # Persist the comparison result in the last payload so the explicit
         # "create next version" action can use exactly the same server snapshot
         # the operator has just reviewed.
         self._last_server_sync_payload["profile_changed_names"] = sorted(changed, key=str.casefold)
+        if not compare_profile:
+            self._last_server_sync_payload["profile_compare_skipped"] = True
         profile = self._current_active_profile()
         # A fresh-rescan DRAFT is a new local working copy, not an edit of the
         # locked base version.  Therefore server GET/cache results may bind into
@@ -1675,24 +2160,11 @@ class SiteProfilePage(BasePage):
             self.server_new_version_button.setEnabled(has_server_replacements and self._server_sync_worker is None and self._scan_worker is None and not self._task_busy)
 
         bound = 0
-        if auto_bind and not locked and matched:
-            # A deliberate manual upload wins until the user explicitly removes it.
-            # Exclude those filenames before pending server records are merged, so a
-            # same-devref server record cannot silently replace manual metadata.
-            protected_manual_names: set[str] = set()
-            for existing_row in self._custom_standard_rows():
-                current_devref = self._standard_file_devref(existing_row)
-                if not current_devref:
-                    continue
-                current_meta = self._symbol_meta(current_devref)
-                current_source = str(current_meta.get("standard_source", "manual") or "manual").strip().lower()
-                if current_source != "server":
-                    observed_item = self.standard_table.item(existing_row, 13)
-                    expected_name = Path(observed_item.text().strip()).name if observed_item is not None else ""
-                    if expected_name and expected_name != "-":
-                        protected_manual_names.add(expected_name.casefold())
-
-            effective_matched = {key: row for key, row in matched.items() if key not in protected_manual_names}
+        if not locked and matched:
+            # The server catalog is authoritative. Replace pending records by
+            # filename so a server-side update (including a changed devref) is
+            # reflected in the next local standard snapshot.
+            effective_matched = matched
             # Replace pending server records by filename first. This handles a remote
             # update whose body ID/devref changed while the authoritative filename
             # remained stable.
@@ -1711,11 +2183,6 @@ class SiteProfilePage(BasePage):
                 key = expected_name.casefold()
                 if not key or key in conflict_keys or key in error_keys or key not in effective_matched:
                     continue
-                current_devref = self._standard_file_devref(row)
-                current_meta = self._symbol_meta(current_devref) if current_devref else {}
-                current_source = str(current_meta.get("standard_source", "manual") or "manual").strip().lower()
-                if current_devref and current_source != "server":
-                    continue
                 record = effective_matched[key]
                 devref = str(record.get("devref", "")).strip()
                 if not devref:
@@ -1727,13 +2194,16 @@ class SiteProfilePage(BasePage):
                 self._refresh_custom_standard_row(row)
                 bound += 1
 
+        self._rebuild_symbol_catalog()
+        self._merge_server_catalog_rows()
+
         remote_total = int(payload.get("scanned_remote_files", 0) or 0)
         downloaded = int(payload.get("downloaded", 0) or 0)
         reused = int(payload.get("reused", 0) or 0)
         checked_at = str(payload.get("checked_at", "")).strip()
         parts = [
-            f"服务器图元库已检查：远程 {remote_total} 个 .g",
-            f"精确匹配 {len(matched)}",
+            f"服务器 element 图元目录已读取：远程 {remote_total} 个 .g",
+            f"解析成功 {len(matched)}",
             f"缓存复用 {reused}",
             f"本次下载 {downloaded}",
         ]
@@ -1752,15 +2222,18 @@ class SiteProfilePage(BasePage):
         text = " | ".join(parts)
         if locked and changed:
             text += "。当前 ACTIVE 已锁定：新文件只更新本地缓存并提示变化，不会修改已锁定标准。可点击“基于当前版本创建新版本”生成新的未锁定 ACTIVE 版本。"
+        elif not compare_profile:
+            text += "。本次为手动读取：未执行历史版本比较，直接使用当前服务器图元默认信息；如需检查版本变化，请等待后台同步或另行执行版本检查。"
         elif changed and not locked:
-            text += "。服务器新版本已拉取到编辑区；保存当前标准时会按现有版本机制创建新的 ACTIVE 版本。"
+            text += "。服务器新版本已拉取到本地编辑区；保存服务器标准版本时会按现有版本机制创建新的 ACTIVE 版本。"
         elif conflicts:
-            text += "。同名但内容不同的服务器 G 不会自动选择，请人工确认。"
+            text += "。同名但内容不同的服务器 G 不会自动选择，请查看冲突记录。"
         elif errors:
-            text += "。部分服务器 G 无法安全下载或解析，不会自动绑定；请查看执行日志并在需要时使用人工上传兜底。"
+            text += "。部分服务器 G 无法安全下载或解析，不会进入标准表，请查看执行日志。"
         elif unmatched:
-            text += "。服务器未找到的候选仍可使用“为选中图元上传 / 更新标准 G”人工补充。"
+            text += "。服务器目录中未找到的文件不会进入标准表。"
         self.server_library_status.setText(text)
+        self._refresh_standard_source_summary()
         self._fit_standard_table_columns()
         self._update_action_state()
 
@@ -1801,7 +2274,7 @@ class SiteProfilePage(BasePage):
             QMessageBox.information(
                 self,
                 "没有可应用的服务器更新",
-                "当前缓存快照中没有检测到与已锁定标准内容不同、且可安全精确匹配的服务器图元。请先点击“检查 / 同步服务器图元库”。",
+                "当前缓存快照中没有检测到与已锁定标准内容不同、且可安全精确匹配的服务器图元。请先点击“读取 / 同步服务器全部图元”。",
             )
             return
 
@@ -1843,15 +2316,16 @@ class SiteProfilePage(BasePage):
             "服务器更新已写入新版本；全局执行版本保持原选择。确认后如需启用新版本，请点击“设为全局版本”。",
         )
 
-    def _start_server_symbol_sync(self, *, background: bool, auto_bind: bool) -> None:
+    def _start_server_symbol_sync(
+        self,
+        *,
+        background: bool,
+        auto_bind: bool,
+        compare_profile: bool = True,
+    ) -> None:
         if not hasattr(self, "server_standard_enabled") or not self.server_standard_enabled.isChecked():
             return
         if self._server_sync_worker is not None or self._scan_worker is not None or self._task_busy:
-            return
-        expected = self._expected_server_symbol_names()
-        if not expected:
-            if not background:
-                self.server_library_status.setText("当前还没有可匹配的图元文件名。请先扫描业务 G，或选择一个已有服务器标准版本。")
             return
         try:
             self._persist_server_library_settings()
@@ -1861,20 +2335,20 @@ class SiteProfilePage(BasePage):
                 QMessageBox.warning(self, "服务器图元库配置无效", str(exc))
             return
 
-        self.server_library_progress.setRange(0, 0)
+        self.server_library_progress.setRange(0, 100)
+        self.server_library_progress.setValue(1)
         self.server_library_progress.setVisible(not background)
         if not background:
-            self.server_library_status.setText("正在后台递归检查服务器图元库并增量同步匹配文件……界面仍可操作。")
+            self.server_library_status.setText("正在后台递归读取 element 目录下全部 .g，并增量同步图元元数据……界面仍可操作。")
 
         def run_sync(log, progress):
             service = RemoteSymbolLibraryService()
-            result = service.sync_expected(
+            result = service.sync_all(
                 host=str(cfg["host"]),
                 port=int(cfg["port"]),
                 username=str(cfg["username"]),
                 password=str(cfg["password"]),
                 root=str(cfg["root"]),
-                expected_names=expected,
                 log=log,
                 progress=progress,
             )
@@ -1883,22 +2357,32 @@ class SiteProfilePage(BasePage):
         worker = FunctionWorker(run_sync)
         self._server_sync_worker = worker
         worker.signals.progress.connect(self._on_server_sync_progress)
-        worker.signals.result.connect(lambda result, a=auto_bind: self._on_server_sync_result(result, auto_bind=a))
+        worker.signals.result.connect(
+            lambda result, a=auto_bind, c=compare_profile: self._on_server_sync_result(
+                result, auto_bind=a, compare_profile=c
+            )
+        )
         worker.signals.error.connect(lambda details, b=background: self._on_server_sync_error(details, background=b))
         worker.signals.finished.connect(self._on_server_sync_finished)
         self._update_action_state()
         QTimer.singleShot(0, lambda w=worker: self._scan_pool.start(w))
 
     def _on_server_sync_progress(self, value: int) -> None:
-        if self.server_library_progress.maximum() == 0:
-            self.server_library_progress.setRange(0, 100)
         self.server_library_progress.setValue(max(0, min(100, int(value))))
 
-    def _on_server_sync_result(self, result: object, *, auto_bind: bool) -> None:
+    def _on_server_sync_result(
+        self,
+        result: object,
+        *,
+        auto_bind: bool,
+        compare_profile: bool = True,
+    ) -> None:
         payload = dict(result) if isinstance(result, dict) else {}
         self.server_library_progress.setRange(0, 100)
         self.server_library_progress.setValue(100)
-        self._apply_server_library_payload(payload, auto_bind=auto_bind)
+        self._apply_server_library_payload(
+            payload, auto_bind=auto_bind, compare_profile=compare_profile
+        )
 
     def _on_server_sync_error(self, details: str, *, background: bool) -> None:
         message = str(details).split("\n\n---TRACEBACK---", 1)[0].strip()
@@ -1908,17 +2392,12 @@ class SiteProfilePage(BasePage):
 
     def _on_server_sync_finished(self) -> None:
         self._server_sync_worker = None
-        if self.server_library_progress.maximum() == 0:
-            self.server_library_progress.setRange(0, 100)
         self._update_action_state()
         QTimer.singleShot(500, lambda: self.server_library_progress.setVisible(False) if self._server_sync_worker is None else None)
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt API naming
         self._refresh_global_connection_settings()
         super().showEvent(event)
-        if hasattr(self, "server_standard_enabled") and self.server_standard_enabled.isChecked():
-            self._server_library_timer.start()
-            QTimer.singleShot(800, lambda: self._start_server_symbol_sync(background=True, auto_bind=True))
 
     def hideEvent(self, event) -> None:  # noqa: N802 - Qt API naming
         if hasattr(self, "_server_library_timer"):
@@ -2078,6 +2557,7 @@ class SiteProfilePage(BasePage):
             self._discovery_decisions = {}
             self._load_custom_symbols([])
             self._apply_discovery_to_rows()
+            self._merge_server_catalog_rows()
             return
 
         was_draft = bool(self._rescan_draft_mode)
@@ -2125,7 +2605,7 @@ class SiteProfilePage(BasePage):
         self._graphic_discovery_catalog = {str(key): dict(value) for key, value in catalog.items()}
         if not was_draft:
             self._pending_standard_file_records = []
-            self._symbol_catalog = self._catalog_from_standard_records([dict(row) for row in base.managed_standard_files])
+            self._rebuild_symbol_catalog([dict(row) for row in base.managed_standard_files])
         self._load_custom_symbols(draft_rows)
         self._apply_discovery_to_rows()
         self.site_name.setText(base.site_name)
@@ -2155,7 +2635,6 @@ class SiteProfilePage(BasePage):
         input_mode = self.discovery_source.mode()
         remote_job: tuple[dict[str, object], list[object], Path] | None = None
         prepared_source: Path | None = None
-        server_job: dict[str, object] | None = None
 
         # Snapshot only lightweight UI values. All SFTP work happens in FunctionWorker.
         if input_mode == InputMode.REMOTE_SSH:
@@ -2176,29 +2655,20 @@ class SiteProfilePage(BasePage):
             self.discovery_source.persist_current()
             prepared_source = self.discovery_source.path()
 
-        if self.server_standard_enabled.isChecked():
-            try:
-                self._persist_server_library_settings()
-                server_job = self._server_library_config()
-            except Exception as exc:
-                # Business discovery remains usable even when the optional server
-                # library is temporarily unavailable/misconfigured.
-                self.server_library_status.setText(f"服务器图元库配置无效，本次只扫描业务 G：{exc}")
-                server_job = None
-
         if input_mode == InputMode.REMOTE_SSH:
-            self.scan_progress.setRange(0, 0)
-            self.scan_summary.setText("正在后台下载 SSH 只读业务 G 快照……随后自动解析图元并匹配服务器标准库。")
+            self.scan_progress.setRange(0, 100)
+            self.scan_progress.setValue(1)
+            self.scan_summary.setText("正在后台下载 SSH 只读业务 G 快照……随后解析业务图元。")
         else:
             self.scan_progress.setRange(0, 100)
             self.scan_progress.setFormat("准备扫描图形 G %p%")
             self.scan_progress.setValue(1)
-            self.scan_summary.setText("正在准备扫描……完成业务图元发现后会自动匹配服务器标准图元库。")
+            self.scan_summary.setText("正在准备扫描业务 G……")
         self.scan_progress.setVisible(True)
         self._update_action_state()
 
         def run_discovery(log, progress):
-            parse_end = 70 if server_job is not None else 100
+            parse_end = 100
             if remote_job is not None:
                 cfg, selected, snapshot_dir = remote_job
                 log(f"[SSH只读] 后台准备 {len(selected)} 个服务器 G 文件，本地快照：{snapshot_dir}")
@@ -2229,29 +2699,6 @@ class SiteProfilePage(BasePage):
                     progress=lambda value: progress(2 + round(int(value) * (parse_end - 2) / 100)),
                 )
 
-            if server_job is not None:
-                expected_names = [
-                    str(row.get("observed_symbol_file", "")).strip()
-                    for row in payload.get("candidates", [])
-                    if isinstance(row, dict) and str(row.get("observed_symbol_file", "")).strip()
-                ]
-                try:
-                    service = RemoteSymbolLibraryService()
-                    sync_result = service.sync_expected(
-                        host=str(server_job["host"]),
-                        port=int(server_job["port"]),
-                        username=str(server_job["username"]),
-                        password=str(server_job["password"]),
-                        root=str(server_job["root"]),
-                        expected_names=expected_names,
-                        log=log,
-                        progress=lambda value: progress(70 + round(int(value) * 30 / 100)),
-                    )
-                    payload["server_library"] = sync_result.to_payload()
-                except Exception as exc:
-                    log(f"[服务器图元库] 自动同步失败，但业务 G 发现结果保留：{exc}")
-                    payload["server_library_error"] = str(exc)
-                    progress(100)
             return payload
 
         # Create/connect the worker now so the scan button is disabled immediately,
@@ -2267,16 +2714,7 @@ class SiteProfilePage(BasePage):
 
     def _on_discovery_progress(self, value: int) -> None:
         value = max(0, min(100, int(value)))
-        if self.discovery_source.mode() == InputMode.REMOTE_SSH and value < 25:
-            if self.scan_progress.maximum() != 0:
-                self.scan_progress.setRange(0, 0)
-            return
-        if self.scan_progress.maximum() == 0:
-            self.scan_progress.setRange(0, 100)
-        if self.server_standard_enabled.isChecked() and value >= 70:
-            self.scan_progress.setFormat("匹配 / 同步服务器标准图元 %p%")
-        else:
-            self.scan_progress.setFormat("扫描图形 G 图元 %p%")
+        self.scan_progress.setFormat("扫描图形 G 图元 %p%")
         self.scan_progress.setValue(value)
 
     def _on_graphic_discovery_result(self, result: object) -> None:
@@ -2328,7 +2766,7 @@ class SiteProfilePage(BasePage):
             server_error = str(payload.get("server_library_error", "")).strip()
             if server_error:
                 self.server_library_status.setText(
-                    f"业务 G 扫描成功，但服务器图元库自动匹配失败：{server_error}。可稍后点击“检查 / 同步服务器图元库”重试。"
+                    f"业务 G 扫描成功，但服务器图元库读取失败：{server_error}。可稍后点击“读取 / 同步服务器全部图元”重试。"
                 )
 
         file_count = int(payload.get("file_count", 0) or 0)
@@ -2353,10 +2791,10 @@ class SiteProfilePage(BasePage):
             removed = len(old_refs - new_refs)
             retained = len(new_refs & old_refs)
             self.scan_summary.setText(
-                f"V{self._rescan_draft_target_version or '?'} DRAFT 重新扫描完成：{file_count} 个文件，"
-                f"发现 {candidate_count} 种 devref / {instance_count} 个图元实例；相对基准 V{self._rescan_draft_base_version or '?'}："
+                f"V{self._rescan_draft_target_version or '?'} DRAFT 业务 G 检查线索读取完成：{file_count} 个文件，"
+                f"发现 {candidate_count} 种 devref / {instance_count} 个图元实例（不计入标准）；相对基准 V{self._rescan_draft_base_version or '?'}："
                 f"新增 {added}、仍存在 {retained}、本次已不出现 {removed}；服务器自动匹配 {matched_count} 项，"
-                f"仍待匹配/人工上传 {pending} 项。"
+                f"仍待服务器匹配 {pending} 项。"
             )
         else:
             ignored_count = sum(
@@ -2370,8 +2808,8 @@ class SiteProfilePage(BasePage):
                 " 普通扫描只更新当前版本候选，不会自动创建下一版本；如需建立下一版本，请点击“全量重新扫描 → 新版本草稿”。"
             )
             self.scan_summary.setText(
-                f"当前版本候选扫描完成：{file_count} 个文件，发现 {candidate_count} 种 devref / {instance_count} 个图元实例；"
-                f"服务器自动匹配 {matched_count} 项，当前仍待匹配/人工上传 {pending} 项。" + ignored_note
+                f"业务 G 检查线索读取完成：{file_count} 个文件，发现 {candidate_count} 种 devref / {instance_count} 个图元实例（不计入标准）；"
+                f"服务器自动匹配 {matched_count} 项，当前仍待服务器匹配 {pending} 项。" + ignored_note
             )
         warnings = payload.get("warnings", [])
         if self._rescan_draft_mode:
@@ -2384,9 +2822,9 @@ class SiteProfilePage(BasePage):
         elif isinstance(warnings, list) and warnings:
             self.profile_status.setText("；".join(str(item) for item in warnings[:3]))
         elif pending:
-            self.profile_status.setText("候选已自动分类；服务器能精确找到同名图元时会自动拉取并读取标准属性，剩余候选再人工上传。")
+            self.profile_status.setText("服务器图元目录已读取；仍未匹配的历史候选不会进入当前标准，需等待服务器目录提供对应定义。")
         elif matched_count:
-            self.profile_status.setText("候选已自动分类并从服务器图元库匹配标准 G；请确认分类后保存当前标准。")
+            self.profile_status.setText("业务 G 候选已自动分类并与服务器图元目录完成匹配；请确认分类/标准后保存当前版本。")
         self._update_action_state()
 
     def _set_discovery_input_visible(self, visible: bool) -> None:
@@ -2412,11 +2850,11 @@ class SiteProfilePage(BasePage):
             if enabled else QAbstractItemView.EditTrigger.NoEditTriggers
         )
         if hasattr(self, "upload_standard_button"):
-            self.upload_standard_button.setEnabled(enabled)
+            self.upload_standard_button.setEnabled(False)
         if hasattr(self, "share_pair_checkbox"):
             self.share_pair_checkbox.setEnabled(enabled and 0 <= self.standard_table.currentRow() < len(self._standard_specs))
-        self.add_custom_button.setEnabled(enabled)
-        self.delete_custom_button.setEnabled(enabled)
+        self.add_custom_button.setEnabled(False)
+        self.delete_custom_button.setEnabled(False)
         self.save_button.setEnabled(enabled)
 
     def _current_active_profile(self) -> SiteSmartProfile | None:
@@ -2451,13 +2889,16 @@ class SiteProfilePage(BasePage):
             ) != QMessageBox.StandardButton.Yes:
                 return
             locked = True
-        try:
-            saved = self.service.set_locked(name, locked)
-        except ValueError as exc:
-            QMessageBox.warning(self, "锁定状态更新失败", str(exc))
-            return
-        self._reload_profiles(saved.profile_name, saved.profile_version)
-        self.activeProfileChanged.emit(saved.profile_name)
+        def finish(saved: SiteSmartProfile) -> None:
+            self._reload_profiles(saved.profile_name, saved.profile_version)
+            self.activeProfileChanged.emit(saved.profile_name)
+
+        action = "锁定" if locked else "解锁"
+        self._start_profile_operation(
+            f"正在{action} {name} V{version}，请稍候……",
+            lambda: self.service.set_locked(name, locked),
+            finish,
+        )
 
     def _new_profile(self, *_args, clear_selection: bool = True) -> None:
         self._reset_fresh_rescan_state()
@@ -2467,12 +2908,15 @@ class SiteProfilePage(BasePage):
             self.profile_selector.blockSignals(False)
         self._selected_version = None
         self._selected_is_active = False
+        self._selected_profile_locked = False
         self._candidate_counts.clear()
-        self._symbol_catalog.clear()
+        self._rebuild_symbol_catalog([])
         self._graphic_discovery_catalog.clear()
         self._discovery_decisions.clear()
+        self._server_catalog_ignored.clear()
         self._pending_standard_file_records = []
         self._clear_custom_standard_rows()
+        self._merge_server_catalog_rows()
         self.site_name.clear()
         self.profile_name.clear()
         self.lbs_combo.clear()
@@ -2482,7 +2926,7 @@ class SiteProfilePage(BasePage):
         self.ground_combo.clear()
         self.normal_ground_combo.clear()
         self.scan_summary.setText("尚未配置标准图元。")
-        self.profile_status.setText("新建标准：填写适用范围 / 标准名称，扫描业务 G 后优先从服务器图元库自动匹配；未找到时再人工上传标准 G。")
+        self.profile_status.setText("新建标准：服务器 element 目录中的解析成功图元已直接作为标准；保存后形成当前版本。")
         self.current_profile_label.setText("当前全局执行标准：未选择")
         self.active_profile_summary.setText("当前全局执行标准：尚未创建 Profile")
         self._last_scan = None
@@ -2495,6 +2939,8 @@ class SiteProfilePage(BasePage):
             self.server_new_version_button.setVisible(False)
             self.server_new_version_button.setEnabled(False)
         self._last_server_sync_payload = {}
+        if self._server_catalog_records:
+            self._refresh_standard_source_summary()
         self.restore_action.setEnabled(False)
         self.delete_action.setEnabled(False)
         self._update_action_state()
@@ -2519,24 +2965,26 @@ class SiteProfilePage(BasePage):
         if profile is None:
             QMessageBox.warning(self, "版本不存在", f"未找到 {name} V{version}。")
             return
-        ready, issues = self.service.validate_authoritative_standard(profile)
-        if not ready:
+        if not profile.authoritative_ready:
             QMessageBox.warning(
                 self, "版本不可执行",
-                "该版本不能设为全局执行标准：\n" + "\n".join(f"- {item}" for item in issues[:8]),
+                "该版本没有已绑定的标准图元，不能设为全局执行标准。",
             )
             return
-        try:
-            self.service.set_global_profile_version(name, version)
-        except ValueError as exc:
-            QMessageBox.warning(self, "设置失败", str(exc))
-            return
-        self._reload_profiles(name, version)
-        self.activeProfileChanged.emit(name)
-        QMessageBox.information(
-            self, "全局版本已更新",
-            f"已将 {profile.site_name} / {profile.profile_name} / V{profile.profile_version} 设为全局执行标准。\n"
-            "后续模块会固定使用这个版本，直到你再次手动选择其他版本。",
+
+        def finish(saved: SiteSmartProfile) -> None:
+            self._reload_profiles(name, version)
+            self.activeProfileChanged.emit(name)
+            QMessageBox.information(
+                self, "全局版本已更新",
+                f"已将 {saved.site_name} / {saved.profile_name} / V{saved.profile_version} 设为全局执行标准。\n"
+                "后续模块会固定使用这个版本，直到你再次手动选择其他版本。",
+            )
+
+        self._start_profile_operation(
+            f"正在设置 {name} V{version} 为全局执行版本，请稍候……",
+            lambda: self.service.set_global_profile_version(name, version),
+            finish,
         )
 
     def _set_version_switch_busy(self, busy: bool, *, name: str = "", version: int | None = None) -> None:
@@ -2546,16 +2994,64 @@ class SiteProfilePage(BasePage):
         self.version_switch_status.setVisible(bool(busy))
         self.version_switch_progress.setVisible(bool(busy))
         if busy:
+            self.version_switch_progress.setValue(1)
             suffix = f" V{version}" if version is not None else ""
             self.version_switch_status.setText(
                 f"正在切换标准版本：{name}{suffix}，正在从本地图元版本库加载冻结配置，请稍候……"
             )
-            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-            QApplication.processEvents()
         else:
+            self.version_switch_progress.setValue(100)
             self.version_switch_status.clear()
-            if QApplication.overrideCursor() is not None:
-                QApplication.restoreOverrideCursor()
+
+    def _start_profile_operation(self, message: str, operation, callback) -> None:
+        """Run local version-library work outside the UI thread with visible feedback."""
+        if self._profile_operation_worker is not None:
+            return
+        self._profile_operation_title = str(message)
+        self._profile_operation_callback = callback
+        self._set_version_switch_busy(True)
+        self.version_switch_status.setText(self._profile_operation_title)
+        self.version_switch_progress.setValue(1)
+
+        def run(log, progress):
+            progress(8)
+            result = operation()
+            progress(92)
+            return result
+
+        worker = FunctionWorker(run)
+        self._profile_operation_worker = worker
+        worker.signals.progress.connect(
+            lambda value: self.version_switch_progress.setValue(max(0, min(100, int(value))))
+        )
+        worker.signals.result.connect(self._on_profile_operation_result)
+        worker.signals.error.connect(self._on_profile_operation_error)
+        worker.signals.finished.connect(self._on_profile_operation_finished)
+        self._update_action_state()
+        QTimer.singleShot(0, lambda w=worker: self._scan_pool.start(w))
+
+    def _on_profile_operation_result(self, result: object) -> None:
+        callback = self._profile_operation_callback
+        if callable(callback):
+            callback(result)
+
+    def _on_profile_operation_error(self, details: str) -> None:
+        message = str(details).split("\n\n---TRACEBACK---", 1)[0].strip()
+        self.version_switch_status.setText(f"操作失败：{message or details}")
+        QMessageBox.warning(self, "标准版本操作失败", message or str(details))
+
+    def _on_profile_operation_finished(self) -> None:
+        self._profile_operation_worker = None
+        self._profile_operation_callback = None
+        self.version_switch_progress.setValue(100)
+        self._set_version_switch_busy(False)
+        self._profile_operation_title = ""
+        self._update_action_state()
+        QTimer.singleShot(
+            700,
+            lambda: self.version_switch_progress.setVisible(False)
+            if self._profile_operation_worker is None else None,
+        )
 
     def _profile_selection_changed(self, *_args) -> None:
         # Selecting a saved version abandons any unsaved fresh-rescan DRAFT.
@@ -2572,18 +3068,21 @@ class SiteProfilePage(BasePage):
                 return
             self._selected_version = version
             self._selected_is_active = active
+            self._selected_profile_locked = bool(profile.locked)
             self._pending_standard_file_records = []
+            self._server_catalog_ignored.clear()
             self._last_server_sync_payload = {}
             if hasattr(self, "server_new_version_button"):
                 self.server_new_version_button.setVisible(False)
                 self.server_new_version_button.setEnabled(False)
             records = [dict(row) for row in profile.managed_standard_files]
-            self._symbol_catalog = self._catalog_from_standard_records(records)
+            self._rebuild_symbol_catalog(records)
             self._graphic_discovery_catalog = {str(key): dict(value) for key, value in profile.discovery_catalog.items()}
             self._discovery_decisions = {str(key): str(value) for key, value in profile.discovery_decisions.items()}
             display_rows = self._profile_standard_rows(profile)
             self._load_custom_symbols(display_rows)
             self._apply_discovery_to_rows()
+            self._merge_server_catalog_rows()
             self.site_name.setText(profile.site_name)
             self.profile_name.setText(profile.profile_name)
             # Legacy fixed-role fields are intentionally not rendered as special rows.
@@ -2591,25 +3090,14 @@ class SiteProfilePage(BasePage):
             # backward compatibility; saving the profile again completes the migration.
             for combo in (self.lbs_combo, self.breaker_combo, self.ground_combo, self.normal_lbs_combo, self.normal_breaker_combo, self.normal_ground_combo):
                 combo.clear()
-            configured = sum(
-                1 for row in display_rows
-                if bool(row.get("enabled", True)) and str(row.get("standard_devref", "")).strip()
-            )
-            ignored_count = sum(
-                1 for devref in profile.discovery_catalog
-                if str(profile.discovery_decisions.get(devref, "")).strip().lower() == "ignored"
-            )
-            active_discovery_count = max(0, len(profile.discovery_catalog) - ignored_count)
-            ignored_text = f"，已忽略 {ignored_count} 种" if ignored_count else ""
-            self.scan_summary.setText(
-                f"标准文件 {len(profile.managed_standard_files)} 个；已定义标准图元 {configured} 项；"
-                f"有效图形G发现候选 {active_discovery_count} 种{ignored_text}；标准指纹 {(profile.standard_fingerprint or '-')[:16]}。"
-            )
+            self._refresh_standard_source_summary()
             global_name, global_version = self.service.get_global_profile_selection()
             is_global = profile.profile_name == global_name and profile.profile_version == global_version
             if active:
                 self.user_settings.set_value("site_profile/last_profile_name", profile.profile_name)
-                ready_ok, ready_issues = self.service.validate_authoritative_standard(profile)
+                # Do not hash every frozen symbol while changing the combobox.
+                # The detailed integrity check remains in execution/GLOBAL actions.
+                ready_ok, ready_issues = profile.authoritative_ready, []
                 fingerprint = (profile.standard_fingerprint or "-")[:16]
                 lock_state = "LOCKED" if profile.locked else "UNLOCKED"
                 global_state = " · GLOBAL" if is_global else ""
@@ -2646,8 +3134,6 @@ class SiteProfilePage(BasePage):
             self.delete_action.setEnabled(bool(active and not profile.locked))
             self._update_action_state()
             self._standard_row_selection_changed()
-            if active and self.server_standard_enabled.isChecked():
-                QTimer.singleShot(350, lambda: self._start_server_symbol_sync(background=True, auto_bind=True))
         finally:
             self._set_version_switch_busy(False)
 
@@ -2672,17 +3158,19 @@ class SiteProfilePage(BasePage):
             f"现有 ACTIVE V{current.profile_version} 会保留在历史中，不会删除。\n\n继续吗？",
         ) != QMessageBox.StandardButton.Yes:
             return
-        try:
-            restored = self.service.restore_version(name, version)
-        except ValueError as exc:
-            QMessageBox.warning(self, "恢复失败", str(exc))
-            return
-        self._reload_profiles(restored.profile_name, restored.profile_version)
-        self.activeProfileChanged.emit(restored.profile_name)
-        QMessageBox.information(
-            self,
-            "已恢复",
-            f"已将历史 V{version} 恢复为新的 ACTIVE V{restored.profile_version}。后续一致性处理使用 V{restored.profile_version}。",
+        def finish(restored: SiteSmartProfile) -> None:
+            self._reload_profiles(restored.profile_name, restored.profile_version)
+            self.activeProfileChanged.emit(restored.profile_name)
+            QMessageBox.information(
+                self,
+                "已恢复",
+                f"已将历史 V{version} 恢复为新的 ACTIVE V{restored.profile_version}。后续一致性处理使用 V{restored.profile_version}。",
+            )
+
+        self._start_profile_operation(
+            f"正在从历史 V{version} 恢复新的标准版本，请稍候……",
+            lambda: self.service.restore_version(name, version),
+            finish,
         )
 
     def _fill_candidate_combo(self, combo: WheelSafeComboBox, counts: dict[str, int], selected: str) -> None:
@@ -2844,7 +3332,7 @@ class SiteProfilePage(BasePage):
         self._pending_standard_file_records = list(pending_by_devref.values())
 
         records = self._editor_standard_records()
-        self._symbol_catalog = self._catalog_from_standard_records(records)
+        self._rebuild_symbol_catalog(records)
         for custom_row in self._custom_standard_rows():
             self._refresh_custom_standard_row(custom_row)
 
@@ -2881,8 +3369,6 @@ class SiteProfilePage(BasePage):
 
     def _on_scan_finished(self) -> None:
         self._scan_worker = None
-        if self.scan_progress.maximum() == 0:
-            self.scan_progress.setRange(0, 100)
         self._update_action_state()
         # Keep 100% visible very briefly so completion is perceptible; the bar is
         # already next to the scan button and appears immediately at scan start.
@@ -2909,7 +3395,7 @@ class SiteProfilePage(BasePage):
             if not str(entry.get("element_tag", "")).strip() or not str(entry.get("standard_devref", "")).strip()
         ]
         if invalid_custom:
-            QMessageBox.warning(self, "图元标准未完成", "已纳入标准管理的图元必须至少具备“XML 元素”和已上传的“标准图元 G”。请补充后再保存。")
+            QMessageBox.warning(self, "图元标准未完成", "服务器图元目录中的标准行必须至少具备“XML 元素”和有效的标准图元 G。请先完成服务器读取后再保存。")
             return
         if not site_name or not profile_name:
             QMessageBox.warning(self, "标准未完成", "适用范围和标准名称不能为空。")
@@ -2917,7 +3403,7 @@ class SiteProfilePage(BasePage):
         if not custom_symbols:
             QMessageBox.warning(
                 self, "标准未完成",
-                "请先扫描图形 G 发现图元候选，并至少为 1 个需要管理的候选上传权威标准图元 G。",
+                "请先读取服务器 element 图元目录，并确保至少解析出 1 个有效服务器标准图元。",
             )
             return
 
@@ -3011,7 +3497,7 @@ class SiteProfilePage(BasePage):
             label = str(entry.get("role", "自定义图元")).strip() or "自定义图元"
             rows = records_by_devref.get(devref.casefold(), []) if devref else []
             if len(rows) != 1:
-                role_errors.append(f"图元 {label}: 必须且只能绑定 1 个用户上传的标准图元 G。")
+                role_errors.append(f"图元 {label}: 必须且只能绑定 1 个服务器标准图元 G。")
         if role_errors:
             QMessageBox.warning(self, "标准图元绑定无效", "\n".join(role_errors))
             return
@@ -3090,7 +3576,7 @@ class SiteProfilePage(BasePage):
             self,
             f"{name} V{version} · 图元版本库",
             f"状态：{'ACTIVE' if active else 'ARCHIVED'} / {status}\n"
-            f"冻结图元：{details.get('entry_count', 0)} 个（服务器来源 {details.get('server_backed', 0)}，人工来源 {details.get('manual', 0)}）\n"
+            f"冻结图元：{details.get('entry_count', 0)} 个（服务器来源 {details.get('server_backed', 0)}，其他历史来源 {details.get('manual', 0)}）\n"
             f"已验证：{integrity.verified}/{integrity.total}\n"
             f"历史中发生过内容修订的相对路径：{details.get('paths_with_history', 0)}\n"
             f"版本库指纹：{fingerprint or '-'}\n\n"
@@ -3189,17 +3675,19 @@ class SiteProfilePage(BasePage):
             QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
-        try:
-            current = self.service.delete_archived_version(name, version)
-        except ValueError as exc:
-            QMessageBox.warning(self, "删除历史版本失败", str(exc))
-            return
-        self._reload_profiles(name, current.profile_version)
-        QMessageBox.information(
-            self,
-            "历史版本已删除",
-            f"{name} / V{version} 已从可用版本历史中删除。其他版本及其图元配置没有变化。\n"
-            "本地图元对象库不会自动清理未引用 SHA256 对象；后续如需释放空间，可单独提供安全的未引用对象清理功能。",
+        def finish(current: SiteSmartProfile) -> None:
+            self._reload_profiles(name, current.profile_version)
+            QMessageBox.information(
+                self,
+                "历史版本已删除",
+                f"{name} / V{version} 已从可用版本历史中删除。其他版本及其图元配置没有变化。\n"
+                "本地图元对象库不会自动清理未引用 SHA256 对象；后续如需释放空间，可单独提供安全的未引用对象清理功能。",
+            )
+
+        self._start_profile_operation(
+            f"正在删除 {name} / V{version} 历史版本，请稍候……",
+            lambda: self.service.delete_archived_version(name, version),
+            finish,
         )
 
     def _delete_profile(self) -> None:
@@ -3224,13 +3712,16 @@ class SiteProfilePage(BasePage):
             f"确认删除图元标准“{name}”及其全部历史版本（当前 ACTIVE V{current.profile_version}）？",
         ) != QMessageBox.StandardButton.Yes:
             return
-        try:
-            self.service.remove(name)
-        except ValueError as exc:
-            QMessageBox.warning(self, "删除失败", str(exc))
-            return
-        self._reload_profiles()
-        self.activeProfileChanged.emit("")
+        def finish(_result: object) -> None:
+            self._reload_profiles()
+            self.activeProfileChanged.emit("")
+            QMessageBox.information(self, "标准已删除", f"图元标准“{name}”及其全部历史版本已删除。")
+
+        self._start_profile_operation(
+            f"正在删除标准 {name} 及其全部历史版本，请稍候……",
+            lambda: self.service.remove(name),
+            finish,
+        )
 
     def _check_profile(self) -> None:
         self._start_profile_run(correct=False)
@@ -3239,8 +3730,8 @@ class SiteProfilePage(BasePage):
         if QMessageBox.question(
             self,
             "确认纠正图元标准问题",
-            "将按当前全局图元标准纠正已定义图元的变体/devref，以及可可靠计算的 pin/ConnectLine 连接锚点位置。\n"
-            "同时会删除能够证明为重复的设备贯穿 ConnectLine；对权威标准确认只有一个电气 Pin 的设备，若连接线只是轻微偏斜，则自动吸附为水平或垂直并同步平移设备。\n\n"
+            "将按当前全局图元标准纠正已定义设备图元的变体/devref、尺寸和可可靠计算的设备几何。\n"
+            "本操作不会删除、重画或正交化 ConnectLine/FeedLine/Bus，也不会改变拓扑引用。\n\n"
             "源 G 文件不会覆盖；纠正后的 G 会写入本次 workspace 运行目录的 corrected 文件夹，并自动执行一次复查。\n"
             "未纳入当前标准、连接关系不明确、偏移过大或无法可靠拟合的对象不会猜测修改。\n\n继续吗？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -3289,26 +3780,26 @@ class SiteProfilePage(BasePage):
         profile = self.service.load_profiles().get(name) if name else None
         busy_scan = self._scan_worker is not None
         busy_server = self._server_sync_worker is not None
-        busy = busy_scan or busy_server or self._task_busy
+        busy_profile = self._profile_operation_worker is not None
+        busy = busy_scan or busy_server or busy_profile or self._task_busy
         global_name, global_version = self.service.get_global_profile_selection()
         global_profile = self.service.get_profile_version(global_name, global_version) if global_name and global_version is not None else None
-        authoritative_ready, _issues = self.service.validate_authoritative_standard(global_profile)
-        ready = bool(global_profile and authoritative_ready)
+        ready = bool(global_profile and global_profile.authoritative_ready)
         self.check_button.setEnabled(ready and not busy)
         self.correct_button.setEnabled(ready and not busy)
         if hasattr(self, "set_global_button"):
             selected_profile = self.service.get_profile_version(name, version) if name and version is not None else None
-            selected_ready, _selected_issues = self.service.validate_authoritative_standard(selected_profile)
+            selected_ready = bool(selected_profile and selected_profile.authoritative_ready)
             already_global = bool(name == global_name and version == global_version)
             self.set_global_button.setEnabled(bool(selected_profile and selected_ready and not already_global and not busy))
             self.set_global_button.setText("当前全局版本" if already_global else "设为全局版本")
-        # New profiles and ACTIVE profiles may be scanned. Archived rows are immutable.
-        allow_scan = (not name) or bool(active and profile is not None and not profile.locked)
-        self.scan_action.setEnabled(allow_scan and not busy)
-        self.scan_action.setText("为选中图元上传 / 更新标准 G")
+        # The server element tree is the only standard source. Local upload and
+        # discovery actions remain as hidden compatibility objects only.
+        self.scan_action.setEnabled(False)
+        self.scan_action.setText("标准图元仅从服务器读取")
         if hasattr(self, "upload_standard_button"):
-            self.upload_standard_button.setEnabled(allow_scan and not busy)
-            self.upload_standard_button.setText("为选中图元上传 / 更新标准 G")
+            self.upload_standard_button.setEnabled(False)
+            self.upload_standard_button.setText("标准图元仅从服务器读取")
         locked = bool(profile.locked) if profile is not None and active else False
         rescan_working = bool(self._rescan_prepare_mode or self._rescan_draft_mode)
         if hasattr(self, "discovery_scan_button"):
@@ -3317,24 +3808,24 @@ class SiteProfilePage(BasePage):
             # isolated local DRAFT and therefore cannot modify the locked snapshot.
             allow_discovery = (not name) or bool(active and profile is not None and not locked)
             allow_discovery = bool(rescan_working or allow_discovery)
-            self.discovery_scan_button.setEnabled(allow_discovery and not busy)
+            self.discovery_scan_button.setEnabled(False)
             self._set_discovery_input_visible(rescan_working or not locked)
-            self.discovery_scan_button.setText(
+        self.discovery_scan_button.setText(
                 f"重新扫描生成 V{self._rescan_draft_target_version or '?'} 草稿"
                 if self._rescan_prepare_mode else
-                ("重新扫描 / 更新当前新版本草稿" if self._rescan_draft_mode else "扫描当前版本候选")
+                ("重新扫描 / 更新当前新版本草稿" if self._rescan_draft_mode else "分析业务 G 使用情况")
             )
         can_edit = self._rescan_draft_mode or (
             not self._rescan_prepare_mode
             and ((not name) or bool(active and profile is not None and not locked))
         )
         self.save_button.setEnabled(can_edit and not busy)
-        self.save_button.setText("保存为新版本" if self._rescan_draft_mode else "保存当前标准")
-        self.add_custom_button.setEnabled(can_edit and not busy)
+        self.save_button.setText("保存服务器新版本" if self._rescan_draft_mode else "保存服务器标准版本")
+        self.add_custom_button.setEnabled(False)
+        if hasattr(self, "confirm_server_button"):
+            self.confirm_server_button.setEnabled(False)
         selected_standard_row = self.standard_table.currentRow()
-        self.delete_custom_button.setEnabled(
-            can_edit and not busy and selected_standard_row >= len(self._standard_specs)
-        )
+        self.delete_custom_button.setEnabled(False)
         if hasattr(self, "share_pair_checkbox"):
             self.share_pair_checkbox.setEnabled(
                 can_edit and not busy and 0 <= selected_standard_row < len(self._standard_specs)
@@ -3406,7 +3897,7 @@ class SiteProfilePage(BasePage):
                 geometry = int(stats.get("Geometry Corrections", 0) or 0)
                 text = (
                     f"纠正完成：{changed_files} 个文件发生修改，共处理 {corrected} 个标准差异，"
-                    f"其中连接锚点/几何纠正 {geometry} 个；自动复查后剩余 {bad} 个不符合项。"
+                    f"其中设备图元几何纠正 {geometry} 个；线路与拓扑保持不变，自动复查后剩余 {bad} 个不符合项。"
                 )
                 if unmanaged:
                     text += f" 另有 {unmanaged} 种未纳入当前标准的图元未自动处理；业务 G 不会被用于学习或补全标准。"
@@ -3441,15 +3932,15 @@ class SiteProfilePage(BasePage):
                 self,
                 "图元标准不一致",
                 f"检测到 {bad} 个图元/几何与当前 ACTIVE 标准不一致。\n\n"
-                "检查模式不会修改 G。可先查看报告；如属于标准中已定义图元的变体/devref或连接锚点位置问题，"
-                "可使用“纠正标准问题”生成安全副本。\n"
+                "检查模式不会修改 G。可先查看报告；如属于标准中已定义图元的变体/devref或设备图元几何问题，"
+                "可使用“生成标准纠正副本”生成安全副本。连接线和其他拓扑对象不在本模块的处理范围内。\n"
                 "如果是同一设备图元的旧版本 → 新版本升级，请到“基础处理 → 同类图元版本升级”处理。",
             )
         else:
             QMessageBox.information(
                 self,
                 "图元标准检查完成",
-                "未发现图元类型/变体、devref 或连接锚点几何与当前 ACTIVE 标准不一致；源 G 文件未修改。",
+                "未发现图元类型/变体、devref 或设备图元几何与当前 ACTIVE 标准不一致；源 G 文件未修改。",
             )
 
     def _open_report(self) -> None:

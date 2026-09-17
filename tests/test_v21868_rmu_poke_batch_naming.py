@@ -27,9 +27,9 @@ def _ident(file_name: str, name: str = '22522') -> RmuIdentificationResult:
 
 def test_batch_auto_naming_is_independent_per_source_file():
     cases = {
-        'JED-NTH-ABH-03.sln.pic.g': 'JED-NTH-ABH-AH303-22522.sln.pic.g',
-        'JED-NTH-ABH-07.sln.pic.g': 'JED-NTH-ABH-AH307-22522.sln.pic.g',
-        'JED-NTH-ABH-12.sln.pic.g': 'JED-NTH-ABH-AH312-22522.sln.pic.g',
+        'JED-NTH-ABH-03.sln.pic.g': 'JED-NTH-ABH-AH303-22522.com.pic.g',
+        'JED-NTH-ABH-07.sln.pic.g': 'JED-NTH-ABH-AH307-22522.com.pic.g',
+        'JED-NTH-ABH-12.sln.pic.g': 'JED-NTH-ABH-AH312-22522.com.pic.g',
     }
     for source_name, expected in cases.items():
         tree = _tree()
@@ -55,10 +55,10 @@ def test_custom_template_is_batch_safe_and_requires_rmu_placeholder():
     template = '{region1}-{region2}-{station}-AH3{feeder}-{rmu}.sln.pic.g'
     assert build_rmu_detail_filename(
         Path('JED-NTH-ABH-03.sln.pic.g'), '22522', target_override=template
-    ) == 'JED-NTH-ABH-AH303-22522.sln.pic.g'
+    ) == 'JED-NTH-ABH-AH303-22522.com.pic.g'
     assert build_rmu_detail_filename(
         Path('JED-NTH-ABH-12.sln.pic.g'), '40597', target_override=template
-    ) == 'JED-NTH-ABH-AH312-40597.sln.pic.g'
+    ) == 'JED-NTH-ABH-AH312-40597.com.pic.g'
 
     tree = _tree()
     bad_template = 'JED-NTH-ABH-AH303.sln.pic.g'
@@ -73,4 +73,4 @@ def test_static_custom_template_can_support_nonstandard_main_name_when_only_rmu_
     template = 'JED-NTH-ABH-AH399-{rmu}.sln.pic.g'
     assert build_rmu_detail_filename(
         Path('SPECIAL_MAIN_FILE.g'), '34661', target_override=template
-    ) == 'JED-NTH-ABH-AH399-34661.sln.pic.g'
+    ) == 'JED-NTH-ABH-AH399-34661.com.pic.g'

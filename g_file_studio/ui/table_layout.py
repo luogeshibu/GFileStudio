@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-from PySide6.QtCore import QTimer, Qt
-from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTableWidget
+from PySide6.QtCore import QEvent, QObject, QTimer, Qt
+from PySide6.QtGui import QFontMetrics
+from PySide6.QtWidgets import QAbstractItemView, QAbstractScrollArea, QHeaderView, QTableWidget
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,131 @@ _DENSE_TABLE_PROFILES: tuple[_DenseTableProfile, ...] = (
 )
 
 
+class _ResponsiveTableEventFilter(QObject):
+    """Keep a table's presentation in sync with its viewport and data."""
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt API
+        if isinstance(watched, QTableWidget):
+            if event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+                schedule_fit_responsive_table(watched)
+        return False
+
+
+def _responsive_text_width(table: QTableWidget, value: object) -> int:
+    text = str(value or "")
+    if not text:
+        return 0
+    return QFontMetrics(table.font()).horizontalAdvance(text)
+
+
+def fit_responsive_table(table: QTableWidget, *, sample_rows: int = 240) -> None:
+    """Fit visible table columns without hiding any field behind an ellipsis.
+
+    A table may be wider than its viewport when it has many or long columns.  That
+    is intentional: the horizontal scrollbar exposes the complete schema and
+    complete values instead of shrinking columns until the fields become unreadable.
+    Only a bounded sample is measured so a large remote file list cannot freeze the
+    UI while calculating widths.
+    """
+    if _profile_for(table) is not None:
+        # Known dense tables have deliberate per-column bounds and minimum row
+        # heights. Keep their schema-specific policy authoritative.
+        fit_known_dense_table(table)
+        return
+    if table.columnCount() <= 0:
+        return
+
+    header = table.horizontalHeader()
+    metrics = QFontMetrics(table.font())
+    widths: list[int] = []
+    row_count = table.rowCount()
+    sample_indexes = list(range(min(row_count, sample_rows)))
+    if row_count > sample_rows:
+        sample_indexes.extend(range(max(sample_rows, row_count - 12), row_count))
+
+    for column in range(table.columnCount()):
+        header_item = table.horizontalHeaderItem(column)
+        header_text = header_item.text() if header_item is not None else ""
+        width = max(56, metrics.horizontalAdvance(header_text) + 24)
+        for row in sample_indexes:
+            cell = table.item(row, column)
+            if cell is not None:
+                width = max(width, _responsive_text_width(table, cell.text()) + 24)
+            cell_widget = table.cellWidget(row, column)
+            if cell_widget is not None:
+                width = max(width, cell_widget.sizeHint().width() + 12)
+        # A pathological value should not make the whole page unusable.  The
+        # complete value remains available through the horizontal scrollbar and
+        # the normal Qt item tooltip (set by the feature page where appropriate).
+        widths.append(min(width, 1200))
+
+    viewport_width = max(0, table.viewport().width() - 4)
+    total_width = sum(widths)
+    if viewport_width > total_width and widths:
+        extra = viewport_width - total_width
+        base = extra // len(widths)
+        remainder = extra % len(widths)
+        widths = [width + base + (1 if index < remainder else 0) for index, width in enumerate(widths)]
+
+    for column, width in enumerate(widths):
+        table.setColumnWidth(column, width)
+
+
+def schedule_fit_responsive_table(table: QTableWidget) -> None:
+    """Coalesce resize/data notifications into one inexpensive table relayout."""
+    if not table or table.columnCount() <= 0:
+        return
+    if bool(table.property("_responsive_table_fit_pending")):
+        return
+    table.setProperty("_responsive_table_fit_pending", True)
+
+    def _fit() -> None:
+        if not table:
+            table.setProperty("_responsive_table_fit_pending", False)
+            return
+        table.setProperty("_responsive_table_fit_pending", False)
+        fit_responsive_table(table)
+
+    QTimer.singleShot(0, _fit)
+
+
+def configure_responsive_table(table: QTableWidget) -> None:
+    """Apply the common responsive behavior to every application table.
+
+    This function is deliberately presentation-only. It does not change data,
+    selection, editability, sorting, or any processing behavior.
+    """
+    if bool(table.property("_responsive_table_configured")):
+        schedule_fit_responsive_table(table)
+        return
+
+    table.setProperty("_responsive_table_configured", True)
+    table.setSizeAdjustPolicy(QAbstractScrollArea.SizeAdjustPolicy.AdjustIgnored)
+    table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+    table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+    table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    table.setTextElideMode(Qt.TextElideMode.ElideNone)
+    table.setWordWrap(False)
+
+    header = table.horizontalHeader()
+    header.setStretchLastSection(False)
+    header.setSectionsMovable(False)
+    header.setMinimumSectionSize(56)
+    header.setTextElideMode(Qt.TextElideMode.ElideNone)
+    header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+
+    # Keep the filter alive for the lifetime of the table. Qt does not own Python
+    # QObject wrappers strongly enough for an unreferenced event filter.
+    filter_object = _ResponsiveTableEventFilter(table)
+    table.installEventFilter(filter_object)
+    table._responsive_table_filter_object = filter_object  # type: ignore[attr-defined]
+
+    model = table.model()
+    model.rowsInserted.connect(lambda *_args: schedule_fit_responsive_table(table))
+    model.dataChanged.connect(lambda *_args: schedule_fit_responsive_table(table))
+    schedule_fit_responsive_table(table)
+
+
 def _canonical_headers(table: QTableWidget) -> tuple[str, ...]:
     result: list[str] = []
     for column in range(table.columnCount()):
@@ -83,6 +209,10 @@ def configure_known_dense_table(table: QTableWidget) -> bool:
     profile = _profile_for(table)
     if profile is None:
         return False
+
+    # Keep the schema-specific bounds below, while sharing the same resize/data
+    # notifications as every other table in the application.
+    configure_responsive_table(table)
 
     header = table.horizontalHeader()
     header.setStretchLastSection(False)

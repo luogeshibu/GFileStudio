@@ -29,19 +29,19 @@ def _ident(file_name: str, name: str = '34661') -> RmuIdentificationResult:
 def test_facname_and_rmu_can_appear_anywhere_in_user_template():
     assert render_facname_rmu_rule(
         'JED-NTH-ABH-{FACNAME}-{RMU}-JED.sln.pic.g', 'AH303', '34661'
-    ) == 'JED-NTH-ABH-AH303-34661-JED.sln.pic.g'
+    ) == 'JED-NTH-ABH-AH303-34661-JED.com.pic.g'
     assert render_facname_rmu_rule(
         'DETAIL-{RMU}-SITE-{FACNAME}.sln.pic.g', 'AH303', '22522'
-    ) == 'DETAIL-22522-SITE-AH303.sln.pic.g'
+    ) == 'DETAIL-22522-SITE-AH303.com.pic.g'
     assert render_facname_rmu_rule(
         'JED-NTH-ABH-FACNAME-RMU-JED.sln.pic.g', 'AH303', '34661'
-    ) == 'JED-NTH-ABH-AH303-34661-JED.sln.pic.g'
+    ) == 'JED-NTH-ABH-AH303-34661-JED.com.pic.g'
 
 
 def test_single_file_can_hardcode_facname_and_only_mark_rmu_position():
     assert render_facname_rmu_rule(
         'JED-NTH-ABH-AH303-{RMU}-JED.sln.pic.g', '', '34661'
-    ) == 'JED-NTH-ABH-AH303-34661-JED.sln.pic.g'
+    ) == 'JED-NTH-ABH-AH303-34661-JED.com.pic.g'
 
 
 def test_new_mode_never_reads_or_validates_source_filename():
@@ -55,7 +55,7 @@ def test_new_mode_never_reads_or_validates_source_filename():
     assert result.added_count == 1
     assert result.skipped_count == 0
     poke = next(e for e in tree.getroot().iter() if e.tag == 'poke')
-    assert poke.get('ahref') == 'JED-NTH-ABH-AH303-34661-JED.sln.pic.g'
+    assert poke.get('ahref') == 'JED-NTH-ABH-AH303-34661-JED.com.pic.g'
 
 
 def test_batch_files_use_each_g_root_facname_not_filename_feeder():
@@ -75,9 +75,9 @@ def test_batch_files_use_each_g_root_facname_not_filename_feeder():
         assert result.skipped_count == 0
         outputs.append(next(e for e in tree.getroot().iter() if e.tag == 'poke').get('ahref'))
     assert outputs == [
-        'SITE-AH303-34661-DETAIL.sln.pic.g',
-        'SITE-AH304-34661-DETAIL.sln.pic.g',
-        'SITE-MD112-34661-DETAIL.sln.pic.g',
+        'SITE-AH303-34661-DETAIL.com.pic.g',
+        'SITE-AH304-34661-DETAIL.com.pic.g',
+        'SITE-MD112-34661-DETAIL.com.pic.g',
     ]
 
 

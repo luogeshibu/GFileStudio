@@ -110,8 +110,14 @@ EN: dict[str, str] = {
     "馈线图合并": "Feeder Diagram Merge",
     "图形边距调整": "Drawing Margin Adjustment",
     "图框添加": "Drawing Frame",
+    "线路正交化": "Orthogonalize Lines",
+    "全局对齐同类设备，并在安全条件下重画或整理电气线路。": "Globally align repeated devices and safely redraw or orthogonalize electrical lines.",
+    "线路正交化帮助": "Orthogonalize Lines Help",
+    "开始线路正交化": "Orthogonalize Lines",
+    "线路正交化输入": "Orthogonalization Input",
+    "线路正交化输出目录": "Orthogonalization Output Directory",
     "吉达馈线批处理": "Jeddah Feeder Batch Processing",
-    "Jeddah 专用：第一步彻底取消图形组合（删除全部 <Merge>、RMU 外框置底），再批量删除异常小元素、SMART/SMR 红框、SMART 图元校正 + SMR 智能清理/转换 + 转换后图元复检、RMU 柜名自动 Cluster 识别 + 白色 + 字号50 + 上边框上方10居中、删除 RMU channel_status 红色状态点、Bus 外框清理、馈线名称上移、FeedLine 统一实线、删除 H.T、清理同柜重复 SMART、相邻 2000.00 + UPDATED_MEASURMENT 成对删除、ID 检查与修复、图形边距调整并添加图框": "Jeddah only: first fully ungroup graphics (remove all <Merge> elements and send RMU frames to back), then batch-remove abnormal small elements, highlight SMART/SMR frames in red, validate SMART RMU device icons, apply conditional SMR cleanup/conversion, and validate SMART device icons again after conversion, resolve RMU cabinet names automatically by Cluster and then set them to white at font size 50 centered 10 units above the top frame, remove RMU channel_status red status points, remove Bus frames, move feeder names above buses, set all FeedLine elements to solid, remove exact H.T text markers, remove duplicate SMART labels within each recognized RMU, remove adjacent 2000.00 + UPDATED_MEASURMENT pairs, run ID check & repair, adjust drawing margins, and add drawing frames.",
+    "Jeddah 专用：第一步彻底取消图形组合（删除全部 <Merge>、RMU 外框置底），再批量删除异常小元素、SMART/SMR 红框、SMART 图元校正 + SMR 智能清理/转换 + 转换后图元复检、RMU 柜名严格按外框内三类组成并只从上方识别 + 白色 + 字号50 + 上边框上方10居中、删除 RMU channel_status 红色状态点、Bus 外框清理、馈线名称上移、FeedLine 统一实线、删除 H.T、清理同柜重复 SMART、相邻 2000.00 + UPDATED_MEASURMENT 成对删除、ID 检查与修复、图形边距调整并添加图框": "Jeddah only: first fully ungroup graphics (remove all <Merge> elements and send RMU frames to back), then batch-remove abnormal small elements, highlight SMART/SMR frames in red, validate SMART RMU device icons, apply conditional SMR cleanup/conversion, and validate SMART device icons again after conversion, recognize only RMUs whose frames contain the three required elements and accept names only from above the frame, then set recognized names to white at font size 50 centered 10 units above the top frame, remove RMU channel_status red status points, remove Bus frames, move feeder names above buses, set all FeedLine elements to solid, remove exact H.T text markers, remove duplicate SMART labels within each recognized RMU, remove adjacent 2000.00 + UPDATED_MEASURMENT pairs, run ID check & repair, adjust drawing margins, and add drawing frames.",
     "面向吉达现场的单馈线图一键标准化：批量输入多个 G 文件，逐张完成固定处理并输出最终单馈线图。": "One-click standardization for Jeddah single-feeder diagrams: batch-process multiple G files with a fixed workflow and output each final feeder diagram separately.",
     "吉达馈线批处理说明": "Jeddah Feeder Batch Processing Help",
     "本模块是 Jeddah 专用批处理入口，不修改现有异常元素、RMU、基础处理或 ID 模块的业务逻辑。程序按固定顺序调用已有处理能力；原始输入文件不会覆盖，最终结果写入本次 workspace 运行目录。": "This is a Jeddah-only batch entry point. It does not change the business logic of the existing Small Element, RMU, Basic Processing, or ID modules. Existing capabilities are invoked in a fixed sequence; source files are never overwritten and final results are written to this workspace run directory.",
@@ -142,7 +148,7 @@ EN: dict[str, str] = {
     "异常小尺寸阈值": "Abnormal Small Element Threshold",
     "RMU 柜名可能位置：": "Possible RMU Name Positions:",
     "RMU 柜名排除字符串：": "RMU Name Exclusions:",
-    "RMU 柜名识别：自动 Cluster。系统按 RMU 的重复排列自动判断上/下/左/右名称布局，学习当前组的主导名称风格并一对一分配；孤立或不规则 RMU 自动全方向匹配。": "RMU name resolution: Automatic Cluster. The system infers Top/Bottom/Left/Right from repeated RMU layouts, learns the dominant local name style, assigns names one-to-one, and falls back to all-direction matching for isolated or irregular RMUs.",
+    "RMU 柜名识别：严格模式。只有框内同时存在 BusDis、CBreakerDis、ZhaiWaiJieDiDaoZha 才认定为 RMU，柜名只从外框上方按一对一规则匹配。": "RMU name resolution: Strict mode. An RMU requires BusDis, CBreakerDis and ZhaiWaiJieDiDaoZha inside its frame, and its name is assigned one-to-one only from Text above the frame.",
     "吉达固定样式：SMART/SMR 外框 = 红色 #FF0000；只要 SMART Text 的中心位于 RMU 框内，就检查并校正 Y1/Y2/Y3 的 Load_Breaker_Switch 与 Q1 Circuit_Breaker 的 CBreakerDis devref（兼容 Circuit_Breaker_NO-SMART 与 Circuit_Breaker_NON-SMART 两种源图元）；若 SMR 柜内已有 SMART，只删除外部 SMR并保留原 SMART；若柜内没有 SMART，则生成顶部居中 SMART（字号 20）；SMR 处理后再次执行 SMART 图元复检；已识别 RMU 柜名 Text = 白色 #FFFFFF、字号 50，并与环网柜上边框保持 10 距离且水平居中；RMU channel_status 红色状态点直接删除；所有 FeedLine 馈线 = 实线 ls=1；精确 H.T Text = 删除；所有已识别配网 RMU 都检查重复 SMART，同柜多个时保留 XML 中原有第一个并删除后续重复；2000.00 与 UPDATED_MEASURMENT 只有在同行且相邻（水平间距不超过 10）时才成对删除。": "Jeddah fixed styles: SMART/SMR frames = red #FF0000; whenever the center of a SMART Text lies inside an RMU frame, its Y1/Y2/Y3 Load_Breaker_Switch and Q1 Circuit_Breaker CBreakerDis devrefs are validated/corrected to SMART (supporting both Circuit_Breaker_NO-SMART and Circuit_Breaker_NON-SMART source variants); if an SMR cabinet already contains SMART, remove only the external SMR and preserve the existing SMART label; if it has no SMART, create a top-centered SMART label at font size 20; after SMR handling, validate SMART device devrefs again; recognized RMU name Text = white #FFFFFF, font size 50, centered with a 10-unit gap above the RMU top frame; RMU channel_status red status points are removed; all FeedLine feeders = solid ls=1; exact H.T Text markers are removed; every recognized distribution RMU is checked for duplicate SMART labels, preserving the first/original XML label and removing later duplicates; 2000.00 and UPDATED_MEASURMENT are removed only when they are on the same visual line and adjacent with a horizontal gap no greater than 10.",
     "开始吉达批处理": "Start Jeddah Batch Processing",
     "按上方固定 Jeddah 流程批量处理所选单馈线 G 文件。": "Batch-process the selected single-feeder G files using the fixed Jeddah workflow above.",
@@ -248,8 +254,6 @@ EN: dict[str, str] = {
     "启用通用图元升级": "Enable Universal Symbol Upgrade",
     "连接点修复": "Connection Repair",
     "修复连接点（补齐 node_area / link）": "Repair Connections (complete node_area / link)",
-    "母线馈线名称定位": "Bus/Feeder Title Positioning",
-    "将馈线名称移动到母线上方": "Move Feeder Name Above Bus",
     "线路与母线样式": "Line & Bus Styles",
     "馈线": "Feeder",
     "连接线": "Connection Line",
@@ -1964,9 +1968,9 @@ EN.update({
 # v2.18.70 Smart RMU Poke unified FACNAME/RMU ahref template.
 EN.update({
     "ahref 文件名模板": "ahref Filename Template",
-    "请填写 ahref 文件名模板，例如 JED-NTH-ABH-{FACNAME}-{RMU}-JED.sln.pic.g。": "Enter an ahref filename template, for example JED-NTH-ABH-{FACNAME}-{RMU}-JED.sln.pic.g.",
+    "请填写 ahref 文件名模板，例如 JED-NTH-ABH-{FACNAME}-{RMU}-JED.com.pic.g。": "Enter an ahref filename template, for example JED-NTH-ABH-{FACNAME}-{RMU}-JED.com.pic.g.",
     "独立为已识别的智能 RMU（SMART / SMR）生成或更新 Poke ahref。单文件和批处理统一使用同一套模板：模板中的 {FACNAME} 从当前 G 文件根节点 facName 读取，{RMU} 使用现有 RMU 识别逻辑得到的柜名；除此之外的文件名内容全部由用户自己指定，程序不再从源 G 文件名推断区域、站点或馈线号。": "Create or update Poke ahref targets for identified smart RMUs (SMART / SMR). Single-file and batch processing use the same template: {FACNAME} comes from the current G root facName, and {RMU} comes from the existing RMU identification result. All other filename text is supplied by the user; the program no longer infers region, station, or feeder data from the source G filename.",
-    "示例：模板 JED-NTH-ABH-{FACNAME}-{RMU}-JED.sln.pic.g；当前 G 的 facName=AH303，识别 RMU=34661 → JED-NTH-ABH-AH303-34661-JED.sln.pic.g。批处理时每个文件读取自己的 facName；不再检查或解析源文件名。": "Example: template JED-NTH-ABH-{FACNAME}-{RMU}-JED.sln.pic.g; with facName=AH303 and RMU=34661, the result is JED-NTH-ABH-AH303-34661-JED.sln.pic.g. In batch processing, each file uses its own facName; source filenames are no longer validated or parsed.",
+    "示例：模板 JED-NTH-ABH-{FACNAME}-{RMU}-JED.com.pic.g；当前 G 的 facName=AH303，识别 RMU=34661 → JED-NTH-ABH-AH303-34661-JED.com.pic.g。批处理时每个文件读取自己的 facName；不再检查或解析源文件名。": "Example: template JED-NTH-ABH-{FACNAME}-{RMU}-JED.com.pic.g; with facName=AH303 and RMU=34661, the result is JED-NTH-ABH-AH303-34661-JED.com.pic.g. In batch processing, each file uses its own facName; source filenames are no longer validated or parsed.",
     "Poke 仍只包住已识别的 RMU 柜名；已有 1 个相关 Poke 则复用，多个则删除多余项只保留 1 个。如果模板使用 {FACNAME} 而某个 G 文件根节点 facName 为空，只跳过该文件的 Poke 并记录告警，不影响该文件的组合、颜色、RMU 汇总或同批其他文件。": "The Poke still wraps only the identified RMU name. One existing related Poke is reused; duplicates are removed so only one remains. If the template uses {FACNAME} and a G file has an empty root facName, only that file's Poke operation is skipped with a warning; grouping, colors, RMU summary, and other batch files continue.",
 })
 
@@ -2036,7 +2040,7 @@ EN.update({
 # v2.18.89 Database-driven Smart RMU Poke naming.
 EN.update({
     "启用后不再要求用户填写站名、馈线名或 ahref 模板。程序读取当前 G 根节点 facID，通过公共 Oracle 数据库依次查询 DMS_FEEDER_DEVICE.NAME/ST_ID、SUBSTATION.NAME/SUBAREA_ID、SUBCONTROLAREA.NAME，自动得到完整馈线名，再与 G 文件中已识别的智能 RMU 柜名组合生成 Poke 跳转文件名。": "When enabled, users no longer enter station, feeder, or ahref templates. The program reads the G root facID, resolves DMS_FEEDER_DEVICE.NAME/ST_ID, SUBSTATION.NAME/SUBAREA_ID, and SUBCONTROLAREA.NAME through the shared Oracle database, builds the full feeder name, then combines it with the already identified smart RMU name.",
-    "自动命名规则：SUBCONTROLAREA.NAME + SUBSTATION.NAME + DMS_FEEDER_DEVICE.NAME + RMU。例如数据库得到 JED-NTH + ABH + AH303，G 中识别 RMU=34661，最终 ahref 为 JED-NTH-ABH-AH303-34661.sln.pic.g。GRAPH_NAME 和 G.facName 不参与名称拼接；facName 仅可用于一致性提示。": "Automatic naming: SUBCONTROLAREA.NAME + SUBSTATION.NAME + DMS_FEEDER_DEVICE.NAME + RMU. For example, JED-NTH + ABH + AH303 with RMU=34661 produces JED-NTH-ABH-AH303-34661.sln.pic.g. GRAPH_NAME and G.facName are not used to construct the name; facName is only an optional consistency hint.",
+    "自动命名规则：SUBCONTROLAREA.NAME + SUBSTATION.NAME + DMS_FEEDER_DEVICE.NAME + RMU。例如数据库得到 JED-NTH + ABH + AH303，G 中识别 RMU=34661，最终 ahref 为 JED-NTH-ABH-AH303-34661.com.pic.g。GRAPH_NAME 和 G.facName 不参与名称拼接；facName 仅可用于一致性提示。": "Automatic naming: SUBCONTROLAREA.NAME + SUBSTATION.NAME + DMS_FEEDER_DEVICE.NAME + RMU. For example, JED-NTH + ABH + AH303 with RMU=34661 produces JED-NTH-ABH-AH303-34661.com.pic.g. GRAPH_NAME and G.facName are not used to construct the name; facName is only an optional consistency hint.",
     "前提：G 根节点 facID 必须有效。facID 为空时，本文件不会执行 Poke，程序会提示“请先关联馈线”，其他环网柜组合、改色、柜名和汇总操作仍继续。数据库连接统一使用左侧“数据库”页面保存的公共配置。": "Requirement: the G root facID must be valid. If facID is empty, Poke is skipped for that file and the program asks the user to associate the feeder first; grouping, coloring, RMU names, and summaries continue. The shared connection saved on the Database page is used.",
     "Poke 仍只包住既有 RMU 基础识别得到的智能柜名 Text；已有 1 个对应 Poke 则复用，多个则删除多余项仅保留 1 个。Poke 模块不会另写 RMU 识别规则。": "Poke still covers only the smart cabinet-name Text returned by the existing RMU identification. One matching Poke is reused; duplicates are removed so only one remains. The Poke module does not implement a separate RMU recognition rule.",
 })
@@ -2045,24 +2049,24 @@ EN.update({
 EN.update({
     "Poke 跳转处理": "Poke Jump Processing",
     "独立生成/修复 RMU 与站点跳转 Poke；复用公共 RMU 识别、Oracle 数据库及站点 Poke 参考属性": "Create/repair RMU and station-jump Pokes using the shared RMU recognition, Oracle database, and station-Poke reference properties.",
-    "独立生成/修复 RMU 与站点跳转 Poke；数据库命名和 RMU 识别均复用公共能力。": "Independently create/repair RMU and station-jump Pokes using the shared database naming and RMU recognition services.",
+    "独立生成/修复 RMU 与站点跳转 Poke；站点跳转按强制图形条件筛选，数据库查询逻辑保持不变。": "Create/repair RMU and station-jump Pokes independently. Station-jump candidates use mandatory graphic constraints; the database lookup chain is unchanged.",
     "Poke 跳转处理帮助": "Poke Jump Processing Help",
     "跳转类型": "Jump Types",
     "RMU Poke：跳转到具体环网柜明细图": "RMU Poke: Jump to a Specific RMU Detail Drawing",
     "站点跳转 Poke：跳转到对端变电站馈线总图": "Station-Jump Poke: Jump to the Remote Substation Feeder Overview",
-    "RMU Poke：环网柜明细图　目标：{区域}-{变电站}-{馈线}-{RMU}.sln.pic.g": "RMU Poke: RMU detail drawing  Target: {area}-{substation}-{feeder}-{RMU}.sln.pic.g",
+    "RMU Poke：环网柜明细图　目标：{区域}-{变电站}-{馈线}-{RMU}.com.pic.g": "RMU Poke: RMU detail drawing  Target: {area}-{substation}-{feeder}-{RMU}.com.pic.g",
     "站点跳转 Poke：变电站馈线总图　目标：{区域}-{变电站}.sln.pic.g": "Station-Jump Poke: Substation feeder overview  Target: {area}-{substation}.sln.pic.g",
     "Poke 目标文件命名规则": "Poke Target File Naming Rules",
-    "智能环网柜名字 Poke 目标文件：{区域}-{变电站}-{馈线}-{RMU}.sln.pic.g\n站点跳转 Poke 目标文件：{区域}-{变电站}.sln.pic.g": "Smart RMU Name Poke target file: {area}-{substation}-{feeder}-{RMU}.sln.pic.g\nStation-jump Poke target file: {area}-{substation}.sln.pic.g",
+    "智能环网柜名字 Poke 目标文件：{区域}-{变电站}-{馈线}-{RMU}.com.pic.g\n站点跳转 Poke 目标文件：{区域}-{变电站}.sln.pic.g": "Smart RMU Name Poke target file: {area}-{substation}-{feeder}-{RMU}.com.pic.g\nStation-jump Poke target file: {area}-{substation}.sln.pic.g",
     "识别与数据库规则": "Recognition & Database Rules",
     "开始 Poke 跳转处理": "Start Poke Jump Processing",
     "Poke 跳转处理输入": "Poke Processing Input",
     "Poke 跳转处理输出目录": "Poke Processing Output Directory",
     "请至少选择一种 Poke 跳转类型。": "Select at least one Poke jump type.",
-    "Poke 已从“环网柜处理”独立，facID 不再作为执行前提。RMU Poke 直接复用公共 RMU 识别结果，并按每个已识别环网柜名称查询 DMS_COMBINED_DEVICE.FEEDER_ID，再沿 DMS_FEEDER_DEVICE/SUBSTATION/SUBCONTROLAREA 生成各自的完整馈线目标；一张大图可同时处理多条馈线。站点跳转 Poke 只按标签中的站名关键字查询 SUBSTATION/SUBCONTROLAREA，本身不使用 facID。GRAPH_NAME 不参与目标名称生成。": "Poke processing is independent from RMU Processing and no longer requires facID. RMU Pokes reuse shared RMU recognition, resolve each recognized cabinet through DMS_COMBINED_DEVICE.FEEDER_ID, then follow DMS_FEEDER_DEVICE/SUBSTATION/SUBCONTROLAREA to build that RMU's own feeder target; one overview drawing may therefore contain multiple feeders. Station-jump Pokes use only the station key through SUBSTATION/SUBCONTROLAREA and do not use facID. GRAPH_NAME is not used for target naming.",
+    "Poke 已从“环网柜处理”独立，facID 不再作为执行前提。RMU Poke 直接复用公共 RMU 识别结果，并按每个已识别环网柜名称查询 DMS_COMBINED_DEVICE.FEEDER_ID，再沿 DMS_FEEDER_DEVICE/SUBSTATION/SUBCONTROLAREA 生成各自的完整馈线目标；一张大图可同时处理多条馈线。站点跳转 Poke 独立查找，只有同时满足字母+数字站点名和彩色背景的标签才进入数据库查询，本身不使用 facID。GRAPH_NAME 不参与目标名称生成。": "Poke processing is independent from RMU Processing and no longer requires facID. RMU Pokes reuse shared RMU recognition, resolve each recognized cabinet through DMS_COMBINED_DEVICE.FEEDER_ID, then follow DMS_FEEDER_DEVICE/SUBSTATION/SUBCONTROLAREA to build that RMU's own feeder target; one overview drawing may therefore contain multiple feeders. Station-jump Pokes use only labels that satisfy the mandatory conditions—an alphanumeric station name and a colored background—before querying the database. They do not use facID. GRAPH_NAME is not used for target naming.",
     "RMU Poke 不在本模块重新定义 RMU 规则：运行时直接读取“环网柜处理”保存的柜名方向、名称排除项和智能标记，并调用同一个 identify_rmus()。识别到柜名后，以 RMU 名称查询 DMS_COMBINED_DEVICE，由 FEEDER_ID 找到所属 DMS_FEEDER_DEVICE，再按 SUBSTATION/SUBCONTROLAREA 生成该 RMU 自己的馈线完整业务名；不依赖 facID。": "This module does not define a second RMU rule set. It reads the name directions, exclusions and smart markers saved by RMU Processing and calls the same identify_rmus(). After a cabinet name is recognized, that RMU name resolves DMS_COMBINED_DEVICE, FEEDER_ID identifies its DMS_FEEDER_DEVICE, and SUBSTATION/SUBCONTROLAREA produce that RMU's own full feeder business name without facID.",
-    "站点跳转示例：DHN-40 → 只取 DHN → SUBSTATION.NAME → SUBAREA_ID → SUBCONTROLAREA.NAME → JED-CTL-DHN → ahref=JED-CTL-DHN.sln.pic.g，对端目标为变电站馈线总图。若站点本身位于显式拓扑叶端，且站点旁有标准环网柜名（如 (14020) 或 14020），柜名唯一，才追加 ?locateLabel=14020&&scaleFlag=true；黄色小尺寸的 240/340/480/120 等运行标注不作为柜名；已有站点 Poke 的同站端子也仅在上述条件全部满足时更新，内部支路不创建或更新站点跳转。": "Station-jump example: DHN-40 -> use only DHN -> SUBSTATION.NAME -> SUBAREA_ID -> SUBCONTROLAREA.NAME -> JED-CTL-DHN -> ahref=JED-CTL-DHN.sln.pic.g, targeting the remote substation feeder overview. If the station label itself is at an explicit topology leaf and a unique adjacent standard RMU name such as (14020) or 14020 is present, append ?locateLabel=14020&&scaleFlag=true. Small yellow operating annotations such as 240/340/480/120 are not cabinet names. An existing same-station terminal Poke is updated only when the same conditions are proven; internal branch labels do not create or update station jumps.",
-    "识别优先级：已有覆盖标签的非 RMU Poke > 线路末端附近标签 > 紧凑背景图形。背景颜色只作视觉信息，不作为必要条件；所有候选必须通过 Oracle 唯一匹配才允许修改。多个相关 Poke 删除多余项只保留一个。": "Recognition priority: existing non-RMU Poke covering the label > label near a line endpoint > compact background geometry. Background color is not required. Every candidate must resolve uniquely in Oracle before modification. Duplicate related Pokes are removed so only one remains.",
+    "站点跳转强制规则：站点 Text 必须是字母+数字格式（如 ANS2-44，纯数字不接受），必须有彩色背景；通过全部条件后才执行原有 SUBSTATION.NAME → SUBAREA_ID → SUBCONTROLAREA.NAME 查询。若旁边存在唯一的括号纯数字（如 (35033)），目标为 JED-NTH-ANS2.sln.pic.g?locateLabel=35033&&scaleFlag=true；没有该数字时直接跳转 JED-NTH-ABN.sln.pic.g。括号数字不属于站点名；条件不满足时不创建或更新站点跳转。": "Mandatory station-jump rules: the station Text must be alphanumeric (for example, ANS2-44; pure numbers are rejected) and have a colored background. Only after all conditions pass does the existing SUBSTATION.NAME -> SUBAREA_ID -> SUBCONTROLAREA.NAME lookup run. If one adjacent parenthesized pure number such as (35033) exists, target JED-NTH-ANS2.sln.pic.g?locateLabel=35033&&scaleFlag=true; without that number, jump directly to JED-NTH-ABN.sln.pic.g. The parenthesized number is not part of the station name; no station jump is created or updated when any condition fails.",
+    "上述条件全部是强制约束：已有 Poke 或几何形状不能替代彩色背景。括号纯数字不唯一时不猜测 locateLabel；数据库唯一匹配成功后才允许修改，多个相关 Poke 仍只保留一个。": "All of the above are mandatory constraints: an existing Poke or geometry cannot replace the colored background. If parenthesized pure numbers are not unique, locateLabel is not guessed. Modification is allowed only after a unique database match, and duplicate related Pokes are still reduced to one.",
     "本页面负责 RMU 基础识别、环网柜组合、智能 RMU 外框改色、RMU 柜名改白、channel_status 状态点，以及柜名/柜型识别；Poke 跳转已独立到左侧“Poke 跳转处理”模块。": "This page handles RMU recognition, grouping, smart-RMU frame color, white RMU names, channel_status positioning, and name/type recognition. Poke jumps have moved to the standalone Poke Jump Processing module.",
 })
 
@@ -2226,4 +2230,17 @@ EN.update({
     "打开 HTML 报告": "Open HTML Report",
     "暂无 HTML 报告": "No HTML Report",
     "全量设备/内容报告": "Full Device / Content Report",
+})
+
+# v2.18.123 Separate semantic standards and geometry repair.
+EN.update({
+    "图元标准检查": "Symbol Standard Check",
+    "只检查服务器标准图元与业务 G 的标准一致性；纠正仅生成 workspace 标准纠正副本，不负责全图拓扑或线路重画": "Check server standard symbols against business G; correction only creates workspace copies and does not analyze global topology or redraw lines",
+    "标准一致性检查与纠正": "Standard Consistency Check & Correction",
+    "生成标准纠正副本": "Create Standard-Corrected Copy",
+    "进入线路正交化": "Open Line Orthogonalization",
+    "线路与拓扑保持不变": "Lines and topology remain unchanged",
+    "服务器标准图元（只读）": "Server Standard Symbols (Read-only)",
+    "待服务器匹配": "Awaiting Server Match",
+    "缺少服务器标准图元": "Server Standard Symbol Missing",
 })

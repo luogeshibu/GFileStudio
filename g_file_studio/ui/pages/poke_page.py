@@ -27,7 +27,7 @@ class PokePage(BasePage):
         help_title, help_html = APP_HELP["poke"]
         super().__init__(
             "Poke 跳转处理",
-            "独立生成/修复 RMU 与站点跳转 Poke；数据库命名和 RMU 识别均复用公共能力。",
+            "独立生成/修复 RMU 与站点跳转 Poke；站点跳转按强制图形条件筛选，数据库查询逻辑保持不变。",
             help_title,
             help_html,
             parent,
@@ -37,7 +37,7 @@ class PokePage(BasePage):
             InfoBanner(
                 "Poke 已从“环网柜处理”独立，facID 不再作为执行前提。RMU Poke 直接复用公共 RMU 识别结果，"
                 "并按每个已识别环网柜名称查询 DMS_COMBINED_DEVICE.FEEDER_ID，再沿 DMS_FEEDER_DEVICE/SUBSTATION/SUBCONTROLAREA "
-                "生成各自的完整馈线目标；一张大图可同时处理多条馈线。站点跳转 Poke 只按标签中的站名关键字查询 SUBSTATION/SUBCONTROLAREA，"
+                "生成各自的完整馈线目标；一张大图可同时处理多条馈线。站点跳转 Poke 独立查找，只有同时满足字母+数字站点名和彩色背景的标签才进入数据库查询，"
                 "本身不使用 facID。GRAPH_NAME 不参与目标名称生成。"
             )
         )
@@ -69,7 +69,7 @@ class PokePage(BasePage):
         mode_box = QGroupBox("跳转类型")
         mode_layout = QVBoxLayout(mode_box)
         self.enable_rmu_poke = QCheckBox(
-            "RMU Poke：环网柜明细图　目标：{区域}-{变电站}-{馈线}-{RMU}.sln.pic.g"
+            "RMU Poke：环网柜明细图　目标：{区域}-{变电站}-{馈线}-{RMU}.com.pic.g"
         )
         self.enable_station_poke = QCheckBox(
             "站点跳转 Poke：变电站馈线总图　目标：{区域}-{变电站}.sln.pic.g"
@@ -92,17 +92,17 @@ class PokePage(BasePage):
         shared_rmu.setObjectName("mutedText")
         recognition_layout.addWidget(shared_rmu)
         station_rule = QLabel(
-            "站点跳转示例：DHN-40 → 只取 DHN → SUBSTATION.NAME → SUBAREA_ID → SUBCONTROLAREA.NAME → "
-            "JED-CTL-DHN → ahref=JED-CTL-DHN.sln.pic.g，对端目标为变电站馈线总图。若站点旁有标准环网柜名（如 (14020) 或 14020），"
-            "且站点本身位于显式拓扑叶端、柜名唯一，则追加 ?locateLabel=14020&&scaleFlag=true；黄色小尺寸的 240/340/480/120 等运行标注不作为柜名。"
-            "已有站点 Poke 的同站端子也仅在上述条件全部满足时更新；内部支路不创建或更新站点跳转。"
+            "站点跳转强制规则：站点 Text 必须是字母+数字格式（如 ANS2-44，纯数字不接受），必须有彩色背景；"
+            "通过全部条件后才执行原有 SUBSTATION.NAME → SUBAREA_ID → SUBCONTROLAREA.NAME 查询。若旁边存在唯一的括号纯数字（如 (35033)），"
+            "目标为 JED-NTH-ANS2.sln.pic.g?locateLabel=35033&&scaleFlag=true；没有该数字时直接跳转 JED-NTH-ABN.sln.pic.g。"
+            "括号数字不属于站点名；条件不满足时不创建或更新站点跳转。"
         )
         station_rule.setWordWrap(True)
         station_rule.setObjectName("mutedText")
         recognition_layout.addWidget(station_rule)
         fallback = QLabel(
-            "识别优先级：已有覆盖标签的非 RMU Poke > 线路末端附近标签 > 紧凑背景图形。背景颜色只作视觉信息，"
-            "不作为必要条件；所有候选必须通过 Oracle 唯一匹配才允许修改。多个相关 Poke 删除多余项只保留一个。"
+            "上述条件全部是强制约束：已有 Poke 或几何形状不能替代彩色背景。"
+            "括号纯数字不唯一时不猜测 locateLabel；数据库唯一匹配成功后才允许修改，多个相关 Poke 仍只保留一个。"
         )
         fallback.setWordWrap(True)
         fallback.setObjectName("mutedText")

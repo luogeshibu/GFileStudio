@@ -35,17 +35,17 @@ def test_single_rule_never_depends_on_source_filename():
     bad_source = Path('anything-at-all.g')
     assert render_single_rmu_rule(
         'JED-NTH-ABH-AH303-RMU.sln.pic.g', '22522'
-    ) == 'JED-NTH-ABH-AH303-22522.sln.pic.g'
+    ) == 'JED-NTH-ABH-AH303-22522.com.pic.g'
     assert build_rmu_detail_filename(
         bad_source, '22522', naming_mode='single',
         naming_rule='JED-NTH-ABH-AH303-RMU.sln.pic.g',
-    ) == 'JED-NTH-ABH-AH303-22522.sln.pic.g'
+    ) == 'JED-NTH-ABH-AH303-22522.com.pic.g'
 
 
 def test_single_rule_accepts_prefix_placeholder_and_real_sample():
-    assert render_single_rmu_rule('JED-NTH-ABH-AH303', '16781') == 'JED-NTH-ABH-AH303-16781.sln.pic.g'
-    assert render_single_rmu_rule('JED-NTH-ABH-AH303-{RMU}.sln.pic.g', '16782') == 'JED-NTH-ABH-AH303-16782.sln.pic.g'
-    assert render_single_rmu_rule('JED-NTH-ABH-AH303-34661.sln.pic.g', '22522') == 'JED-NTH-ABH-AH303-22522.sln.pic.g'
+    assert render_single_rmu_rule('JED-NTH-ABH-AH303', '16781') == 'JED-NTH-ABH-AH303-16781.com.pic.g'
+    assert render_single_rmu_rule('JED-NTH-ABH-AH303-{RMU}.sln.pic.g', '16782') == 'JED-NTH-ABH-AH303-16782.com.pic.g'
+    assert render_single_rmu_rule('JED-NTH-ABH-AH303-34661.sln.pic.g', '22522') == 'JED-NTH-ABH-AH303-22522.com.pic.g'
 
 
 def test_batch_fixed_prefix_extracts_each_file_feeder_independently():
@@ -53,17 +53,17 @@ def test_batch_fixed_prefix_extracts_each_file_feeder_independently():
     assert extract_batch_feeder(Path('JED-NTH-ABH-04.sln.pic.g')) == '04'
     assert render_batch_rmu_rule(
         Path('JED-NTH-ABH-03.sln.pic.g'), 'JED-NTH-ABH-AH3', '22522'
-    ) == 'JED-NTH-ABH-AH303-22522.sln.pic.g'
+    ) == 'JED-NTH-ABH-AH303-22522.com.pic.g'
     assert render_batch_rmu_rule(
         Path('JED-NTH-ABH-04.sln.pic.g'), 'JED-NTH-ABH-AH3', '22522'
-    ) == 'JED-NTH-ABH-AH304-22522.sln.pic.g'
+    ) == 'JED-NTH-ABH-AH304-22522.com.pic.g'
 
 
 def test_batch_template_supports_feeder_and_rmu_tokens():
     rule = 'OTHER-SITE-X{FEEDER}-{RMU}.sln.pic.g'
     assert render_batch_rmu_rule(
         Path('OTHER-AREA-SITE-12.sln.pic.g'), rule, '30834'
-    ) == 'OTHER-SITE-X12-30834.sln.pic.g'
+    ) == 'OTHER-SITE-X12-30834.com.pic.g'
 
 
 def test_batch_bad_filename_skips_only_this_files_pokes():
@@ -90,4 +90,4 @@ def test_single_bad_source_still_creates_poke_when_rule_is_valid():
     assert result.added_count == 1
     assert result.skipped_count == 0
     poke = next(element for element in tree.getroot().iter() if element.tag == 'poke')
-    assert poke.get('ahref') == 'JED-NTH-ABH-AH303-22522.sln.pic.g'
+    assert poke.get('ahref') == 'JED-NTH-ABH-AH303-22522.com.pic.g'

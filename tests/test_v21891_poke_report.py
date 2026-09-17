@@ -78,10 +78,12 @@ def test_poke_report_contains_summary_target_and_skip_reason(tmp_path: Path) -> 
             "Type": "rmu",
             "SourceName": "34661",
             "StationKey": "",
+            "AdjacentRMU": "",
+            "LocateLabel": "",
             "ResolvedBusinessName": "JED-NTH-ABH-AH303",
             "Action": "added",
             "PokeID": "17000001",
-            "TargetAhref": "JED-NTH-ABH-AH303-34661.sln.pic.g",
+            "TargetAhref": "JED-NTH-ABH-AH303-34661.com.pic.g",
             "Confidence": "HIGH",
             "RecognitionSource": "rmu_identification",
             "Reason": "公共 RMU 识别成功，已新增。",
@@ -91,6 +93,8 @@ def test_poke_report_contains_summary_target_and_skip_reason(tmp_path: Path) -> 
             "Type": "station",
             "SourceName": "SALAB-12",
             "StationKey": "SALAB",
+            "AdjacentRMU": "(35033)",
+            "LocateLabel": "35033",
             "ResolvedBusinessName": "",
             "Action": "skipped",
             "PokeID": "",
@@ -107,7 +111,11 @@ def test_poke_report_contains_summary_target_and_skip_reason(tmp_path: Path) -> 
     assert "识别 RMU 总数" in text
     assert "新增 RMU Poke" in text
     assert "成功解析站点跳转" in text
-    assert "JED-NTH-ABH-AH303-34661.sln.pic.g" in text
+    assert "相邻环网柜名" in text
+    assert "跳转目标格式" in text
+    assert "RMU 明细图：{区域}-{变电站}-{馈线}-{RMU}.com.pic.g" in text
+    assert "站点馈线总图：{区域}-{变电站}.sln.pic.g?locateLabel={数字}&&scaleFlag=true" in text
+    assert "JED-NTH-ABH-AH303-34661.com.pic.g" in text
     assert "SALAB-12" in text
     assert "数据库未找到 SUBSTATION.NAME=&#x27;SALAB&#x27;" in text
 

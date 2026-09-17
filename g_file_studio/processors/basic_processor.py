@@ -8,7 +8,6 @@ from typing import Any, Iterable
 
 from g_file_studio.engines.color_engine import ColorRule, apply_line_colors
 from g_file_studio.engines.connection_engine import repair_tree_connections
-from g_file_studio.engines.feeder_title_engine import move_feeder_titles_above_buses
 from g_file_studio.engines.icon_upgrade_engine import analyze_icon_mappings, analyze_icon_pairs, apply_icon_upgrade
 from g_file_studio.engines.rmu_group_engine import enhance_rmu_tree, group_rmu_tree, remove_all_graphic_merges, ungroup_rmu_tree
 from g_file_studio.engines.rmu_identification_engine import identify_rmus, parse_intelligent_markers, parse_name_exclusions
@@ -263,19 +262,9 @@ def _validate_rules(settings: BasicSettings) -> None:
     rmu_name_mode = (settings.rmu_name_resolution_mode or "selected_direction").strip().lower()
     if rmu_name_mode not in {"selected_direction", "auto_cluster"}:
         raise ValueError(f"未知 RMU 柜名识别模式：{settings.rmu_name_resolution_mode}")
-    if rmu_name_mode == "selected_direction":
-        if settings.identify_rmu_name_and_type and not any((
-            settings.rmu_name_top, settings.rmu_name_bottom, settings.rmu_name_left, settings.rmu_name_right
-        )):
-            raise ValueError("启用环网柜名称与柜型识别后，柜名位置至少选择一个方向。")
-        if settings.set_rmu_name_text_white and not any((
-            settings.rmu_name_top, settings.rmu_name_bottom, settings.rmu_name_left, settings.rmu_name_right
-        )):
-            raise ValueError("启用环网柜名称改白后，柜名位置至少选择一个方向。")
-        if settings.add_smart_rmu_poke and not any((
-            settings.rmu_name_top, settings.rmu_name_bottom, settings.rmu_name_left, settings.rmu_name_right
-        )):
-            raise ValueError("启用智能 RMU Poke 跳转后，柜名位置至少选择一个方向。")
+    # The shared RMU recognizer enforces the validated-frame + top-name rule.
+    # Keep accepting the legacy mode value for settings compatibility, but do not
+    # reject a run because obsolete direction checkboxes are empty.
 
     if settings.compare_rmu_ledger and not settings.identify_rmu_name_and_type:
         raise ValueError("启用 RMU 台账对比前，必须先启用 RMU 信息汇总。")
@@ -668,12 +657,6 @@ def process_basic(
     total_connection_removed = 0
     total_connection_changed_elements = 0
     total_connection_changed_attributes = 0
-    total_feeder_title_bus_segments = 0
-    total_feeder_title_bus_groups = 0
-    total_feeder_title_candidates = 0
-    total_feeder_title_moved = 0
-    total_feeder_title_unchanged = 0
-    total_feeder_title_skipped = 0
     total_icon_upgraded_instances = 0
     total_icon_adjusted_lines = 0
     total_icon_already_new = 0
@@ -1216,35 +1199,6 @@ def process_basic(
                 rmu_processing_row["Warnings"] = " | ".join(rmu_processing_warnings)
                 rmu_processing_rows.append(rmu_processing_row)
 
-            if settings.move_feeder_titles_above_bus:
-                feeder_titles = move_feeder_titles_above_buses(tree, input_path)
-                total_feeder_title_bus_segments += feeder_titles.bus_segment_count
-                total_feeder_title_bus_groups += feeder_titles.bus_group_count
-                total_feeder_title_candidates += feeder_titles.candidate_count
-                total_feeder_title_moved += feeder_titles.moved_count
-                total_feeder_title_unchanged += feeder_titles.unchanged_count
-                total_feeder_title_skipped += (
-                    feeder_titles.skipped_no_candidate_count
-                    + feeder_titles.skipped_ambiguous_count
-                    + feeder_titles.skipped_collision_count
-                )
-                log(
-                    f"[馈线名称定位] {input_path.name}：有效水平 Bus "
-                    f"{feeder_titles.bus_segment_count} 条、母线组 {feeder_titles.bus_group_count} 组、"
-                    f"候选 Text {feeder_titles.candidate_count} 个；移动 "
-                    f"{feeder_titles.moved_count} 个、已在目标位置 "
-                    f"{feeder_titles.unchanged_count} 个、跳过 "
-                    f"{feeder_titles.skipped_no_candidate_count + feeder_titles.skipped_ambiguous_count + feeder_titles.skipped_collision_count} 组。"
-                )
-                for move in feeder_titles.moves:
-                    log(
-                        f"  - Text {move.text_id} [{move.text}]：Bus "
-                        f"{','.join(move.bus_ids)}；({move.old_x}, {move.old_y}) → "
-                        f"({move.new_x}, {move.new_y})。"
-                    )
-                for warning in feeder_titles.warnings:
-                    log(f"[馈线名称定位告警] {input_path.name}：{warning}")
-
             if color_rules:
                 color_result = apply_line_colors(tree, input_path, color_rules)
                 total_color_changed += color_result.total_changed
@@ -1407,12 +1361,6 @@ def process_basic(
             f"{total_icon_adjusted_lines} 条、已是新尺寸 {total_icon_already_new} 个、"
             f"未知尺寸跳过 {total_icon_skipped_unknown_size} 个"
         )
-    if settings.move_feeder_titles_above_bus:
-        summary += (
-            f"；馈线名称定位识别有效 Bus {total_feeder_title_bus_segments} 条、母线组 "
-            f"{total_feeder_title_bus_groups} 组，移动 Text {total_feeder_title_moved} 个、"
-            f"已在目标位置 {total_feeder_title_unchanged} 个、跳过 {total_feeder_title_skipped} 组"
-        )
     if settings.repair_connection_points:
         summary += (
             f"；连接点半像素水平对齐设备 {total_connection_aligned_devices} 个、连接线坐标修改 "
@@ -1470,13 +1418,6 @@ def process_basic(
             "channel_status_missing_count": total_channel_status_missing,
             "bus_rmu_frame_removed_count": total_bus_rect_removed,
             "bus_rmu_title_moved_count": total_bus_title_moved,
-            "move_feeder_titles_above_bus_enabled": settings.move_feeder_titles_above_bus,
-            "feeder_title_bus_segment_count": total_feeder_title_bus_segments,
-            "feeder_title_bus_group_count": total_feeder_title_bus_groups,
-            "feeder_title_candidate_count": total_feeder_title_candidates,
-            "feeder_title_moved_count": total_feeder_title_moved,
-            "feeder_title_unchanged_count": total_feeder_title_unchanged,
-            "feeder_title_skipped_count": total_feeder_title_skipped,
             "rmu_identification_enabled": settings.identify_rmu_name_and_type,
             "rmu_identified_count": total_rmu_identified,
             "rmu_named_count": total_rmu_named,

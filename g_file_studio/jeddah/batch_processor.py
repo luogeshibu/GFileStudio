@@ -531,7 +531,7 @@ def process_jeddah_batch(
         "馈线名称上移 + 馈线改实线 + 删除 H.T 文字 + 删除 RMU channel_status 红色状态点 + 清理 RMU 内重复 SMART + "
         "删除相邻 2000.00 / UPDATED_MEASURMENT 字符对 → ID 检查与修复 → 图形边距调整 → 图框添加。"
     )
-    log("[吉达批处理] RMU 柜名识别：自动 Cluster（按组自动判断上/下/左/右并一对一匹配）。")
+    log("[吉达批处理] RMU 柜名识别：严格检查框内三类组成，并只从外框上方按一对一规则匹配。")
     log(f"[吉达批处理] RMU 名称排除字符串：{settings.rmu_name_exclusions or '(无)'}")
 
     # Stage 1: reuse Basic Processing > Graphic Group Processing unchanged.

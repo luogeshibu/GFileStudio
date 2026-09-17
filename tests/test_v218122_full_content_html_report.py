@@ -82,8 +82,5 @@ def test_full_content_excel_and_html_are_generated(tmp_path: Path):
     assert "AnalogSignal" in html_text
 
 
-def test_page_exposes_excel_and_html_open_actions():
-    page = Path("g_file_studio/ui/pages/symbol_inventory_page.py").read_text(encoding="utf-8")
-    assert 'QPushButton("打开详细 Excel")' in page
-    assert 'QPushButton("打开 HTML 报告")' in page
-    assert 'stats.get("html_path", "")' in page
+def test_global_content_analysis_page_is_removed():
+    assert not Path("g_file_studio/ui/pages/symbol_inventory_page.py").exists()

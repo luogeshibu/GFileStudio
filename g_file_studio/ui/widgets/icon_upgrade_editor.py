@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -25,6 +26,7 @@ from g_file_studio.engines.icon_upgrade_engine import (
     parse_icon_definition,
     suggest_icon_pairs,
 )
+from g_file_studio.ui.table_layout import configure_responsive_table
 from g_file_studio.ui.widgets.wheel_safe_combo_box import WheelSafeComboBox
 
 
@@ -55,10 +57,10 @@ class IconUpgradeEditor(QWidget):
         layout.setSpacing(8)
 
         actions = QHBoxLayout()
-        self.add_old = QPushButton("批量添加旧图元 G…")
-        self.add_new = QPushButton("批量添加新图元 G…")
+        self.add_old = QPushButton("批量添加旧图元 G 文件")
+        self.add_new = QPushButton("批量添加新图元 G 文件")
         self.auto_pair = QPushButton("智能自动配对")
-        self.manual_pair = QPushButton("手动配对…")
+        self.manual_pair = QPushButton("手动配对")
         self.manual_pair.setToolTip(
             "文件名不需要一致。选择任意旧图元行后点击这里，或不选行直接打开配对窗口，"
             "再从已上传的新图元列表中明确指定 OLD → NEW。"
@@ -77,6 +79,10 @@ class IconUpgradeEditor(QWidget):
             self.clear,
             self.analyze,
         ):
+            # Keep action captions intact and prevent the button from being
+            # compressed until Qt elides the label when the window is resized.
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+            button.setMinimumWidth(button.sizeHint().width() + 8)
             actions.addWidget(button)
         actions.addStretch(1)
         layout.addLayout(actions)
@@ -97,6 +103,7 @@ class IconUpgradeEditor(QWidget):
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
+        configure_responsive_table(self.table)
         self.table.setMinimumHeight(240)
         self.table.cellDoubleClicked.connect(lambda _row, _col: self._pair_selected())
         layout.addWidget(self.table)

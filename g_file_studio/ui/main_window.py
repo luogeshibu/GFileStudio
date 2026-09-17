@@ -26,8 +26,8 @@ from g_file_studio.ui.pages import BasicPage, FramePage, HelpPage, IdPage, Margi
 from g_file_studio.ui.pages.poke_page import PokePage
 from g_file_studio.ui.pages.database_page import DatabasePage
 from g_file_studio.ui.pages.site_profile_page import SiteProfilePage
-from g_file_studio.ui.pages.symbol_inventory_page import SymbolInventoryPage
 from g_file_studio.ui.pages.jeddah_batch_page import JeddahBatchPage
+from g_file_studio.ui.pages.orthogonalize_page import OrthogonalizePage
 from g_file_studio.ui.theme import build_app_style
 from g_file_studio.ui.widgets import WheelSafeComboBox
 from g_file_studio.ui.widgets.remote_g_source import RemoteGSourceWidget
@@ -59,13 +59,12 @@ class MainWindow(QMainWindow):
         self.database_page = DatabasePage(self.user_settings)
         self.site_profile_page = SiteProfilePage(self.user_settings)
         self.jeddah_batch_page = JeddahBatchPage(self.user_settings)
-        self.symbol_inventory_page = SymbolInventoryPage(self.user_settings)
+        self.orthogonalize_page = OrthogonalizePage(self.user_settings)
         self.pages = [
             self.database_page,
             SmallElementPage(self.user_settings),
             IdPage(self.user_settings),
             self.site_profile_page,
-            self.symbol_inventory_page,
             RmuPage(self.user_settings),
             PokePage(self.user_settings),
             BasicPage(self.user_settings),
@@ -73,18 +72,19 @@ class MainWindow(QMainWindow):
             MarginPage(self.user_settings),
             FramePage(self.user_settings),
             self.jeddah_batch_page,
+            self.orthogonalize_page,
             HelpPage(),
         ]
         # Presentation-only rename: keep the protected BasicPage implementation and
         # all settings/processor keys unchanged while exposing the clearer module name.
-        basic_title = self.pages[7].findChild(QLabel, "pageTitle")
+        basic_title = self.pages[6].findChild(QLabel, "pageTitle")
         if basic_title is not None:
             basic_title.setText("通用基础处理")
         # Symbol standards are shared state.  Saving/restoring/deleting an ACTIVE
         # standard must update the already-created Jeddah page immediately instead
         # of leaving the profile combo with startup-time cached contents.
         self.site_profile_page.activeProfileChanged.connect(self.jeddah_batch_page.refresh_profiles)
-        self.site_profile_page.activeProfileChanged.connect(self.symbol_inventory_page.refresh_profiles)
+        self.site_profile_page.orthogonalizeRequested.connect(lambda: self._select_page(11))
         self.site_profile_page.connectionSettingsRequested.connect(lambda: self._select_page(0))
         for page in self.pages:
             self.stack.addWidget(page)
@@ -102,7 +102,7 @@ class MainWindow(QMainWindow):
         self.nav.currentRowChanged.connect(self._change_page)
         # Restore the last business module the operator actually used. Utility pages
         # such as Connections/Help do not overwrite this preference; on first launch
-        # G 图形内容解析 remains the safe default business landing page.
+        # 图元标准检查 remains the safe default business landing page.
         self._restore_last_business_page()
 
         root.addWidget(sidebar)
@@ -152,6 +152,8 @@ class MainWindow(QMainWindow):
             "recent_paths/frame/output_directory",
             "jeddah_batch/output_directory",
             "recent_paths/jeddah_batch/output_directory",
+            "orthogonalize/output_directory",
+            "recent_paths/orthogonalize/output_directory",
         )
         for key in managed_keys:
             if self.user_settings.get_value(key).strip():
@@ -164,25 +166,25 @@ class MainWindow(QMainWindow):
         1: "small_elements",
         2: "id_rules",
         3: "symbol_standard",
-        4: "symbol_inventory",
-        5: "rmu",
-        6: "poke",
-        7: "basic",
-        8: "merge",
-        9: "margin",
-        10: "frame",
-        11: "jeddah_batch",
+        4: "rmu",
+        5: "poke",
+        6: "basic",
+        7: "merge",
+        8: "margin",
+        9: "frame",
+        10: "jeddah_batch",
+        11: "orthogonalize",
     }
 
     def _restore_last_business_page(self) -> None:
         page_id = self.user_settings.get_value(self.LAST_BUSINESS_PAGE_KEY).strip()
         page_index = next(
             (index for index, stable_id in self.BUSINESS_PAGE_IDS.items() if stable_id == page_id),
-            4,
+            3,
         )
-        if page_index == 4 and page_id not in self.BUSINESS_PAGE_IDS.values():
-            # First launch / stale setting: G 图形内容解析 remains the default.
-            self._select_page(4)
+        if page_index == 3 and page_id not in self.BUSINESS_PAGE_IDS.values():
+            # First launch / stale setting: 图元标准检查 remains the default.
+            self._select_page(3)
             return
         self._select_page(page_index)
 
@@ -263,38 +265,32 @@ class MainWindow(QMainWindow):
         # 不修改任何页面/处理器的业务调用关系。
         navigation_sections = [
             (
-                "数据与分析",
-                "data_analysis",
-                [
-                    ("G 图形内容解析", "综合解析业务 G 文件中的设备、状态图元、量测/信号、图元引用及其他对象；已配置标准同时参与分类与校验", 4),
-                ],
-            ),
-            (
                 "检查与标准",
                 "validation_standard",
                 [
                     ("异常小尺寸图元检测", "检测 ConnectLine、FeedLine、Bus、BusDis 中 w/h 同时过小的疑似残留短线图元；通过首列勾选单选/多选/全选后统一执行处理", 1),
                     ("ID 检查与修复", "全局 ID 规则中心：维护模板、扫描覆盖并强制修复格式异常或重复 ID", 2),
-                    ("图元标准检查", "通用图元标准检查与安全纠正：检查模式只读；纠正模式仅对 ACTIVE 标准已定义图元生成 workspace 副本，并保持可可靠解析的 ConnectLine 电气锚点不动", 3),
+                    ("图元标准检查", "只检查服务器标准图元与业务 G 的标准一致性；纠正仅生成 workspace 标准纠正副本，不负责全图拓扑或线路重画", 3),
                 ],
             ),
             (
                 "图形处理",
                 "graphic_processing",
                 [
-                    ("环网柜处理", "独立处理环网柜组合/取消组合、增强操作，以及柜名与柜型识别", 5),
-                    ("Poke 跳转处理", "独立生成/修复 RMU 与站点跳转 Poke；复用公共 RMU 识别、Oracle 数据库及站点 Poke 参考属性", 6),
-                    ("通用基础处理", "执行通用属性、同类图元版本升级、馈线标题、连接点和线路/母线颜色处理；涉及 ID 时强制使用全局模板", 7),
-                    ("馈线图合并", "按用户选择顺序合并多个馈线 G 图", 8),
-                    ("图形边距调整", "调整主体四边距，并同步适配内置图框", 9),
-                    ("图框添加", "添加 SLD 外框、标题和签字栏", 10),
+                    ("环网柜处理", "独立处理环网柜组合/取消组合、增强操作，以及柜名与柜型识别", 4),
+                    ("Poke 跳转处理", "独立生成/修复 RMU 与站点跳转 Poke；复用公共 RMU 识别、Oracle 数据库及站点 Poke 参考属性", 5),
+                    ("通用基础处理", "执行通用属性、同类图元版本升级、馈线标题、连接点和线路/母线颜色处理；涉及 ID 时强制使用全局模板", 6),
+                    ("馈线图合并", "按用户选择顺序合并多个馈线 G 图", 7),
+                    ("图形边距调整", "调整主体四边距，并同步适配内置图框", 8),
+                    ("图框添加", "添加 SLD 外框、标题和签字栏", 9),
+                    ("线路正交化", "按单个 G 文件的线路结构处理连接点对齐、线路横平竖直和安全重画", 11),
                 ],
             ),
             (
                 "现场批处理",
                 "site_batch",
                 [
-                    ("吉达馈线批处理", "Jeddah 专用：第一步彻底取消图形组合（删除全部 <Merge>、RMU 外框置底），再批量删除异常小元素、SMART/SMR 红框、SMART 图元校正 + SMR 智能清理/转换 + 转换后图元复检、RMU 柜名自动 Cluster 识别 + 白色 + 字号50 + 上边框上方10居中、删除 RMU channel_status 红色状态点、Bus 外框清理、馈线名称上移、FeedLine 统一实线、删除 H.T、清理同柜重复 SMART、相邻 2000.00 + UPDATED_MEASURMENT 成对删除、ID 检查与修复、图形边距调整并添加图框", 11),
+                    ("吉达馈线批处理", "Jeddah 专用：第一步彻底取消图形组合（删除全部 <Merge>、RMU 外框置底），再批量删除异常小元素、SMART/SMR 红框、SMART 图元校正 + SMR 智能清理/转换 + 转换后图元复检、RMU 柜名严格按外框内三类组成并只从上方识别 + 白色 + 字号50 + 上边框上方10居中、删除 RMU channel_status 红色状态点、Bus 外框清理、馈线名称上移、FeedLine 统一实线、删除 H.T、清理同柜重复 SMART、相邻 2000.00 + UPDATED_MEASURMENT 成对删除、ID 检查与修复、图形边距调整并添加图框", 10),
                 ],
             ),
         ]

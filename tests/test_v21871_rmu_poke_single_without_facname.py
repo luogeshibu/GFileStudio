@@ -22,7 +22,7 @@ def test_single_fixed_rule_without_facname_value_still_renders():
         render_facname_rmu_rule(
             'JED-NTH-ABH-AH303-{RMU}-JED.sln.pic.g', '', '34661'
         )
-        == 'JED-NTH-ABH-AH303-34661-JED.sln.pic.g'
+        == 'JED-NTH-ABH-AH303-34661-JED.com.pic.g'
     )
 
 
@@ -74,4 +74,4 @@ def test_apply_smart_rmu_pokes_succeeds_without_facname_when_template_does_not_u
     )
     assert res.added_count == 1
     poke = [e for e in tree.getroot().iter() if e.tag == 'poke'][0]
-    assert poke.get('ahref') == 'JED-NTH-ABH-AH303-34661-JED.sln.pic.g'
+    assert poke.get('ahref') == 'JED-NTH-ABH-AH303-34661-JED.com.pic.g'
