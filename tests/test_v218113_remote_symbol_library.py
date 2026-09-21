@@ -103,8 +103,8 @@ def test_remote_symbol_library_exact_match_incremental_cache_and_change(tmp_path
     assert second.changed_names == []
     old_hash = str(second.matched_records[name]["sha256"])
 
-    # A metadata-only touch invalidates the cache and re-downloads, but must not
-    # create a false standard-version change when the bytes are identical.
+    # A metadata-only touch is irrelevant to this catalog manager. The filename
+    # still exists, so the cached definition and its classification are reused.
     _FakeReadOnlySshClient.records[remote_path] = (source, 101)
     touched = service.sync_expected(
         host="172.16.21.27",
@@ -113,8 +113,11 @@ def test_remote_symbol_library_exact_match_incremental_cache_and_change(tmp_path
         password="secret",
         expected_names=[name],
     )
-    assert touched.downloaded == 1
+    assert touched.downloaded == 0
+    assert touched.reused == 1
     assert touched.changed_names == []
+    assert touched.updated_files[0]["name"] == name
+    assert touched.updated_files[0]["mtime_epoch"] == 101
     assert str(touched.matched_records[name]["sha256"]) == old_hash
 
     _icon(source, width=36, pin_y=6, body_id="Circuit_Breaker_SMART")
@@ -126,10 +129,12 @@ def test_remote_symbol_library_exact_match_incremental_cache_and_change(tmp_path
         password="secret",
         expected_names=[name],
     )
-    assert third.downloaded == 1
-    assert name in third.changed_names
-    assert str(third.matched_records[name]["sha256"]) != old_hash
-    assert third.matched_records[name]["width"] == 36
+    assert third.downloaded == 0
+    assert third.reused == 1
+    assert third.changed_names == []
+    assert third.updated_files[0]["mtime_epoch"] == 102
+    assert str(third.matched_records[name]["sha256"]) == old_hash
+    assert third.matched_records[name]["width"] == 30
 
 
 def test_remote_symbol_library_rejects_different_content_duplicate_basename(tmp_path: Path, monkeypatch):
@@ -174,6 +179,82 @@ def test_remote_symbol_library_parse_failure_is_isolated_and_not_auto_matched(tm
     assert bad_name in result.errors
     assert bad_name not in result.matched_records
     assert good_name in result.matched_records
+
+
+def test_remote_symbol_library_restores_complete_inventory_after_restart(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(remote_library_module, "ReadOnlySshClient", _FakeReadOnlySshClient)
+    bad_name = "Broken_Status.zt.icn.g"
+    good_name = "Circuit_Breaker_SMART.zwk.icn.g"
+    bad = tmp_path / "remote" / bad_name
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_text("<not-a-valid-icon>", encoding="utf-8")
+    good = _icon(tmp_path / "remote" / good_name, body_id="Circuit_Breaker_SMART")
+    _FakeReadOnlySshClient.records = {
+        f"{DEFAULT_REMOTE_SYMBOL_ROOT}/status/{bad_name}": (bad, 500),
+        f"{DEFAULT_REMOTE_SYMBOL_ROOT}/breaker_dis/{good_name}": (good, 500),
+    }
+    service = RemoteSymbolLibraryService(cache_root=tmp_path / "cache")
+    result = service.sync_all(
+        host="server", port=22, username="user", password="pass"
+    )
+    assert result.scanned_remote_files == 2
+    assert len(result.server_file_records) == 2
+    assert len(result.matched_records) == 1
+
+    restarted = RemoteSymbolLibraryService(cache_root=tmp_path / "cache")
+    snapshot = restarted.load_cached_sync_snapshot(
+        host="server", root=DEFAULT_REMOTE_SYMBOL_ROOT
+    )
+    assert int(snapshot["scanned_remote_files"]) == 2
+    assert len(snapshot["server_file_records"]) == 2
+    assert len(snapshot["matched_records"]) == 1
+    assert any(
+        row.get("name") == bad_name and row.get("sync_status") == "ERROR"
+        for row in snapshot["server_file_records"]
+    )
+
+
+def test_remote_symbol_library_restores_classification_marker_after_restart(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(remote_library_module, "ReadOnlySshClient", _FakeReadOnlySshClient)
+    name = "Fuse_NON_SMART.zwk.icn.g"
+    remote_path = f"{DEFAULT_REMOTE_SYMBOL_ROOT}/breaker_dis/{name}"
+    source = _icon(tmp_path / "remote" / name, body_id="Fuse_NON_SMART")
+    _FakeReadOnlySshClient.records = {remote_path: (source, 550)}
+
+    service = RemoteSymbolLibraryService(cache_root=tmp_path / "cache")
+    service.sync_all(host="server", port=22, username="user", password="pass")
+    assert service.update_classification_marker(
+        host="server",
+        root=DEFAULT_REMOTE_SYMBOL_ROOT,
+        remote_path=remote_path,
+        marker="FUSE",
+    )
+
+    restarted = RemoteSymbolLibraryService(cache_root=tmp_path / "cache")
+    snapshot = restarted.load_cached_sync_snapshot(
+        host="server", root=DEFAULT_REMOTE_SYMBOL_ROOT
+    )
+    row = next(item for item in snapshot["server_file_records"] if item["name"] == name)
+    assert row["classification_marker"] == "FUSE"
+    assert snapshot["matched_records"][name]["classification_marker"] == "FUSE"
+
+
+def test_remote_symbol_library_counts_only_files_with_exact_g_extension(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(remote_library_module, "ReadOnlySshClient", _FakeReadOnlySshClient)
+    good_name = "Circuit_Breaker_SMART.zwk.icn.g"
+    preview_name = good_name + ".png"
+    good = _icon(tmp_path / "remote" / good_name, body_id="Circuit_Breaker_SMART")
+    preview = tmp_path / "remote" / preview_name
+    preview.write_bytes(b"preview")
+    _FakeReadOnlySshClient.records = {
+        f"{DEFAULT_REMOTE_SYMBOL_ROOT}/breaker_dis/{good_name}": (good, 600),
+        f"{DEFAULT_REMOTE_SYMBOL_ROOT}/breaker_dis/{preview_name}": (preview, 600),
+    }
+    result = RemoteSymbolLibraryService(cache_root=tmp_path / "cache").sync_all(
+        host="server", port=22, username="user", password="pass"
+    )
+    assert result.scanned_remote_files == 1
+    assert [row["name"] for row in result.server_file_records] == [good_name]
 
 
 def test_locked_profile_server_update_creates_unlocked_next_version_and_preserves_history(tmp_path: Path, monkeypatch):

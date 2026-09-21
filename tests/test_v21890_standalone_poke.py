@@ -75,7 +75,7 @@ def test_existing_station_poke_is_reused_deduplicated_and_copies_jm2_reference_p
     pokes = [e for e in list(layer) if e.tag == 'poke']
     assert len(pokes) == 1
     poke = pokes[0]
-    assert poke.get('ahref') == 'JED-CTL-DHN.sln.pic.g'
+    assert poke.get('ahref') == 'JED-CTL-DHN.sln.pic.g?locateLabel=AH340&&scaleFlag=true'
     for key, value in _STATION_JUMP_POKE_REFERENCE_ATTRS.items():
         assert poke.get(key) == value, key
     assert poke.get('gfs_station_name') == 'DHN'

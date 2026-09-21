@@ -18,10 +18,13 @@ _DETAIL_HEADERS = [
     "File",
     "Type",
     "SourceName",
+    "NameElementID",
+    "FrameElementID",
     "StationKey",
     "AdjacentRMU",
     "LocateLabel",
     "ResolvedBusinessName",
+    "CurrentStation",
     "TargetFormat",
     "Action",
     "PokeID",
@@ -82,6 +85,7 @@ def _source_text(value: object, *, english: bool) -> str:
             "existing_poke": "Existing Poke",
             "rmu_identification": "Shared RMU identification",
             "background_color": "Colored background",
+            "station_interval": "Station interval suffix",
             "locate_label": "Adjacent parenthesized RMU label",
             "file_precondition": "File precondition",
         }.get(key, str(value or ""))
@@ -89,6 +93,7 @@ def _source_text(value: object, *, english: bool) -> str:
         "existing_poke": "已有 Poke 覆盖",
         "rmu_identification": "公共 RMU 识别",
         "background_color": "彩色背景",
+        "station_interval": "站点间隔后缀",
         "locate_label": "相邻括号环网柜名",
         "file_precondition": "文件前置条件",
     }.get(key, str(value or ""))
@@ -138,6 +143,7 @@ def write_poke_reports(
         ("Station Pokes added" if english else "新增站点跳转 Poke", statistics.get("station_added", 0)),
         ("Station Pokes updated" if english else "更新/复用站点跳转 Poke", statistics.get("station_updated", 0)),
         ("Station Pokes skipped" if english else "站点 Poke 未加跳转", statistics.get("station_skipped", 0)),
+        ("Excluded by classification" if english else "分类标记排除站点名称", statistics.get("station_classification_excluded", 0)),
         ("Duplicate station Pokes removed" if english else "删除重复站点跳转 Poke", statistics.get("station_duplicate_removed", 0)),
     ]
     card_html = "".join(
@@ -160,6 +166,7 @@ def write_poke_reports(
         "StationAdded",
         "StationUpdated",
         "StationSkipped",
+        "StationClassificationExcluded",
         "DuplicatesRemoved",
         "Status",
         "Reason",
@@ -178,6 +185,7 @@ def write_poke_reports(
         "StationAdded": "Station added" if english else "新增站点跳转 Poke",
         "StationUpdated": "Station updated" if english else "更新站点跳转 Poke",
         "StationSkipped": "Station skipped" if english else "站点 Poke 未加跳转",
+        "StationClassificationExcluded": "Classification excluded" if english else "分类标记排除",
         "DuplicatesRemoved": "Duplicates removed" if english else "删除重复 Poke",
         "Status": "Status" if english else "状态",
         "Reason": "Reason" if english else "说明",
@@ -193,10 +201,13 @@ def write_poke_reports(
         "File": "File" if english else "文件",
         "Type": "Type" if english else "类型",
         "SourceName": "Source name" if english else "识别名称/站点标签原文",
+        "NameElementID": "Name element ID" if english else "名称元素 ID",
+        "FrameElementID": "Frame element ID" if english else "环网柜框元素 ID",
         "StationKey": "Station key" if english else "站名关键字",
         "AdjacentRMU": "Adjacent RMU name" if english else "相邻环网柜名",
         "LocateLabel": "Locate label" if english else "定位号",
         "ResolvedBusinessName": "Resolved business name" if english else "数据库解析业务名",
+        "CurrentStation": "Current station" if english else "当前变电站判定",
         "TargetFormat": "Target format" if english else "跳转目标格式",
         "Action": "Action" if english else "处理结果",
         "PokeID": "Poke ID",
@@ -233,7 +244,7 @@ def write_poke_reports(
         + selection_style()
         + "</style></head><body>"
         f"<h1>{html.escape(title)}</h1>"
-        f"<div class='note'>{html.escape('报告记录每个 RMU/站点跳转 Poke 的识别名称、相邻环网柜名、定位号、目标格式、写入 ahref、处理动作，以及所有未加跳转的原因。' if not english else 'The report records each RMU/station-jump Poke name, adjacent RMU name, locate label, target format, written ahref, action, and every reason a jump was not added.')}</div>"
+        f"<div class='note'>{html.escape('报告记录每个 RMU/站点跳转 Poke 的识别名称元素 ID、环网柜框元素 ID、Poke ID、相邻环网柜名、定位号、目标格式、写入 ahref、处理动作，以及所有未加跳转的原因。' if not english else 'The report records the source name-element ID, RMU frame-element ID, Poke ID, adjacent RMU name, locate label, target format, written ahref, action, and every reason a jump was not added.')}</div>"
         f"<h2>{html.escape(summary_title)}</h2><div class='cards'>{card_html}</div>"
         f"<h2>{html.escape(file_title)}</h2>"
         + selection_bar()

@@ -171,6 +171,7 @@ def download_stable_files(
     log: Callable[[str], None] | None = None,
     max_attempts: int = 3,
     clear_target: bool = True,
+    progress: Callable[[int], None] | None = None,
 ) -> list[Path]:
     """把当前所选远程 G 文件下载为稳定的本地只读快照。"""
     selected = list(selected_files)
@@ -189,6 +190,8 @@ def download_stable_files(
             old.unlink(missing_ok=True)
 
     result: list[Path] = []
+    if progress:
+        progress(0)
     with ReadOnlySshClient(host, port, username, password) as client:
         for index, listed in enumerate(selected, 1):
             local_path = target_dir / listed.name
@@ -221,6 +224,8 @@ def download_stable_files(
                 )
             log(f"  完成：{local_path.name} | SHA256={_sha256(local_path)}")
             result.append(local_path)
+            if progress:
+                progress(round(index * 100 / len(selected)))
     return result
 
 

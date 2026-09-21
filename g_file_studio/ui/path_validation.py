@@ -20,10 +20,11 @@ def validate_input_source(
     display_name: str = "输入",
     require_compound_suffix: bool = False,
     log=None,
+    progress=None,
 ) -> bool:
     if source.mode() == InputMode.REMOTE_SSH:
         try:
-            path = source.prepare_for_processing(log=log)
+            path = source.prepare_for_processing(log=log, progress=progress)
         except Exception as exc:
             return _warn(parent, "SSH 远程输入准备失败", str(exc))
         return validate_existing_directory(parent, path, f"{display_name}远程快照目录")

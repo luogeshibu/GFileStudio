@@ -130,9 +130,9 @@ class InputSourceSelector(QWidget):
             return self.dir_row.path()
         return self.remote.cache_dir()
 
-    def prepare_for_processing(self, *, log=None) -> Path:
+    def prepare_for_processing(self, *, log=None, progress=None) -> Path:
         if self.mode() == InputMode.REMOTE_SSH:
-            return self.remote.prepare_selected(log=log)
+            return self.remote.prepare_selected(log=log, progress=progress)
         return self.path()
 
     def set_mode(self, mode: InputMode, *, persist: bool = True) -> None:

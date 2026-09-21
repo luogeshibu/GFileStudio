@@ -19,15 +19,35 @@ def _standard_library_root() -> Path:
     return root
 
 
+def _server_revision_label(timestamp: str) -> str:
+    """Return the user-facing revision for the applied server snapshot.
+
+    The persisted timestamp is UTC and deliberately has no filesystem/version
+    semantics.  It is only the point-in-time label of the server standard that
+    the user explicitly applied.
+    """
+    raw = str(timestamp or "").strip()
+    if not raw:
+        return ""
+    try:
+        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        value = value.astimezone(timezone.utc)
+        return value.strftime("%Y%m%d-%H%M%S")
+    except ValueError:
+        return re.sub(r"[^0-9]", "", raw)[:14]
+
+
 
 @dataclass
 class SiteSmartProfile:
-    """User-confirmed RMU device profile for one site.
+    """Server-standard RMU device profile for one site.
 
     Historical JSON files from v2.18.29-v2.18.32 only contain the two SMART devrefs;
     the NORMAL fields therefore deliberately have defaults so old profiles continue
     to load unchanged. For authoritative profiles, geometry is rebuilt from the
-    user-uploaded managed symbol-definition G files; legacy learned geometry is kept
+    managed server symbol-definition G files; legacy learned geometry is kept
     only for backward compatibility with profiles that have not yet been migrated.
     """
 
@@ -64,7 +84,7 @@ class SiteSmartProfile:
     geometry_templates: dict[str, list[dict[str, object]]] = field(default_factory=dict)
     custom_symbols: list[dict[str, object]] = field(default_factory=list)
     symbol_catalog: dict[str, dict[str, object]] = field(default_factory=dict)
-    # Authoritative server-derived icon-definition G files.  Files are copied into
+    # Authoritative server-derived icon-definition G files. Files are copied into
     # a version-independent managed library so application upgrades cannot delete
     # the standard. Legacy local records remain readable for migration only.
     managed_standard_files: list[dict[str, object]] = field(default_factory=list)
@@ -80,6 +100,9 @@ class SiteSmartProfile:
     profile_version: int = 1
     history: list[dict[str, object]] = field(default_factory=list)
     updated_at: str = ""
+    # User-facing marker for the server snapshot explicitly applied to this
+    # current standard. Internal profile_version/history remain rollback-only.
+    server_standard_revision: str = ""
 
     def normalized(self) -> "SiteSmartProfile":
         managed_files = _normalize_managed_standard_files(self.managed_standard_files)
@@ -92,6 +115,7 @@ class SiteSmartProfile:
         effective_geometry = _effective_geometry_payload(self.geometry_templates, normalized_catalog)
         for devref, rows in _geometry_templates_from_managed_standard_files(managed_files).items():
             effective_geometry[devref] = rows
+        normalized_updated_at = self.updated_at.strip() or datetime.now(timezone.utc).isoformat(timespec="seconds")
         return SiteSmartProfile(
             profile_name=self.profile_name.strip(),
             site_name=self.site_name.strip(),
@@ -133,8 +157,18 @@ class SiteSmartProfile:
             discovery_decisions=_normalize_discovery_decisions(self.discovery_decisions),
             profile_version=max(1, int(self.profile_version or 1)),
             history=[dict(item) for item in self.history if isinstance(item, dict)],
-            updated_at=self.updated_at.strip() or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            updated_at=normalized_updated_at,
+            server_standard_revision=(
+                self.server_standard_revision.strip()
+                or _server_revision_label(normalized_updated_at)
+            ),
         )
+
+    @property
+    def server_standard_label(self) -> str:
+        """Return the stable label shown by every module using this standard."""
+        revision = self.server_standard_revision.strip() or _server_revision_label(self.updated_at)
+        return revision or "未标记"
 
     @property
     def smart_ready(self) -> bool:
@@ -172,13 +206,14 @@ class SiteSmartProfile:
 
 
 def resolve_jeddah_role_devrefs(profile: SiteSmartProfile | None) -> dict[str, str]:
-    """Resolve the six Jeddah RMU electrical roles from the generic standard table.
+    """Resolve Jeddah RMU switch roles from the generic standard table.
 
     v2.18.105 removed the six privileged UI rows and stores authoritative standards
-    as generic ``custom_symbols``.  Jeddah batch still needs SMART/NORMAL LBS,
-    Circuit Breaker and grounding-switch devrefs, so derive those roles from the
-    user-confirmed generic metadata.  Explicit SMART/NORMAL rows win; an ANY row is
-    only used as a fallback for both scopes.  Legacy fixed fields remain supported.
+    as generic ``custom_symbols``.  Jeddah batch needs SMART/NORMAL LBS and Circuit
+    Breaker categories, so derive those roles from the user-confirmed generic
+    metadata. Ground-disconnector fields remain only for old profile compatibility;
+    they are not used for replacement. Explicit SMART/NORMAL rows win; an ANY row
+    is only used as a fallback for both scopes. Legacy fixed fields remain supported.
     """
     empty = {
         "smart_lbs": "", "smart_breaker": "", "smart_ground": "",
@@ -258,10 +293,8 @@ def jeddah_role_issues(profile: SiteSmartProfile | None) -> list[str]:
     labels = (
         ("smart_lbs", "SMART LBS"),
         ("smart_breaker", "SMART Circuit Breaker"),
-        ("smart_ground", "SMART 接地刀闸"),
         ("normal_lbs", "NORMAL LBS"),
         ("normal_breaker", "NORMAL Circuit Breaker"),
-        ("normal_ground", "NORMAL 接地刀闸"),
     )
     return [label for key, label in labels if not str(roles.get(key, "")).strip()]
 
@@ -452,6 +485,8 @@ def _normalize_custom_symbols(value: object) -> list[dict[str, object]]:
             "match_value": match_value,
             "enabled": bool(raw.get("enabled", True)),
             "source_file": str(raw.get("source_file", "")).strip(),
+            "classification_marker": str(raw.get("classification_marker", raw.get("category_marker", "")) or "").strip(),
+            "category_marker": str(raw.get("classification_marker", raw.get("category_marker", "")) or "").strip(),
             # Optional business-G discovery evidence. These fields are informational
             # only and never override the authoritative uploaded standard file.
             "observed_devref": observed_devref,
@@ -476,6 +511,8 @@ def _normalize_symbol_catalog(value: object) -> dict[str, dict[str, object]]:
         row["element_tag"] = str(row.get("element_tag", "")).strip()
         row["element_id"] = str(row.get("element_id", "")).strip()
         row["source_file"] = str(row.get("source_file", "")).strip()
+        row["classification_marker"] = str(row.get("classification_marker", row.get("category_marker", "")) or "").strip()
+        row["category_marker"] = row["classification_marker"]
         row["p_NameString"] = str(row.get("p_NameString", "")).strip()
         row["key_name"] = str(row.get("key_name", "")).strip()
         try:
@@ -551,7 +588,7 @@ def _normalize_managed_standard_files(value: object) -> list[dict[str, object]]:
             "pins": list(row.get("pins", [])) if isinstance(row.get("pins", []), list) else [],
             "pin_ids": [str(item) for item in row.get("pin_ids", [])] if isinstance(row.get("pin_ids", []), list) else [],
             "pin_indices": [str(item) for item in row.get("pin_indices", [])] if isinstance(row.get("pin_indices", []), list) else [],
-            "standard_source": str(row.get("standard_source", "manual") or "manual").strip().lower(),
+            "standard_source": str(row.get("standard_source", "server") or "server").strip().lower(),
             "remote_host": str(row.get("remote_host", "")).strip(),
             "remote_root": str(row.get("remote_root", "")).strip(),
             "remote_path": str(row.get("remote_path", "")).strip(),
@@ -559,6 +596,8 @@ def _normalize_managed_standard_files(value: object) -> list[dict[str, object]]:
             "remote_mtime": int(row.get("remote_mtime", 0) or 0),
             "cache_path": str(row.get("cache_path", "")).strip(),
             "synced_at": str(row.get("synced_at", "")).strip(),
+            "classification_marker": str(row.get("classification_marker", row.get("category_marker", "")) or "").strip(),
+            "category_marker": str(row.get("classification_marker", row.get("category_marker", "")) or "").strip(),
         })
     result.sort(key=lambda row: (str(row.get("devref", "")).casefold(), str(row.get("sha256", ""))))
     return result
@@ -589,7 +628,7 @@ def _symbol_catalog_from_managed_standard_files(records: object) -> dict[str, di
             "sha256": str(row.get("sha256", "")).strip(),
             "managed_path": str(row.get("managed_path", "")).strip(),
             "relative_path": relative_path_from_record(row),
-            "standard_source": str(row.get("standard_source", "manual") or "manual").strip().lower(),
+            "standard_source": str(row.get("standard_source", "server") or "server").strip().lower(),
             "remote_host": str(row.get("remote_host", "")).strip(),
             "remote_root": str(row.get("remote_root", "")).strip(),
             "remote_path": str(row.get("remote_path", "")).strip(),
@@ -597,6 +636,8 @@ def _symbol_catalog_from_managed_standard_files(records: object) -> dict[str, di
             "remote_mtime": int(row.get("remote_mtime", 0) or 0),
             "cache_path": str(row.get("cache_path", "")).strip(),
             "synced_at": str(row.get("synced_at", "")).strip(),
+            "classification_marker": str(row.get("classification_marker", row.get("category_marker", "")) or "").strip(),
+            "category_marker": str(row.get("classification_marker", row.get("category_marker", "")) or "").strip(),
         }
     return catalog
 
@@ -606,12 +647,12 @@ def _geometry_templates_from_managed_standard_files(records: object) -> dict[str
 
 
 def authoritative_standard_catalog(profile: SiteSmartProfile) -> dict[str, dict[str, object]]:
-    """Return only the managed user-uploaded standards; never business-scan data."""
+    """Return only the managed server-synchronized standards; never business-scan data."""
     return _symbol_catalog_from_managed_standard_files(profile.managed_standard_files)
 
 
 def authoritative_geometry_templates(profile: SiteSmartProfile) -> dict[str, list[dict[str, object]]]:
-    """Build exact geometry solely from the uploaded standard icon definitions."""
+    """Build exact geometry solely from the synchronized server icon definitions."""
     return _geometry_templates_from_managed_standard_files(profile.managed_standard_files)
 
 
@@ -690,6 +731,8 @@ class SiteProfileService:
             path = settings.ini_path.parent / "site_smart_profiles.json"
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._profiles_cache: dict[str, SiteSmartProfile] | None = None
+        self._profiles_cache_mtime_ns: int | None = None
         # v2.18.119: Git-style immutable symbol repository.  The repository is
         # local-only; it never writes to the remote server.
         self.repository = SymbolStandardRepository(_standard_library_root().parent / "SymbolRepository")
@@ -708,9 +751,10 @@ class SiteProfileService:
         return text or "standard"
 
     def prepare_standard_file_records(self, files: list[Path]) -> list[dict[str, object]]:
-        """Validate local or server-downloaded authoritative symbol G files.
+        """Validate server-downloaded authoritative symbol G files.
 
-        Business SLD G files are not accepted here.  Every selected file must be a
+        Business SLD G files and manually uploaded files are not accepted by the
+        current UI. Every selected file must be a
         parseable icon-definition G containing a body with w/h/AlignCenter.
         Multiple historical versions are supported through Profile versions, but
         one ACTIVE standard cannot contain two different files for the same devref.
@@ -751,7 +795,7 @@ class SiteProfileService:
                 "pins": [[float(x), float(y)] for x, y in definition.pins],
                 "pin_ids": [str(item) for item in definition.pin_ids],
                 "pin_indices": [str(item) for item in definition.pin_indices],
-                "standard_source": "manual",
+            "standard_source": "server",
             })
         if failures:
             raise ValueError(
@@ -921,10 +965,21 @@ class SiteProfileService:
         return payload if isinstance(payload, dict) else {}
 
     def load_profiles(self) -> dict[str, SiteSmartProfile]:
+        try:
+            mtime_ns = self.path.stat().st_mtime_ns if self.path.is_file() else None
+        except OSError:
+            mtime_ns = None
+        if self._profiles_cache is not None and mtime_ns == self._profiles_cache_mtime_ns:
+            # Callers historically mutate the returned profile before an explicit
+            # write.  Keep the same shallow-copy behavior while avoiding repeated
+            # JSON parsing and normalization during one page refresh.
+            return dict(self._profiles_cache)
         payload = self._read_payload()
         raw_profiles = payload.get("profiles", {}) if isinstance(payload, dict) else {}
         profiles: dict[str, SiteSmartProfile] = {}
         if not isinstance(raw_profiles, dict):
+            self._profiles_cache = profiles
+            self._profiles_cache_mtime_ns = mtime_ns
             return profiles
         for _key, raw in raw_profiles.items():
             if not isinstance(raw, dict):
@@ -935,6 +990,8 @@ class SiteProfileService:
                 continue
             if profile.profile_name:
                 profiles[profile.profile_name] = profile
+        self._profiles_cache = profiles
+        self._profiles_cache_mtime_ns = mtime_ns
         return profiles
 
     def _write(
@@ -958,6 +1015,10 @@ class SiteProfileService:
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self.path)
+        # The next read must rebuild from the just-written JSON.  Do not keep
+        # mutable profile objects alive across an explicit persistence boundary.
+        self._profiles_cache = None
+        self._profiles_cache_mtime_ns = None
 
     def get_global_profile_selection(self, *, auto_initialize: bool = True) -> tuple[str, int | None]:
         """Return the user-selected global execution standard.
@@ -994,6 +1055,16 @@ class SiteProfileService:
         if not name or version is None:
             return None
         return self.get_profile_version(name, version)
+
+    def get_current_server_standard(self, *, auto_initialize: bool = False) -> SiteSmartProfile | None:
+        """Return the one server standard explicitly applied by the user.
+
+        Profile versions remain an internal persistence and rollback mechanism,
+        but callers in the public workflow must use this method instead of
+        selecting a version independently.  A server read/cache operation does
+        not move this pointer; only the explicit manual-update action does.
+        """
+        return self.get_global_profile(auto_initialize=auto_initialize)
 
     def set_global_profile_version(self, profile_name: str, version: int, *, validate: bool = True) -> SiteSmartProfile:
         name = str(profile_name or "").strip()
@@ -1110,6 +1181,7 @@ class SiteProfileService:
             "profile_version": int(version or 1),
             "history": [],
             "updated_at": str(raw.get("updated_at", "")),
+            "server_standard_revision": str(raw.get("server_standard_revision", "")),
         }
         return SiteSmartProfile(**values).normalized()
 
@@ -1203,6 +1275,7 @@ class SiteProfileService:
             profile.profile_version = max(1, profile.profile_version)
             profile.history = list(profile.history)
         profile.updated_at = now
+        profile.server_standard_revision = _server_revision_label(now)
         profile = self._materialize_standard_files(profile)
         profile = self._freeze_repository_version(profile)
         profile = profile.normalized()
@@ -1243,6 +1316,7 @@ class SiteProfileService:
         profile.profile_version = int(current.profile_version) + 1
         profile.locked = False
         profile.updated_at = now
+        profile.server_standard_revision = _server_revision_label(now)
         profile = self._materialize_standard_files(profile)
         profile = self._freeze_repository_version(profile)
         profile = profile.normalized()
@@ -1360,6 +1434,7 @@ class SiteProfileService:
             if str(row.get("original_name", "")).strip()
         ]
         next_profile.updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        next_profile.server_standard_revision = _server_revision_label(next_profile.updated_at)
         next_profile = self._materialize_standard_files(next_profile.normalized())
         next_profile = self._freeze_repository_version(next_profile).normalized()
         profiles[name] = next_profile

@@ -43,7 +43,7 @@ class MainWindow(QMainWindow):
         self.language_manager = LanguageManager(user_settings, self)
         cleanup_expired_runs()
         self._clear_legacy_managed_output_paths()
-        self.setWindowTitle("G File Studio · NARI 国际业务部")
+        self.setWindowTitle("G File Studio · 吉达现场")
         self.resize(1280, 860)
         self.setMinimumSize(1040, 720)
 
@@ -102,7 +102,7 @@ class MainWindow(QMainWindow):
         self.nav.currentRowChanged.connect(self._change_page)
         # Restore the last business module the operator actually used. Utility pages
         # such as Connections/Help do not overwrite this preference; on first launch
-        # 图元标准检查 remains the safe default business landing page.
+        # 服务器图元同步管理 remains the safe default business landing page.
         self._restore_last_business_page()
 
         root.addWidget(sidebar)
@@ -117,7 +117,7 @@ class MainWindow(QMainWindow):
         # English runtime translation is event-driven. Do not periodically walk the
         # entire application tree: pages may contain thousands of table cells, and a
         # 300 ms full-tree refresh causes visible lag when switching modules.
-        self.statusBar().showMessage("NARI 国际业务部 · G 文件处理工具已就绪。鼠标停留在控件上可查看提示，按 F1 打开帮助中心。")
+        self.statusBar().showMessage("NARI 国际业务部 · 吉达现场 · G 文件处理工具已就绪。鼠标停留在控件上可查看提示，按 F1 打开帮助中心。")
         self._apply_language(self.language_manager.language)
         self._install_help_shortcut()
 
@@ -183,7 +183,7 @@ class MainWindow(QMainWindow):
             3,
         )
         if page_index == 3 and page_id not in self.BUSINESS_PAGE_IDS.values():
-            # First launch / stale setting: 图元标准检查 remains the default.
+            # First launch / stale setting: 服务器图元同步管理 remains the default.
             self._select_page(3)
             return
         self._select_page(page_index)
@@ -223,14 +223,14 @@ class MainWindow(QMainWindow):
         brand_text_layout.setSpacing(1)
         title = QLabel("G File Studio")
         title.setObjectName("brandTitle")
-        subtitle = QLabel("NARI 国际业务部")
+        subtitle = QLabel("NARI 国际业务部 · 吉达现场")
         subtitle.setObjectName("brandSubtitle")
         brand_text_layout.addWidget(title)
         brand_text_layout.addWidget(subtitle)
         brand_row.addWidget(badge)
         brand_row.addWidget(brand_text, 1)
 
-        grid_badge = QLabel("G 文件处理工具")
+        grid_badge = QLabel("G 文件处理工具 · 吉达现场")
         grid_badge.setObjectName("gridModeBadge")
         grid_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         grid_badge.setFixedHeight(32)
@@ -270,7 +270,7 @@ class MainWindow(QMainWindow):
                 [
                     ("异常小尺寸图元检测", "检测 ConnectLine、FeedLine、Bus、BusDis 中 w/h 同时过小的疑似残留短线图元；通过首列勾选单选/多选/全选后统一执行处理", 1),
                     ("ID 检查与修复", "全局 ID 规则中心：维护模板、扫描覆盖并强制修复格式异常或重复 ID", 2),
-                    ("图元标准检查", "只检查服务器标准图元与业务 G 的标准一致性；纠正仅生成 workspace 标准纠正副本，不负责全图拓扑或线路重画", 3),
+                    ("服务器图元同步管理", "同步远程服务器图元信息并维护本地分类标记；不执行图元标准检查、纠正或拓扑分析", 3),
                 ],
             ),
             (

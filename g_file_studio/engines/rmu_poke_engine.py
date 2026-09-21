@@ -30,6 +30,14 @@ class _Box:
     def height(self) -> float:
         return self.bottom - self.top
 
+    @property
+    def center_x(self) -> float:
+        return (self.left + self.right) / 2.0
+
+    @property
+    def center_y(self) -> float:
+        return (self.top + self.bottom) / 2.0
+
 
 @dataclass
 class SmartRmuPokeChange:
@@ -48,6 +56,7 @@ class SmartRmuPokeChange:
 class SmartRmuPokeRecord:
     rmu_name: str
     rect_id: str = ""
+    name_text_id: str = ""
     poke_id: str = ""
     target_file: str = ""
     action: str = "skipped"
@@ -449,7 +458,10 @@ def _find_name_element(root: ET.Element, rmu_name: str, rect_box: _Box) -> ET.El
 
     RMU identity/name selection itself remains delegated to identify_rmus(); this
     helper only locates the already-recognized name Text so the Poke click area
-    can precisely wrap the cabinet name rather than the whole cabinet.
+    can precisely wrap the cabinet name rather than the whole cabinet.  The
+    lookup repeats the same fixed rule: only Text above the top frame edge is
+    eligible, and the nearest candidate wins.  This is important when the same
+    rendered value appears more than once in one drawing.
     """
     candidates: list[tuple[float, ET.Element]] = []
     for element in root.iter():
@@ -460,10 +472,15 @@ def _find_name_element(root: ET.Element, rmu_name: str, rect_box: _Box) -> ET.El
         box = _box(element)
         if box is None:
             continue
-        dx = max(rect_box.left - box.right, 0.0, box.left - rect_box.right)
-        dy = max(rect_box.top - box.bottom, 0.0, box.top - rect_box.bottom)
-        distance = (dx * dx + dy * dy) ** 0.5
-        candidates.append((distance, element))
+        gap = rect_box.top - box.bottom
+        if not (
+            -20.0 <= gap <= 120.0
+            and box.center_y < rect_box.top
+            and rect_box.left - 20.0 <= box.center_x <= rect_box.right + 20.0
+        ):
+            continue
+        score = max(0.0, gap) + abs(box.center_x - rect_box.center_x) * 0.08
+        candidates.append((score, element))
     if not candidates:
         return None
     candidates.sort(key=lambda item: item[0])
@@ -746,6 +763,7 @@ def apply_smart_rmu_pokes(
                 result.records.append(SmartRmuPokeRecord(
                     rmu_name=(item.name or "").strip(),
                     rect_id=item.rect_id or "",
+                    name_text_id=item.name_text_id,
                     action="skipped",
                     reason=reason,
                 ))
@@ -773,6 +791,7 @@ def apply_smart_rmu_pokes(
             result.records.append(SmartRmuPokeRecord(
                 rmu_name="",
                 rect_id=item.rect_id or "",
+                name_text_id=item.name_text_id,
                 action="skipped",
                 reason=reason,
             ))
@@ -784,6 +803,7 @@ def apply_smart_rmu_pokes(
             result.records.append(SmartRmuPokeRecord(
                 rmu_name=name,
                 rect_id=item.rect_id or "",
+                name_text_id=item.name_text_id,
                 action="skipped",
                 reason=reason,
             ))
@@ -792,7 +812,13 @@ def apply_smart_rmu_pokes(
             result.skipped_count += 1
             reason = f"智能 RMU {name!r} 缺少 rect ID，无法安全定位 Poke 所属 Layer。"
             result.warnings.append(reason)
-            result.records.append(SmartRmuPokeRecord(rmu_name=name, action="skipped", reason=reason))
+            result.records.append(SmartRmuPokeRecord(
+                rmu_name=name,
+                rect_id=item.rect_id or "",
+                name_text_id=item.name_text_id,
+                action="skipped",
+                reason=reason,
+            ))
             continue
 
         rect_box = _Box(item.rect_x, item.rect_y, item.rect_x + item.rect_w, item.rect_y + item.rect_h)
@@ -802,6 +828,7 @@ def apply_smart_rmu_pokes(
             result.warnings.append(reason)
             result.records.append(SmartRmuPokeRecord(
                 rmu_name=name, rect_id=item.rect_id, action="skipped", reason=reason,
+                name_text_id=item.name_text_id,
             ))
             continue
         layer = _find_layer_for_rect(root, item.rect_id)
@@ -810,7 +837,11 @@ def apply_smart_rmu_pokes(
             reason = f"智能 RMU {name!r}（rect {item.rect_id}）无法定位所属 Layer，已跳过 Poke。"
             result.warnings.append(reason)
             result.records.append(SmartRmuPokeRecord(
-                rmu_name=name, rect_id=item.rect_id, action="skipped", reason=reason,
+                rmu_name=name,
+                rect_id=item.rect_id,
+                name_text_id=item.name_text_id,
+                action="skipped",
+                reason=reason,
             ))
             continue
         try:
@@ -844,6 +875,7 @@ def apply_smart_rmu_pokes(
             result.records.append(SmartRmuPokeRecord(
                 rmu_name=name,
                 rect_id=item.rect_id,
+                name_text_id=item.name_text_id,
                 action="skipped",
                 reason=reason,
             ))
@@ -858,6 +890,7 @@ def apply_smart_rmu_pokes(
             result.records.append(SmartRmuPokeRecord(
                 rmu_name=name,
                 rect_id=item.rect_id,
+                name_text_id=item.name_text_id,
                 target_file=target_file,
                 action="skipped",
                 reason=reason,
@@ -920,6 +953,7 @@ def apply_smart_rmu_pokes(
         result.records.append(SmartRmuPokeRecord(
             rmu_name=name,
             rect_id=item.rect_id,
+            name_text_id=item.name_text_id,
             poke_id=(poke.get("id") or "").strip(),
             target_file=target_file,
             action=action,

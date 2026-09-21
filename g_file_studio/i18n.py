@@ -43,8 +43,11 @@ SUPPORTED_LANGUAGES = (LANG_ZH, LANG_EN)
 # preserved.
 EN: dict[str, str] = {
     "G File Studio · NARI 国际业务部": "G File Studio · NARI International Business Division",
+    "G File Studio · 吉达现场": "G File Studio · Jeddah Site",
     "NARI 国际业务部": "NARI International Business Division",
+    "NARI 国际业务部 · 吉达现场": "NARI International Business Division · Jeddah Site",
     "G 文件处理工具": "G File Processing Tool",
+    "G 文件处理工具 · 吉达现场": "G File Processing Tool · Jeddah Site",
     "语言 / Language": "Language",
     "中文": "Chinese",
     "English": "English",
@@ -504,6 +507,7 @@ EN: dict[str, str] = {
     "填写": "Fill",
     "日期默认是当前日期；点击日历按钮可修改。": "The date defaults to today; click the calendar button to change it.",
     "NARI 国际业务部 · G 文件处理工具已就绪。鼠标停留在控件上可查看提示，按 F1 打开帮助中心。": "NARI International Business Division · G File Processing Tool is ready. Hover over controls for tips; press F1 for Help Center.",
+    "NARI 国际业务部 · 吉达现场 · G 文件处理工具已就绪。鼠标停留在控件上可查看提示，按 F1 打开帮助中心。": "NARI International Business Division · Jeddah Site · G File Processing Tool is ready. Hover over controls for tips; press F1 for Help Center.",
     "任务已成功完成，详细结果请查看日志。": "Task completed successfully. See the log for details.",
     "任务已完成，但部分文件处理失败或存在告警，请查看日志和报告。": "Task completed with failed files or warnings. See the log and reports for details.",
     "处理过程中发生错误，详情请查看日志区域。": "An error occurred during processing. See the log for details.",
@@ -1816,6 +1820,23 @@ EN.update({
 
 # v2.18.42 Generic Symbol Standard Check module.
 EN.update({
+    "服务器图元同步管理": "Server Symbol Sync Manager",
+    "服务器图元同步管理帮助": "Server Symbol Sync Manager Help",
+    "同步服务器图元信息": "Sync Server Symbol Information",
+    "打开本地图元缓存": "Open Local Symbol Cache",
+    "导出分类标记 JSON": "Export Classification Markers JSON",
+    "载入分类标记 JSON": "Import Classification Markers JSON",
+    "服务器图元同步与分类管理": "Server Symbol Sync & Classification",
+    "远程服务器图元信息同步（严格只读）": "Remote Server Symbol Sync (Read-only)",
+    "服务器图元目录（左侧为序号）：尚未同步": "Server symbol catalog (serial numbers at left): Not synchronized",
+    "搜索服务器图元": "Search Server Symbols",
+    "服务器图元更新检查": "Server Symbol Update Check",
+    "分类标记": "Classification Marker",
+    "服务器图元更新检查帮助": "Server Symbol Update Check Help",
+    "服务器图元更新检查输出目录": "Server Symbol Update Check Output Directory",
+    "尚未执行服务器图元更新检查。": "No server symbol update check has been run yet.",
+    "服务器图元更新检查输入": "Server Symbol Update Check Input",
+    "服务器图元更新检查完成": "Server Symbol Update Check Complete",
     "图元标准检查": "Symbol Standard Check",
     "用标准 G 文件建立可复用图元标准；可先只检查所选 G 文件是否符合标准，也可在确认后执行检查并升级。": "Build reusable symbol standards from confirmed G files. Check selected G files in read-only mode first, then optionally check and upgrade them.",
     "当前图元标准": "Current Symbol Standard",
@@ -2065,8 +2086,8 @@ EN.update({
     "请至少选择一种 Poke 跳转类型。": "Select at least one Poke jump type.",
     "Poke 已从“环网柜处理”独立，facID 不再作为执行前提。RMU Poke 直接复用公共 RMU 识别结果，并按每个已识别环网柜名称查询 DMS_COMBINED_DEVICE.FEEDER_ID，再沿 DMS_FEEDER_DEVICE/SUBSTATION/SUBCONTROLAREA 生成各自的完整馈线目标；一张大图可同时处理多条馈线。站点跳转 Poke 独立查找，只有同时满足字母+数字站点名和彩色背景的标签才进入数据库查询，本身不使用 facID。GRAPH_NAME 不参与目标名称生成。": "Poke processing is independent from RMU Processing and no longer requires facID. RMU Pokes reuse shared RMU recognition, resolve each recognized cabinet through DMS_COMBINED_DEVICE.FEEDER_ID, then follow DMS_FEEDER_DEVICE/SUBSTATION/SUBCONTROLAREA to build that RMU's own feeder target; one overview drawing may therefore contain multiple feeders. Station-jump Pokes use only labels that satisfy the mandatory conditions—an alphanumeric station name and a colored background—before querying the database. They do not use facID. GRAPH_NAME is not used for target naming.",
     "RMU Poke 不在本模块重新定义 RMU 规则：运行时直接读取“环网柜处理”保存的柜名方向、名称排除项和智能标记，并调用同一个 identify_rmus()。识别到柜名后，以 RMU 名称查询 DMS_COMBINED_DEVICE，由 FEEDER_ID 找到所属 DMS_FEEDER_DEVICE，再按 SUBSTATION/SUBCONTROLAREA 生成该 RMU 自己的馈线完整业务名；不依赖 facID。": "This module does not define a second RMU rule set. It reads the name directions, exclusions and smart markers saved by RMU Processing and calls the same identify_rmus(). After a cabinet name is recognized, that RMU name resolves DMS_COMBINED_DEVICE, FEEDER_ID identifies its DMS_FEEDER_DEVICE, and SUBSTATION/SUBCONTROLAREA produce that RMU's own full feeder business name without facID.",
-    "站点跳转强制规则：站点 Text 必须是字母+数字格式（如 ANS2-44，纯数字不接受），必须有彩色背景；通过全部条件后才执行原有 SUBSTATION.NAME → SUBAREA_ID → SUBCONTROLAREA.NAME 查询。若旁边存在唯一的括号纯数字（如 (35033)），目标为 JED-NTH-ANS2.sln.pic.g?locateLabel=35033&&scaleFlag=true；没有该数字时直接跳转 JED-NTH-ABN.sln.pic.g。括号数字不属于站点名；条件不满足时不创建或更新站点跳转。": "Mandatory station-jump rules: the station Text must be alphanumeric (for example, ANS2-44; pure numbers are rejected) and have a colored background. Only after all conditions pass does the existing SUBSTATION.NAME -> SUBAREA_ID -> SUBCONTROLAREA.NAME lookup run. If one adjacent parenthesized pure number such as (35033) exists, target JED-NTH-ANS2.sln.pic.g?locateLabel=35033&&scaleFlag=true; without that number, jump directly to JED-NTH-ABN.sln.pic.g. The parenthesized number is not part of the station name; no station jump is created or updated when any condition fails.",
-    "上述条件全部是强制约束：已有 Poke 或几何形状不能替代彩色背景。括号纯数字不唯一时不猜测 locateLabel；数据库唯一匹配成功后才允许修改，多个相关 Poke 仍只保留一个。": "All of the above are mandatory constraints: an existing Poke or geometry cannot replace the colored background. If parenthesized pure numbers are not unique, locateLabel is not guessed. Modification is allowed only after a unique database match, and duplicate related Pokes are still reduced to one.",
+    "站点跳转强制规则：站点 Text 必须是字母+数字格式（如 ANS2-44，纯数字不接受），必须有彩色背景；通过全部条件后才执行原有 SUBSTATION.NAME → SUBAREA_ID → SUBCONTROLAREA.NAME 查询。若旁边存在唯一的括号环网柜名（如 (35033)），优先写入该环网柜定位号；如果没有环网柜名，则把站点间隔后缀按 AH3+数字转换（如 RDS-09 → AH309），生成 JED-CTL-RDS.sln.pic.g?locateLabel=AH309&&scaleFlag=true。括号数字不属于站点名；条件不满足时不创建或更新站点跳转。": "Mandatory station-jump rules: the station Text must be alphanumeric (for example, ANS2-44; pure numbers are rejected) and have a colored background. Only after all conditions pass does the existing SUBSTATION.NAME -> SUBAREA_ID -> SUBCONTROLAREA.NAME lookup run. A unique adjacent RMU name is preferred as the locate label; when no RMU name is available, the numeric station suffix is converted with the AH3 prefix, for example RDS-09 -> AH309, producing JED-CTL-RDS.sln.pic.g?locateLabel=AH309&&scaleFlag=true. The parenthesized number is not part of the station name; no station jump is created or updated when any condition fails.",
+    "上述条件全部是强制约束：已有 Poke 或几何形状不能替代彩色背景。括号环网柜名不唯一时不猜测 locateLabel；只有没有环网柜名时才使用站点间隔后缀备用规则。数据库唯一匹配成功后才允许修改，多个相关 Poke 仍只保留一个。": "All of the above are mandatory constraints: an existing Poke or geometry cannot replace the colored background. Ambiguous adjacent RMU names do not produce a guessed locateLabel; the station-interval fallback is used only when no RMU name is available. Modification is allowed only after a unique database match, and duplicate related Pokes are still reduced to one.",
     "本页面负责 RMU 基础识别、环网柜组合、智能 RMU 外框改色、RMU 柜名改白、channel_status 状态点，以及柜名/柜型识别；Poke 跳转已独立到左侧“Poke 跳转处理”模块。": "This page handles RMU recognition, grouping, smart-RMU frame color, white RMU names, channel_status positioning, and name/type recognition. Poke jumps have moved to the standalone Poke Jump Processing module.",
 })
 

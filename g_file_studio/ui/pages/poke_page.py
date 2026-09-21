@@ -8,6 +8,10 @@ from PySide6.QtWidgets import QCheckBox, QGroupBox, QLabel, QMessageBox, QPushBu
 
 from g_file_studio.processors.poke_processor import PokeProcessingSettings, process_pokes
 from g_file_studio.services.database_service import OracleDatabaseService
+from g_file_studio.services.remote_symbol_library import (
+    DEFAULT_REMOTE_SYMBOL_ROOT,
+    RemoteSymbolLibraryService,
+)
 from g_file_studio.services.paths import default_workspace
 from g_file_studio.services.run_history import begin_managed_run, configure_managed_output
 from g_file_studio.services.user_settings_service import UserSettingsService
@@ -94,15 +98,18 @@ class PokePage(BasePage):
         station_rule = QLabel(
             "站点跳转强制规则：站点 Text 必须是字母+数字格式（如 ANS2-44，纯数字不接受），必须有彩色背景；"
             "通过全部条件后才执行原有 SUBSTATION.NAME → SUBAREA_ID → SUBCONTROLAREA.NAME 查询。若旁边存在唯一的括号纯数字（如 (35033)），"
-            "目标为 JED-NTH-ANS2.sln.pic.g?locateLabel=35033&&scaleFlag=true；没有该数字时直接跳转 JED-NTH-ABN.sln.pic.g。"
-            "括号数字不属于站点名；条件不满足时不创建或更新站点跳转。"
+            "优先写入该环网柜定位号；如果没有环网柜名，则把站点间隔后缀按 AH3+数字转换（如 RDS-09 → AH309），"
+            "生成 JED-CTL-RDS.sln.pic.g?locateLabel=AH309&&scaleFlag=true。括号数字不属于站点名；"
+            "环网柜名称距离站点超过 200 时不作为 locateLabel。Poke 还会读取服务器图元同步管理的本地分类标记，"
+            "FUSE、LBS、AR、SEC、Transformer_OH 图元周边 300 以内的名称直接排除；条件不满足时不创建或更新站点跳转。"
         )
         station_rule.setWordWrap(True)
         station_rule.setObjectName("mutedText")
         recognition_layout.addWidget(station_rule)
         fallback = QLabel(
             "上述条件全部是强制约束：已有 Poke 或几何形状不能替代彩色背景。"
-            "括号纯数字不唯一时不猜测 locateLabel；数据库唯一匹配成功后才允许修改，多个相关 Poke 仍只保留一个。"
+            "括号环网柜名不唯一时不猜测 locateLabel；只有没有环网柜名时才使用站点间隔后缀备用规则。"
+            "数据库唯一匹配成功后才允许修改，多个相关 Poke 仍只保留一个。"
         )
         fallback.setWordWrap(True)
         fallback.setObjectName("mutedText")
@@ -132,6 +139,34 @@ class PokePage(BasePage):
         markers = self.user_settings.get_value("basic/rmu/intelligent_markers", "SMART, SMR").strip() or "SMART, SMR"
         return positions, exclusions, markers
 
+    def _classification_marker_entries(self) -> tuple[tuple[str, str, str], ...]:
+        """Read operator-owned markers from the local symbol-sync cache only."""
+        try:
+            cfg = self.source.remote.config()
+            root = str(
+                self.user_settings.get_value(
+                    "site_profile/remote_symbol_library_root",
+                    DEFAULT_REMOTE_SYMBOL_ROOT,
+                )
+                or DEFAULT_REMOTE_SYMBOL_ROOT
+            ).strip() or DEFAULT_REMOTE_SYMBOL_ROOT
+            entries = RemoteSymbolLibraryService().load_classification_marker_entries(
+                host=str(cfg.get("host", "")).strip(),
+                root=root,
+            )
+            return tuple(
+                (
+                    str(entry.get("file_name", "") or ""),
+                    str(entry.get("devref", "") or ""),
+                    str(entry.get("classification_marker", "") or ""),
+                )
+                for entry in entries
+                if str(entry.get("classification_marker", "") or "").strip()
+            )
+        except Exception:
+            # Missing local sync cache must not block ordinary Poke processing.
+            return ()
+
     def run(self) -> None:
         if not validate_input_source(self, self.source, display_name="Poke 跳转处理输入"):
             return
@@ -145,6 +180,7 @@ class PokePage(BasePage):
         self.user_settings.set_value("poke/enable_rmu", self.enable_rmu_poke.isChecked())
         self.user_settings.set_value("poke/enable_station", self.enable_station_poke.isChecked())
         positions, exclusions, markers = self._shared_rmu_settings()
+        classification_marker_entries = self._classification_marker_entries()
         output_dir = begin_managed_run(self.output_path, "poke", "process")
         settings = PokeProcessingSettings(
             source_path=Path(self.source.path()),
@@ -155,6 +191,7 @@ class PokePage(BasePage):
             rmu_name_positions=positions,
             rmu_name_exclusions=exclusions,
             rmu_intelligent_markers=markers,
+            classification_marker_entries=classification_marker_entries,
         )
         self.last_html_report = None
         self.report_button.setEnabled(False)
@@ -178,7 +215,8 @@ class PokePage(BasePage):
                 f"识别 RMU {stats.get('rmu_identified_total', 0)} 个，智能 RMU {stats.get('smart_rmu_identified_total', 0)} 个；"
                 f"新增 RMU Poke {stats.get('rmu_added', 0)} 个；"
                 f"站点跳转候选 {stats.get('station_candidates', 0)} 个，成功解析 {stats.get('station_resolved_count', 0)} 个，"
-                f"新增站点跳转 Poke {stats.get('station_added', 0)} 个，未加跳转 {stats.get('station_skipped', 0)} 个。"
+                f"新增站点跳转 Poke {stats.get('station_added', 0)} 个，未加跳转 {stats.get('station_skipped', 0)} 个，"
+                f"其中分类标记排除 {stats.get('station_classification_excluded', 0)} 个。"
             )
 
     def open_last_report(self) -> None:

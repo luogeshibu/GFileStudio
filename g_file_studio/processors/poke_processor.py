@@ -33,6 +33,9 @@ class PokeProcessingSettings:
     rmu_name_positions: tuple[str, ...] = ("top",)
     rmu_name_exclusions: str = ""
     rmu_intelligent_markers: str = "SMART, SMR"
+    # (server file name, devref, local classification marker), loaded from the
+    # server-symbol sync cache by the UI. Poke processing never queries SSH.
+    classification_marker_entries: tuple[tuple[str, str, str], ...] = ()
 
 
 def _write_tree_atomic(tree: ET.ElementTree, output_path: Path) -> None:
@@ -100,10 +103,19 @@ def process_pokes(
         "station_unchanged": 0,
         "station_duplicate_removed": 0,
         "station_skipped": 0,
+        "station_classification_excluded": 0,
     }
 
     excluded = parse_name_exclusions(settings.rmu_name_exclusions)
     markers = parse_intelligent_markers(settings.rmu_intelligent_markers)
+    if settings.classification_marker_entries:
+        log(
+            f"[Poke/分类标记] 已读取本地服务器图元同步缓存中的 "
+            f"{len(settings.classification_marker_entries)} 条分类标记；"
+            "FUSE、LBS、AR、SEC、Transformer_OH 图元周边 300 以内的站点名称将排除。"
+        )
+    else:
+        log("[Poke/分类标记] 未找到本地服务器图元分类标记，未执行分类标记排除。")
 
     for index, input_path in enumerate(files, 1):
         if progress:
@@ -125,6 +137,7 @@ def process_pokes(
             "StationAdded": 0,
             "StationUpdated": 0,
             "StationSkipped": 0,
+            "StationClassificationExcluded": 0,
             "DuplicatesRemoved": 0,
             "Status": "OK",
             "Reason": "",
@@ -238,6 +251,8 @@ def process_pokes(
                     "File": input_path.name,
                     "Type": "rmu",
                     "SourceName": record.rmu_name,
+                    "NameElementID": record.name_text_id,
+                    "FrameElementID": record.rect_id,
                     "StationKey": "",
                     "AdjacentRMU": "",
                     "LocateLabel": "",
@@ -278,6 +293,7 @@ def process_pokes(
                 # graphic-constraint exception; it does not inspect line
                 # geometry or connection references.
                 allow_same_station_terminals=True,
+                classification_marker_entries=settings.classification_marker_entries,
             )
             stats["station_candidates"] += station_result.candidate_count
             stats["station_resolved_count"] += station_result.eligible_count
@@ -286,17 +302,19 @@ def process_pokes(
             stats["station_unchanged"] += station_result.unchanged_count
             stats["station_duplicate_removed"] += station_result.removed_duplicate_count
             stats["station_skipped"] += station_result.skipped_count
+            stats["station_classification_excluded"] += station_result.classification_excluded_count
             file_summary["StationCandidates"] = station_result.candidate_count
             file_summary["StationResolved"] = station_result.eligible_count
             file_summary["StationAdded"] = station_result.added_count
             file_summary["StationUpdated"] = station_result.updated_count
             file_summary["StationSkipped"] = station_result.skipped_count
+            file_summary["StationClassificationExcluded"] = station_result.classification_excluded_count
             file_summary["DuplicatesRemoved"] = station_result.removed_duplicate_count
             log(
                 f"[站点跳转 Poke] {input_path.name}：不依赖 facID；候选 {station_result.candidate_count}，"
                 f"新增 {station_result.added_count}，更新 {station_result.updated_count}，"
                 f"已符合 {station_result.unchanged_count}，删除重复 {station_result.removed_duplicate_count}，"
-                f"跳过 {station_result.skipped_count}。"
+                f"跳过 {station_result.skipped_count}（分类标记排除 {station_result.classification_excluded_count}）。"
             )
             for change in station_result.changes:
                 log(
@@ -309,10 +327,13 @@ def process_pokes(
                     "File": input_path.name,
                     "Type": "station",
                     "SourceName": record.label_text,
+                    "NameElementID": record.text_id,
+                    "FrameElementID": "",
                     "StationKey": record.station_key,
                     "AdjacentRMU": record.adjacent_rmu_names,
                     "LocateLabel": record.locate_label,
                     "ResolvedBusinessName": record.station_full_name,
+                    "CurrentStation": "是（不添加）" if record.current_station else "",
                     "Action": record.action,
                     "PokeID": record.poke_id,
                     "TargetAhref": record.target_file,

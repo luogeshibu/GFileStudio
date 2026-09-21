@@ -119,7 +119,7 @@ def test_blank_facid_no_longer_blocks_station_poke(tmp_path: Path) -> None:
     assert result.statistics["processed_count"] == 1
     tree = ET.parse(out / source.name)
     poke = next(e for e in tree.getroot().iter() if e.tag == "poke")
-    assert poke.get("ahref") == "JED-CTL-DHN.sln.pic.g"
+    assert poke.get("ahref") == "JED-CTL-DHN.sln.pic.g?locateLabel=AH340&&scaleFlag=true"
 
 
 def test_process_rmu_pokes_blank_facid_resolves_each_rmu_name(tmp_path: Path, monkeypatch) -> None:

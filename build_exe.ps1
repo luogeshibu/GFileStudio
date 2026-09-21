@@ -4,6 +4,7 @@ Set-Location $ProjectRoot
 
 $VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $IconPath = Join-Path $ProjectRoot "resources\icons\app.ico"
+$PySideCodecvtPath = Join-Path $VenvPython "..\..\Lib\site-packages\PySide6\msvcp140_codecvt_ids.dll"
 
 if (-not (Test-Path $VenvPython)) {
     & (Join-Path $ProjectRoot "setup_env.ps1") -Dev
@@ -15,11 +16,15 @@ else {
 if (-not (Test-Path $IconPath)) {
     throw "找不到程序图标：$IconPath"
 }
+if (-not (Test-Path $PySideCodecvtPath)) {
+    throw "找不到 PySide6 运行库：$PySideCodecvtPath"
+}
 
 & $VenvPython -m PyInstaller --noconfirm --clean --windowed --name "GFileStudio" `
   --icon "$IconPath" `
   --add-data "resources;resources" `
   --add-data "config;config" `
+  --add-binary "$PySideCodecvtPath;PySide6" `
   --collect-all "paramiko" `
   --collect-all "cryptography" `
   app.py

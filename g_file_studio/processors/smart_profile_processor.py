@@ -261,23 +261,23 @@ def process_smart_profile_consistency(
         "geometry_adjusted": 0,
     }
     log(
-        f"[图元标准检查] 模式：只检查（只读，不修改 G）；标准：{profile.profile_name} / "
-        f"适用范围：{profile.site_name} / V{profile.profile_version} / "
+        f"[服务器图元更新检查] 模式：只检查（只读，不修改 G）；标准：{profile.profile_name} / "
+        f"适用范围：{profile.site_name} / 服务器版本 {profile.server_standard_label} UTC / "
         f"标准指纹：{profile.standard_fingerprint or '-'}"
     )
-    log(f"[图元标准检查] SMART LBS devref：{profile.smart_lbs_devref}")
-    log(f"[图元标准检查] SMART Circuit Breaker devref：{profile.smart_breaker_devref}")
+    log(f"[服务器图元更新检查] SMART LBS devref：{profile.smart_lbs_devref}")
+    log(f"[服务器图元更新检查] SMART Circuit Breaker devref：{profile.smart_breaker_devref}")
     if profile.normal_ready:
-        log(f"[图元标准检查] NORMAL LBS devref：{profile.normal_lbs_devref}")
-        log(f"[图元标准检查] NORMAL Circuit Breaker devref：{profile.normal_breaker_devref}")
+        log(f"[服务器图元更新检查] NORMAL LBS devref：{profile.normal_lbs_devref}")
+        log(f"[服务器图元更新检查] NORMAL Circuit Breaker devref：{profile.normal_breaker_devref}")
     else:
-        log("[图元标准检查] NORMAL 标准尚未配置完整；普通 RMU 只统计，不参与该角色的一致性判定。")
+        log("[服务器图元更新检查] NORMAL 标准尚未配置完整；普通 RMU 只统计，不参与该角色的一致性判定。")
     if profile.smart_ground_devref:
-        log(f"[图元标准检查] SMART 接地刀闸 devref：{profile.smart_ground_devref}")
+        log(f"[服务器图元更新检查] SMART 接地刀闸 devref：{profile.smart_ground_devref}")
     if profile.normal_ground_devref:
-        log(f"[图元标准检查] NORMAL 接地刀闸 devref：{profile.normal_ground_devref}")
+        log(f"[服务器图元更新检查] NORMAL 接地刀闸 devref：{profile.normal_ground_devref}")
     if profile.managed_standard_files:
-        log(f"[图元标准检查] 权威标准图元文件：{len(profile.managed_standard_files)} 个（仅使用服务器来源的本地冻结副本）")
+        log(f"[服务器图元更新检查] 权威标准图元文件：{len(profile.managed_standard_files)} 个（仅使用服务器来源的本地冻结副本）")
         for row in profile.managed_standard_files[:12]:
             log(
                 f"  - {row.get('original_name') or '-'} | {row.get('devref') or '-'} | "
@@ -285,7 +285,7 @@ def process_smart_profile_consistency(
             )
     enabled_custom = [row for row in profile.custom_symbols if bool(row.get("enabled", True)) and str(row.get("standard_devref", "")).strip()]
     if enabled_custom:
-        log(f"[图元标准检查] 自定义设备图元标准：{len(enabled_custom)} 项。")
+        log(f"[服务器图元更新检查] 自定义设备图元标准：{len(enabled_custom)} 项。")
         for row in enabled_custom[:12]:
             log(
                 f"  - {row.get('scope', 'ANY')} / {row.get('role', '自定义')} / "
@@ -383,7 +383,7 @@ def process_smart_profile_consistency(
                     f"{source.name}: 发现 {result.geometry_adjusted_count} 个图元几何参数（w/h、AlignCenter 或 pin 锚点）与标准不一致。"
                 )
         log(
-            f"[图元标准检查] {source.name}：SMART RMU {result.smart_rmu_count}，NORMAL RMU {result.normal_rmu_count}；"
+            f"[服务器图元更新检查] {source.name}：SMART RMU {result.smart_rmu_count}，NORMAL RMU {result.normal_rmu_count}；"
             f"SMART Y/Q/接地 不符合 {result.lbs_changed_count}/{result.breaker_changed_count}/{result.ground_changed_count}；"
             f"NORMAL Y/Q/接地 不符合 {result.normal_lbs_changed_count}/{result.normal_breaker_changed_count}/{result.normal_ground_changed_count}；"
             f"自定义设备检查/不符合 {result.custom_checked_count}/{result.custom_changed_count}；"
@@ -504,7 +504,7 @@ def process_smart_profile_consistency(
             "readonly": "This module only reports problems and never modifies the source G. Same-class OLD→NEW version upgrades are handled in Basic Processing.",
         }
     else:
-        report_title = "图元标准检查报告"
+        report_title = "服务器图元更新检查报告"
         meta = (
             f"标准：{html.escape(profile.profile_name)} | 适用范围：{html.escape(profile.site_name)} | "
             f"版本：V{profile.profile_version} | 状态：当前生效 | 标准指纹：{html.escape(profile.standard_fingerprint or '-')} | 模式：只检查（只读，不修改源 G）"
@@ -730,7 +730,7 @@ def process_smart_profile_correction(
 
     log(
         f"[图元标准纠正] 标准：{profile.profile_name} / 适用范围：{profile.site_name} / "
-        f"V{profile.profile_version} / 标准指纹：{profile.standard_fingerprint or '-'}；"
+        f"服务器版本 {profile.server_standard_label} UTC / 标准指纹：{profile.standard_fingerprint or '-'}；"
         f"源 G 只读，纠正副本输出到：{corrected_dir}"
     )
     log(

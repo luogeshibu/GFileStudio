@@ -4,10 +4,11 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from g_file_studio.engines.id_engine import (
-    collect_reference_tokens, direct_layer_elements, infer_element_id_patterns,
-    inspect_tree_ids, local_name,
+    _longest_zero_run_start, collect_reference_tokens, direct_layer_elements,
+    infer_element_id_patterns, inspect_tree_ids, local_name,
 )
 from g_file_studio.services.id_rule_service import IdRule
 
@@ -37,6 +38,34 @@ class StrictIdRepairResult:
     changed_element_ids: int = 0
     changes: list[tuple[str, str, str]] = field(default_factory=list)
     final_duplicate_count: int = 0
+
+
+@dataclass
+class ServerIdRuleSyncResult:
+    """从服务器 G 文件样本同步 ID 规则的结果。"""
+
+    rules: dict[str, IdRule]
+    candidates: dict[str, "ServerIdRuleCandidate"] = field(default_factory=dict)
+    added: list[str] = field(default_factory=list)
+    updated: list[str] = field(default_factory=list)
+    unchanged: list[str] = field(default_factory=list)
+    unresolved: list[str] = field(default_factory=list)
+    file_count: int = 0
+    element_count: int = 0
+
+
+@dataclass
+class ServerIdRuleCandidate:
+    """一个元素类型在服务器样本中的主流规则及其统计证据。"""
+
+    tag: str
+    prefix: str
+    total_length: int
+    count: int
+    total_ids: int
+    file_count: int
+    other_formats: dict[str, int] = field(default_factory=dict)
+    sample_ids: tuple[str, ...] = ()
 
 
 def _observed_by_tag(tree: ET.ElementTree) -> dict[str, list[str]]:
@@ -113,6 +142,100 @@ def scan_file_against_rules(file_path: Path, rules: dict[str, IdRule]) -> IdRule
     except ET.ParseError as exc:
         raise ValueError(f"XML 解析失败：{file_path.name}：{exc}") from exc
     return scan_tree_against_rules(tree, file_path, rules)
+
+
+def infer_server_id_rules(
+    file_paths: list[Path],
+    existing_rules: dict[str, IdRule],
+    progress: Callable[[int], None] | None = None,
+) -> ServerIdRuleSyncResult:
+    """从服务器 G 文件的全部直接图元 ID 推断稳定规则。
+
+    服务器 G 文件是规则来源，业务文件只用于检查/修复。这里跨文件聚合
+    同一 XML 元素类型后再推断，避免单个文件样本过少或把某个文件的局部
+    ID 当成全局模板。无法稳定推断的类型不会自动创建规则。
+    """
+    all_elements: list[ET.Element] = []
+    observed_by_tag: dict[str, list[str]] = defaultdict(list)
+    files_by_tag: dict[str, set[str]] = defaultdict(set)
+    parsed_files = 0
+    for file_path in file_paths:
+        try:
+            tree = ET.parse(file_path)
+        except ET.ParseError as exc:
+            raise ValueError(f"XML 解析失败：{Path(file_path).name}：{exc}") from exc
+        elements = direct_layer_elements(tree.getroot())
+        parsed_files += 1
+        all_elements.extend(elements)
+        for element in elements:
+            value = (element.get("id") or "").strip()
+            if value:
+                tag = local_name(element.tag)
+                observed_by_tag[tag].append(value)
+                files_by_tag[tag].add(Path(file_path).name)
+        if progress:
+            progress(round(parsed_files * 100 / max(len(file_paths), 1)))
+
+    patterns = infer_element_id_patterns(all_elements)
+    rules = dict(existing_rules)
+    added: list[str] = []
+    updated: list[str] = []
+    unchanged: list[str] = []
+    unresolved: list[str] = []
+    candidates: dict[str, ServerIdRuleCandidate] = {}
+
+    for tag in sorted(observed_by_tag):
+        pattern = patterns.get(tag)
+        if pattern is None:
+            unresolved.append(tag)
+            continue
+        values = observed_by_tag[tag]
+        candidate_rule = IdRule(tag, pattern.prefix, pattern.total_length)
+        matching = [value for value in values if candidate_rule.matches(value)]
+        other_formats: dict[str, int] = defaultdict(int)
+        for value in values:
+            if candidate_rule.matches(value):
+                continue
+            start = _longest_zero_run_start(value) if value.isdigit() else None
+            hint = f"{value[:start]}+{len(value)}位" if start is not None else f"未知前缀+{len(value)}位"
+            other_formats[hint] += 1
+        candidates[tag] = ServerIdRuleCandidate(
+            tag=tag,
+            prefix=pattern.prefix,
+            total_length=pattern.total_length,
+            count=len(matching),
+            total_ids=len(values),
+            file_count=len(files_by_tag[tag]),
+            other_formats=dict(sorted(other_formats.items(), key=lambda item: (-item[1], item[0]))),
+            sample_ids=tuple(dict.fromkeys(values[:8])),
+        )
+        candidate = IdRule(
+            tag=tag,
+            prefix=pattern.prefix,
+            total_length=pattern.total_length,
+            enabled=True,
+            verified=True,
+            note="服务器 G 图形自动读取；以服务器样本中的主流前缀和总位数为准",
+        )
+        previous = rules.get(tag)
+        if previous is None:
+            added.append(tag)
+        elif previous.prefix == candidate.prefix and previous.total_length == candidate.total_length:
+            unchanged.append(tag)
+        else:
+            updated.append(tag)
+        rules[tag] = candidate
+
+    return ServerIdRuleSyncResult(
+        rules=rules,
+        candidates=candidates,
+        added=added,
+        updated=updated,
+        unchanged=unchanged,
+        unresolved=unresolved,
+        file_count=parsed_files,
+        element_count=len(all_elements),
+    )
 
 
 def _next_id_for_rule(tag: str, rule: IdRule, elements: list[ET.Element], blocked: set[str]) -> str:

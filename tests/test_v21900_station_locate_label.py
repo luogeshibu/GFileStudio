@@ -8,6 +8,7 @@ from g_file_studio.engines.rmu_identification_engine import RmuIdentificationRes
 from g_file_studio.engines.station_poke_engine import (
     apply_station_pokes,
     build_station_target_file,
+    extract_interval_locate_label,
     extract_rmu_locate_label,
 )
 
@@ -24,6 +25,12 @@ def test_rmu_locate_label_requires_parenthesized_pure_digits() -> None:
     )
     assert build_station_target_file("JED-CTL-DHN", "14020") == (
         "JED-CTL-DHN.sln.pic.g?locateLabel=14020&&scaleFlag=true"
+    )
+    assert extract_interval_locate_label("RDS-09") == "AH309"
+    assert extract_interval_locate_label("DHN-40") == "AH340"
+    assert extract_interval_locate_label("JM2-J2") == ""
+    assert build_station_target_file("JED-CTL-RDS", "AH309") == (
+        "JED-CTL-RDS.sln.pic.g?locateLabel=AH309&&scaleFlag=true"
     )
 
 
@@ -138,7 +145,7 @@ def test_ambiguous_parenthesized_numbers_do_not_guess_locate_label(tmp_path: Pat
     assert "不唯一" in result.records[0].reason
 
 
-def test_station_poke_keeps_plain_target_without_adjacent_numeric_label(tmp_path: Path) -> None:
+def test_station_poke_uses_interval_target_without_adjacent_rmu_label(tmp_path: Path) -> None:
     file_path = tmp_path / "source.g"
     root = ET.Element("G")
     layer = ET.SubElement(root, "Layer", {"name": "0"})
@@ -166,8 +173,10 @@ def test_station_poke_keeps_plain_target_without_adjacent_numeric_label(tmp_path
     )
 
     assert result.updated_count == 1
-    assert result.changes[0].target_file == "JED-NTH-FRSH.sln.pic.g"
-    assert result.changes[0].locate_label == ""
+    assert result.changes[0].target_file == (
+        "JED-NTH-FRSH.sln.pic.g?locateLabel=AH344&&scaleFlag=true"
+    )
+    assert result.changes[0].locate_label == "AH344"
 
 
 def test_station_poke_does_not_require_explicit_topology(tmp_path: Path) -> None:
@@ -269,7 +278,9 @@ def test_station_poke_ignores_line_branch_shape(tmp_path: Path) -> None:
     assert result.candidate_count == 1
     assert result.skipped_count == 0
     assert result.updated_count == 1
-    assert result.changes[0].target_file == "JED-CTL-DHN.sln.pic.g"
+    assert result.changes[0].target_file == (
+        "JED-CTL-DHN.sln.pic.g?locateLabel=AH340&&scaleFlag=true"
+    )
 
 
 def test_dtext_is_never_used_as_device_or_locate_name(tmp_path: Path) -> None:
@@ -301,5 +312,99 @@ def test_dtext_is_never_used_as_device_or_locate_name(tmp_path: Path) -> None:
     )
 
     assert result.updated_count == 1
-    assert result.changes[0].target_file == "JED-CTL-DHN.sln.pic.g"
-    assert result.changes[0].locate_label == ""
+    assert result.changes[0].target_file == (
+        "JED-CTL-DHN.sln.pic.g?locateLabel=AH340&&scaleFlag=true"
+    )
+    assert result.changes[0].locate_label == "AH340"
+
+
+def test_station_name_near_excluded_classification_marker_is_skipped(tmp_path: Path) -> None:
+    file_path = tmp_path / "source.g"
+    root = ET.Element("G")
+    layer = ET.SubElement(root, "Layer", {"name": "0"})
+    ET.SubElement(layer, "poke", {
+        "id": "17000001", "x": "100", "y": "100", "w": "100", "h": "31",
+        "fc": "100,100,100", "fcc": "#646464", "fm": "1",
+    })
+    ET.SubElement(layer, "Text", {
+        "id": "80000001", "x": "115", "y": "105", "w": "70", "h": "21", "ts": "DHN-40",
+    })
+    ET.SubElement(layer, "Rect", {
+        "id": "90000001", "x": "300", "y": "105", "w": "30", "h": "30",
+        "devref": "#Fuse_NON_SMART.zwk.icn.g:Fuse_NON_SMART",
+    })
+
+    result = apply_station_pokes(
+        ET.ElementTree(root),
+        file_path,
+        RmuIdentificationResult(file_path=file_path),
+        current_station_name="ABH",
+        station_resolver=lambda key: SimpleNamespace(station_full_name="JED-CTL-DHN"),
+        classification_marker_entries=(
+            ("Fuse_NON_SMART.zwk.icn.g", "#Fuse_NON_SMART.zwk.icn.g:Fuse_NON_SMART", "FUSE"),
+        ),
+    )
+
+    assert result.classification_excluded_count == 1
+    assert result.skipped_count == 1
+    assert result.updated_count == 0
+    assert result.records[0].recognition_source == "classification_marker_exclusion"
+    assert "FUSE" in result.records[0].reason
+
+
+def test_station_name_beyond_excluded_classification_marker_distance_is_allowed(tmp_path: Path) -> None:
+    file_path = tmp_path / "source.g"
+    root = ET.Element("G")
+    layer = ET.SubElement(root, "Layer", {"name": "0"})
+    ET.SubElement(layer, "poke", {
+        "id": "17000001", "x": "100", "y": "100", "w": "100", "h": "31",
+        "fc": "100,100,100", "fcc": "#646464", "fm": "1",
+    })
+    ET.SubElement(layer, "Text", {
+        "id": "80000001", "x": "115", "y": "105", "w": "70", "h": "21", "ts": "DHN-40",
+    })
+    ET.SubElement(layer, "Rect", {
+        "id": "90000001", "x": "500", "y": "105", "w": "30", "h": "30",
+        "devref": "#Fuse_NON_SMART.zwk.icn.g:Fuse_NON_SMART",
+    })
+
+    result = apply_station_pokes(
+        ET.ElementTree(root),
+        file_path,
+        RmuIdentificationResult(file_path=file_path),
+        current_station_name="ABH",
+        station_resolver=lambda key: SimpleNamespace(station_full_name="JED-CTL-DHN"),
+        classification_marker_entries=(
+            ("Fuse_NON_SMART.zwk.icn.g", "#Fuse_NON_SMART.zwk.icn.g:Fuse_NON_SMART", "FUSE"),
+        ),
+    )
+
+    assert result.classification_excluded_count == 0
+    assert result.updated_count == 1
+
+
+def test_rmu_locate_label_over_200_is_not_used(tmp_path: Path) -> None:
+    file_path = tmp_path / "source.g"
+    root = ET.Element("G")
+    layer = ET.SubElement(root, "Layer", {"name": "0"})
+    ET.SubElement(layer, "poke", {
+        "id": "17000001", "x": "100", "y": "100", "w": "100", "h": "31",
+        "fc": "100,100,100", "fcc": "#646464", "fm": "1",
+    })
+    ET.SubElement(layer, "Text", {
+        "id": "80000001", "x": "115", "y": "105", "w": "70", "h": "21", "ts": "DHN-40",
+    })
+    ET.SubElement(layer, "Text", {
+        "id": "80000002", "x": "118", "y": "-130", "w": "64", "h": "21", "ts": "(14020)",
+    })
+
+    result = apply_station_pokes(
+        ET.ElementTree(root),
+        file_path,
+        RmuIdentificationResult(file_path=file_path),
+        current_station_name="ABH",
+        station_resolver=lambda key: SimpleNamespace(station_full_name="JED-CTL-DHN"),
+    )
+
+    assert result.updated_count == 1
+    assert result.changes[0].locate_label == "AH340"

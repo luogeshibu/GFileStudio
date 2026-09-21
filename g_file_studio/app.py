@@ -1,7 +1,30 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import sys
+from pathlib import Path
+
+
+def _prepare_qt_dll_search_path() -> None:
+    """让 PyInstaller one-dir 包能找到 PySide6 的 Qt DLL 依赖。"""
+    if sys.platform != "win32":
+        return
+
+    bundled_root = getattr(sys, "_MEIPASS", None)
+    if not bundled_root:
+        return
+
+    for relative_path in ("PySide6", "shiboken6"):
+        directory = Path(bundled_root) / relative_path
+        if directory.is_dir():
+            try:
+                os.add_dll_directory(os.fspath(directory))
+            except OSError:
+                pass
+
+
+_prepare_qt_dll_search_path()
 
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QStyleFactory

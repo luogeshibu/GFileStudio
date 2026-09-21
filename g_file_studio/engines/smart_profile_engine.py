@@ -121,6 +121,7 @@ class SmartProfileApplyResult:
     custom_checked_count: int = 0
     custom_changed_count: int = 0
     geometry_adjusted_count: int = 0
+    missing_standard_count: int = 0
     mismatch_counts: dict[str, int] = field(default_factory=dict)
     mismatch_details: list[dict[str, object]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -620,9 +621,16 @@ def _record_mismatch(counter: Counter, cabinet_class: str, role: str, old_devref
 
 
 def _variant_kind(devref: str) -> str:
-    """Return SMART/NORMAL when the devref makes the variant explicit."""
+    """Return the explicit intelligent/non-intelligent variant in a devref.
+
+    The filename/devref is deliberately treated as a category marker only.  No
+    particular server filename is required; the caller may use any standard
+    symbol whose name clearly says SMART or NO-/NON-SMART.
+    """
     value = (devref or "").upper().replace(" ", "_")
     if any(token in value for token in ("NON-SMART", "NON_SMART", "NO-SMART", "NO_SMART")):
+        return "NORMAL"
+    if "NORMAL" in value:
         return "NORMAL"
     if "SMART" in value:
         return "SMART"
@@ -742,16 +750,23 @@ def apply_smart_profile_to_tree(
     smart_ground_devref: str = "",
     normal_ground_devref: str = "",
     profile_geometry_templates: dict[str, list[dict[str, object]]] | None = None,
+    authoritative_standard_devrefs: set[str] | list[str] | None = None,
     custom_symbols: list[dict[str, object]] | None = None,
     require_template_for_connected_devref_change: bool = False,
     allow_source_geometry_fallback: bool = True,
+    jeddah_variant_only: bool = False,
     progress: Callable[[int], None] | None = None,
 ) -> SmartProfileApplyResult:
-    """Normalize SMART and, when configured, NORMAL RMU device symbols.
+    """Apply the shared profile rules, with an optional Jeddah-only restriction.
 
     SMART/NORMAL classification is based on explicit cabinet labels, not current
-    devrefs.  SMR cabinets are skipped because their conversion is a site-specific
-    business rule (for example Jeddah batch processing). When
+    devrefs. SMR conversion is handled by the Jeddah batch before this pass. When
+    ``jeddah_variant_only`` is true, an RMU marked SMART (or the SMR marker that is
+    converted to SMART) directly receives the confirmed SMART LBS/Circuit-Breaker
+    symbols; NORMAL cabinets receive only the confirmed NORMAL variants. Ground
+    disconnectors are never changed, and missing server definitions are warnings
+    only. This keeps the Jeddah restriction out of other modules that use this
+    shared engine. When
     ``allow_source_geometry_fallback`` is False, geometry comes only from the
     authoritative uploaded standard and the inspected business G can never teach or
     complete the standard.
@@ -781,10 +796,11 @@ def apply_smart_profile_to_tree(
         targets.add(normal_lbs_devref.strip())
     if normal_breaker_devref.strip():
         targets.add(normal_breaker_devref.strip())
-    if smart_ground_devref.strip():
-        targets.add(smart_ground_devref.strip())
-    if normal_ground_devref.strip():
-        targets.add(normal_ground_devref.strip())
+    if not jeddah_variant_only:
+        if smart_ground_devref.strip():
+            targets.add(smart_ground_devref.strip())
+        if normal_ground_devref.strip():
+            targets.add(normal_ground_devref.strip())
     for rule in custom_symbols or []:
         if bool(rule.get("enabled", True)):
             target = str(rule.get("standard_devref", "")).strip()
@@ -802,6 +818,27 @@ def apply_smart_profile_to_tree(
     else:
         geometry_templates = {key: list(value) for key, value in profile_templates.items()}
 
+    # When the server-derived standard is authoritative, every concrete graphic
+    # devref must exist in that catalog. A missing server definition is a finding,
+    # never a replacement candidate. In legacy/source-fallback mode this check is
+    # intentionally disabled because the process has no complete server catalog.
+    server_standard_values = (
+        authoritative_standard_devrefs
+        if authoritative_standard_devrefs is not None
+        else profile_templates
+    )
+    server_devref_keys = {
+        str(value).strip().casefold()
+        for value in server_standard_values
+        if str(value).strip()
+    } if jeddah_variant_only and not allow_source_geometry_fallback else set()
+    missing_standard_element_ids = {
+        id(element)
+        for element in elements
+        if (element.get("devref") or "").strip()
+        and (element.get("devref") or "").strip().casefold() not in server_devref_keys
+    } if jeddah_variant_only and not allow_source_geometry_fallback else set()
+
     emit(5)
     mismatch_counter: Counter = Counter()
     # RMU identification is a protected baseline algorithm. It intentionally stays
@@ -814,6 +851,42 @@ def apply_smart_profile_to_tree(
         smart_in_type=True,
     )
     emit(30)
+
+    if jeddah_variant_only and server_devref_keys:
+        # Jeddah's SMART target is learned from the other already-labelled SMART
+        # cabinets in the same drawing. This handles a server profile whose role
+        # binding is present but stale, and it makes an isolated wrong cabinet
+        # converge to the actual SMART symbols used by the drawing. Only
+        # server-known SMART devrefs participate; a business drawing can never
+        # promote an arbitrary local symbol into the standard.
+        observed_smart_targets: dict[str, Counter[str]] = {
+            "LBS": Counter(),
+            "BREAKER": Counter(),
+        }
+        for item in identification.items:
+            rect = _find_rect(rects, item)
+            if rect is None:
+                continue
+            if _rmu_class(rect, smart_texts, smr_texts) not in {"SMART", "SMR"}:
+                continue
+            for element in elements:
+                if local_name(element.tag) != "CBreakerDis" or not _center_inside(element, rect):
+                    continue
+                role = _device_role(element)
+                old_devref = (element.get("devref") or "").strip()
+                if (
+                    role in observed_smart_targets
+                    and _variant_kind(old_devref) == "SMART"
+                    and old_devref.casefold() in server_devref_keys
+                ):
+                    observed_smart_targets[role][old_devref] += 1
+        learned_lbs = observed_smart_targets["LBS"].most_common(1)
+        learned_breaker = observed_smart_targets["BREAKER"].most_common(1)
+        if learned_lbs:
+            smart_lbs_devref = learned_lbs[0][0]
+        if learned_breaker:
+            smart_breaker_devref = learned_breaker[0][0]
+
     result.scanned_rmu_count = len(identification.items)
     element_scope: dict[int, str] = {}
     element_rmu_name: dict[int, str] = {}
@@ -833,10 +906,11 @@ def apply_smart_profile_to_tree(
             )
             continue
         cabinet_class = _rmu_class(rect, smart_texts, smr_texts)
-        if cabinet_class == "SMR":
+        if cabinet_class == "SMR" and not jeddah_variant_only:
             result.ignored_rmu_count += 1
             continue
-        if cabinet_class == "SMART":
+        is_smart_cabinet = cabinet_class in {"SMART", "SMR"}
+        if is_smart_cabinet:
             result.smart_rmu_count += 1
         else:
             result.normal_rmu_count += 1
@@ -851,10 +925,18 @@ def apply_smart_profile_to_tree(
         for element_index, element in enumerate(elements, 1):
             emit(rmu_start + round(rmu_span * (0.35 + 0.65 * element_index / element_total)))
             tag = local_name(element.tag)
-            if tag not in {"CBreakerDis", "ZhaiWaiJieDiDaoZha"} or not _center_inside(element, rect):
+            if (
+                (jeddah_variant_only and tag != "CBreakerDis")
+                or (not jeddah_variant_only and tag not in {"CBreakerDis", "ZhaiWaiJieDiDaoZha"})
+                or not _center_inside(element, rect)
+            ):
                 continue
             old_devref = (element.get("devref") or "").strip()
-            if tag == "ZhaiWaiJieDiDaoZha":
+            if id(element) in missing_standard_element_ids:
+                # The server catalog is the authority. A missing current icon is
+                # reported below and must never be guessed or silently upgraded.
+                continue
+            if tag == "ZhaiWaiJieDiDaoZha" and not jeddah_variant_only:
                 role = "GROUND"
                 target = smart_ground_devref.strip() if cabinet_class == "SMART" else normal_ground_devref.strip()
                 if not target:
@@ -867,7 +949,7 @@ def apply_smart_profile_to_tree(
                 role = _device_role(element)
                 if role not in {"LBS", "BREAKER"}:
                     continue
-                if cabinet_class == "SMART":
+                if is_smart_cabinet:
                     target = smart_lbs_devref.strip() if role == "LBS" else smart_breaker_devref.strip()
                     if not target:
                         continue
@@ -883,6 +965,21 @@ def apply_smart_profile_to_tree(
                         result.normal_lbs_checked_count += 1
                     else:
                         result.normal_breaker_checked_count += 1
+
+            if jeddah_variant_only:
+                # Jeddah classification is driven only by the visible cabinet
+                # marker.  A SMART/SMR cabinet must use the confirmed SMART
+                # LBS/Circuit-Breaker symbols even when its current devref has
+                # no SMART/NORMAL token (or is an older generic symbol).  Do not
+                # require the old symbol to identify its own variant: that was
+                # the reason visibly SMART cabinets could retain normal icons.
+                expected_variant = "SMART" if is_smart_cabinet else "NORMAL"
+                target_variant = _variant_kind(target)
+                # The server-confirmed target must explicitly identify the
+                # intended SMART/NORMAL variant.  If it does not, report it and
+                # leave the original symbol untouched.
+                if target_variant != expected_variant:
+                    continue
 
             fixed_processed.add(id(element))
             before = _element_snapshot(element)
@@ -917,18 +1014,59 @@ def apply_smart_profile_to_tree(
             if not applied.devref_changed:
                 continue
             if role == "GROUND":
-                if cabinet_class == "SMART":
+                if is_smart_cabinet:
                     result.ground_changed_count += 1
                 else:
                     result.normal_ground_changed_count += 1
-            elif cabinet_class == "SMART" and role == "LBS":
+            elif is_smart_cabinet and role == "LBS":
                 result.lbs_changed_count += 1
-            elif cabinet_class == "SMART":
+            elif is_smart_cabinet:
                 result.breaker_changed_count += 1
             elif role == "LBS":
                 result.normal_lbs_changed_count += 1
             else:
                 result.normal_breaker_changed_count += 1
+
+    if not allow_source_geometry_fallback:
+        for element in elements:
+            old_devref = (element.get("devref") or "").strip()
+            if not old_devref or id(element) not in missing_standard_element_ids:
+                continue
+            tag = local_name(element.tag)
+            scope = element_scope.get(id(element), "ANY")
+            role = _device_role(element) or tag or "CUSTOM"
+            before = _element_snapshot(element)
+            result.missing_standard_count += 1
+            # Missing server symbols are warnings only.  Use the local Counter
+            # while collecting the category so the first missing symbol does not
+            # raise KeyError on the ordinary result dictionary.
+            mismatch_counter[f"MISSING_STANDARD:{tag}:{old_devref}"] += 1
+            result.mismatch_details.append({
+                "File": file_path.name,
+                "RMU": element_rmu_name.get(id(element), "-") or "-",
+                "RMURectID": element_rmu_rect_id.get(id(element), "-") or "-",
+                "Scope": scope,
+                "Role": role,
+                "ElementTag": tag,
+                "ElementID": (element.get("id") or "").strip() or "-",
+                "DeviceName": (element.get("p_NameString") or "").strip() or "-",
+                "KeyName": (element.get("key_name") or "").strip() or "-",
+                "Rotation": before.get("rotation", 0),
+                "IssueType": "服务器标准图元不存在",
+                "Reason": f"当前图元 devref={old_devref} 在服务器当前标准库中不存在；仅告警，不替换。",
+                "CurrentDevref": old_devref,
+                "StandardDevref": "<服务器标准中不存在>",
+                "CurrentSize": f"{before.get('w') or '?'}×{before.get('h') or '?'}",
+                "StandardSize": "-",
+                "CurrentPosition": f"({before.get('x') or '?'}, {before.get('y') or '?'})",
+                "ExpectedPosition": "-",
+                "ConnectedLines": _connected_line_ids_for_report(element) or "-",
+                "_AppliedDevrefChanged": False,
+                "_AppliedGeometryChanged": False,
+            })
+            result.warnings.append(
+                f"{file_path.name}: 元素 {element.get('id') or '<无ID>'} 使用的图元 {old_devref} 不在服务器当前标准库中；仅告警，未替换。"
+            )
 
     # User-defined standards are evaluated after the protected built-in RMU rules.
     # A custom rule can target any XML element type, optionally limited to SMART or
@@ -943,6 +1081,18 @@ def apply_smart_profile_to_tree(
     for custom_index, element in enumerate(elements, 1):
         emit(82 + round(custom_index * 16 / element_total))
         if id(element) in fixed_processed:
+            continue
+        if id(element) in missing_standard_element_ids:
+            # Missing server definitions are warnings only for every element type.
+            continue
+        if jeddah_variant_only and local_name(element.tag) == "ZhaiWaiJieDiDaoZha":
+            # Even user-defined standard rows must not replace ground
+            # disconnectors. Their original symbol and geometry are preserved.
+            continue
+        if jeddah_variant_only and local_name(element.tag) == "CBreakerDis" and id(element) in element_scope:
+            # CBreakerDis inside a recognized RMU is governed exclusively by the
+            # SMART/NORMAL mismatch rule above; a generic custom row must not
+            # bypass that constraint and replace a correct/unknown variant.
             continue
         matches = [
             rule for rule in enabled_custom
@@ -1009,6 +1159,7 @@ def apply_smart_profile_to_file(
     smart_ground_devref: str = "",
     normal_ground_devref: str = "",
     profile_geometry_templates: dict[str, list[dict[str, object]]] | None = None,
+    authoritative_standard_devrefs: set[str] | list[str] | None = None,
     custom_symbols: list[dict[str, object]] | None = None,
     require_template_for_connected_devref_change: bool = False,
     allow_source_geometry_fallback: bool = True,
@@ -1042,6 +1193,7 @@ def apply_smart_profile_to_file(
         smart_ground_devref=smart_ground_devref,
         normal_ground_devref=normal_ground_devref,
         profile_geometry_templates=profile_geometry_templates,
+        authoritative_standard_devrefs=authoritative_standard_devrefs,
         custom_symbols=custom_symbols,
         require_template_for_connected_devref_change=require_template_for_connected_devref_change,
         allow_source_geometry_fallback=allow_source_geometry_fallback,

@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from html import escape
+from itertools import permutations
 from pathlib import Path
 from typing import Callable
 
@@ -1248,6 +1249,7 @@ class StandardDefinition:
     match_attr: str
     match_value: str
     builtin_role: str = ""
+    classification_marker: str = ""
 
 
 @dataclass(frozen=True)
@@ -1350,6 +1352,7 @@ def _profile_definitions(profile: SiteSmartProfile) -> list[StandardDefinition]:
             match_attr="系统RMU规则",
             match_value="Y*" if role == "LBS" else ("Q*" if role == "Circuit Breaker" else "RMU内接地刀闸"),
             builtin_role="LBS" if role == "LBS" else ("BREAKER" if role == "Circuit Breaker" else "GROUND"),
+            classification_marker=str(meta.get("classification_marker", meta.get("category_marker", "")) or "").strip(),
         ))
 
     for index, raw in enumerate(profile.custom_symbols):
@@ -1381,6 +1384,7 @@ def _profile_definitions(profile: SiteSmartProfile) -> list[StandardDefinition]:
             standard_file=Path(str(meta.get("source_file", raw.get("source_file", "")) or "")).name,
             match_attr=str(raw.get("match_attr", "devref") or "devref").strip(),
             match_value=str(raw.get("match_value", "") or "").strip(),
+            classification_marker=str(raw.get("classification_marker", raw.get("category_marker", meta.get("classification_marker", meta.get("category_marker", "")))) or "").strip(),
         ))
     return definitions
 
@@ -1739,6 +1743,8 @@ def _assign_global_standalone_names(
     target_families: dict[str, str] | None = None,
     learned_color_modes: dict[str, str] | None = None,
     learned_format_modes: dict[str, str] | None = None,
+    *,
+    require_devref: bool = False,
 ) -> dict[int, tuple[str, str, str, int, float]]:
     """Assign visible names to all non-RMU devices by one global graphical rule.
 
@@ -1757,7 +1763,12 @@ def _assign_global_standalone_names(
     # Defend the global matcher independently of its callers.  This prevents a
     # topology primitive that happens to carry devref/custom metadata from ever
     # entering the Text-to-device assignment pool.
-    devices = [device for device in devices if _is_nameable_device_element(device)]
+    if require_devref:
+        devices = [device for device in devices if _is_nameable_device_element(device)]
+    else:
+        # Compatibility callers may pass synthetic test elements that model the
+        # geometry only and intentionally omit a production ``devref``.
+        devices = [device for device in devices if local_name(device.tag) not in _NON_DEVICE_NAME_TAGS]
     if not devices or not candidates:
         return {}
     line_by_id, attached_lines = _build_connection_index(elements)
@@ -1829,6 +1840,60 @@ def _assign_global_standalone_names(
             confidence,
             id(owner.text),
             round(owner.distance, 2),
+        )
+    return result
+
+
+def _assign_transformer_text_names(
+    transformers: list[ET.Element],
+    texts: list[ET.Element],
+) -> dict[int, tuple[str, str, str, int, float]]:
+    """Backward-compatible transformer-only name assignment entry point.
+
+    The inventory now uses one global matcher for all standalone equipment.  Keep
+    the former helper available for older integrations and regression tests while
+    routing it through that same matcher.
+    """
+    candidates = [text for text in texts if _is_global_device_name_text(text)]
+    if not transformers or not candidates:
+        return {}
+
+    line_by_id, attached_lines = _build_connection_index([*transformers, *texts])
+    distances = [
+        [
+            min(
+                _point_to_box_distance(px, py, text)
+                for px, py in _device_anchor_points(transformer, line_by_id, attached_lines)
+            )
+            for text in candidates
+        ]
+        for transformer in transformers
+    ]
+    # The former public helper promised one visible label per transformer.  Keep
+    # that contract for legacy callers by choosing the minimum-cost injective
+    # assignment.  The production inventory uses the newer global ownership pass.
+    target_count = min(len(transformers), len(candidates))
+    best_assignment: tuple[int, ...] | None = None
+    best_cost = float("inf")
+    for text_indexes in permutations(range(len(candidates)), target_count):
+        cost = sum(distances[row][text_indexes[row]] for row in range(target_count))
+        if cost < best_cost:
+            best_cost = cost
+            best_assignment = text_indexes
+    if best_assignment is None:
+        return {}
+
+    result: dict[int, tuple[str, str, str, int, float]] = {}
+    for row, text_index in enumerate(best_assignment):
+        distance = distances[row][text_index]
+        confidence = "HIGH" if distance <= 120.0 else ("MEDIUM" if distance <= 240.0 else "LOW")
+        text = candidates[text_index]
+        result[id(transformers[row])] = (
+            _text_value(text),
+            "Nearby Text",
+            confidence,
+            id(text),
+            round(distance, 2),
         )
     return result
 
@@ -1905,7 +1970,8 @@ def _resolve_instance_name(
     rmu_name: str,
     texts: list[ET.Element],
     consumed_text_ids: set[int],
-) -> tuple[str, str, str, int | None]:
+    include_text_id: bool = False,
+) -> tuple[str, str, str] | tuple[str, str, str, int | None]:
     """Return a name from visible drawing Text only.
 
     XML association fields are intentionally not a naming source.  RMU internal
@@ -1913,6 +1979,16 @@ def _resolve_instance_name(
     identified cabinet; they are still resolved by geometry and one-to-one Text
     consumption below.
     """
+    def result(
+        name: str,
+        source: str,
+        confidence: str,
+        text_id: int | None = None,
+    ) -> tuple[str, str, str] | tuple[str, str, str, int | None]:
+        if include_text_id:
+            return name, source, confidence, text_id
+        return name, source, confidence
+
     cx, cy = _center(element)
     ew = max(1.0, _float(element, "w"))
     allow_component_labels = bool(rmu_name)
@@ -1950,7 +2026,7 @@ def _resolve_instance_name(
         # the conventional label above the symbol without making that a hard rule.
         candidates.append((score, distance, abs(dx), id(text), value, text, dy))
     if not candidates:
-        return "", "", "LOW", None
+        return result("", "", "LOW")
     migration_type = _migration_device_type_from_values(device_type=device_type)
     if migration_type == "CB":
         numeric = [item for item in candidates if re.fullmatch(r"\d{1,8}", item[4].strip())]
@@ -1968,10 +2044,10 @@ def _resolve_instance_name(
     best = candidates[0]
     # If two unrelated labels are effectively tied, do not invent a name.
     if len(candidates) > 1 and abs(candidates[1][0] - best[0]) < 5.0 and candidates[1][4] != best[4]:
-        return "", "Nearby Text ambiguous", "LOW", None
+        return result("", "Nearby Text ambiguous", "LOW")
     consumed_text_ids.add(best[3])
     confidence = "HIGH" if best[1] <= 120.0 else "MEDIUM"
-    return best[4], "Nearby Text", confidence, best[3]
+    return result(best[4], "Nearby Text", confidence, best[3])
 
 
 
@@ -2290,6 +2366,7 @@ def extract_file_inventory(
         target_families=generic_target_families,
         learned_color_modes=learned_color_modes,
         learned_format_modes=learned_format_modes,
+        require_devref=True,
     )
     standalone_text_names = generic_text_names
     # Reserve the exact Text objects already assigned to non-RMU devices so legacy
@@ -2355,6 +2432,7 @@ def extract_file_inventory(
                 rmu_name=context.name if context else "",
                 texts=texts,
                 consumed_text_ids=consumed_text_ids,
+                include_text_id=True,
             )
             if name_source == "Nearby Text" and name and name_text_id is not None:
                 # The audit label mirrors the exact Text that was assigned as the
@@ -2409,6 +2487,7 @@ def extract_file_inventory(
             "link": (element.get("link") or "").strip(),
             "标准图元文件": definition.standard_file,
             "标准devref": definition.standard_devref,
+            "分类标记": definition.classification_marker,
             "实际devref": current_devref,
             "标准校验": validation_status,
             "异常类型": " + ".join(dict.fromkeys(issues)),
@@ -3087,7 +3166,7 @@ def process_symbol_inventory(
         raise ValueError("没有找到可解析的 G 文件。")
     profile = profile.normalized()
     if not profile.authoritative_ready:
-        raise ValueError("当前全局图元标准没有任何已配置的标准图元，请先到“图元标准检查”维护标准。")
+        raise ValueError("当前全局图元标准没有任何已配置的标准图元，请先到“服务器图元更新检查”维护标准。")
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

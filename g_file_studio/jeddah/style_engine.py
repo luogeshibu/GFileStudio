@@ -10,11 +10,6 @@ from pathlib import Path
 from g_file_studio.engines.color_engine import ColorChangeResult, ColorRule, apply_line_colors
 from g_file_studio.engines.id_engine import direct_layer_elements, local_name
 from g_file_studio.engines.rmu_identification_engine import identify_rmus, parse_name_exclusions
-from g_file_studio.engines.smart_icon_geometry import (
-    SmartIconGeometryTemplate,
-    apply_devref_preserving_anchors,
-    build_geometry_templates,
-)
 from g_file_studio.engines.rmu_group_engine import (
     _find_channel_status_for_rect,
     _rmu_rects_by_bus_tag,
@@ -425,18 +420,6 @@ def _apply_smart_text_style(text: ET.Element, reference: ET.Element | None, rect
     text.set("y", _format_number(top))
 
 
-_NON_SMART_LBS_DEVREF = "#Load_Breaker_Switch_NON-SMART.zwk.icn.g:Load_Breaker_Switch_NON-SMART"
-_SMART_LBS_DEVREF = "#Load_Breaker_Switch_SMART.zwk.icn.g:Load_Breaker_Switch_SMART"
-_NON_SMART_CIRCUIT_BREAKER_DEVREF = "#Circuit_Breaker_NO-SMART.zwk.icn.g:Circuit_Breaker_NO-SMART"
-_NON_SMART_CIRCUIT_BREAKER_DEVREF_ALT = "#Circuit_Breaker_NON-SMART.zwk.icn.g:Circuit_Breaker_NON-SMART"
-_SMART_CIRCUIT_BREAKER_DEVREF = "#Circuit_Breaker_SMART.zwk.icn.g:Circuit_Breaker_SMART"
-_JEDDAH_SMART_CBREAKER_DEVREF_MAP = {
-    _NON_SMART_LBS_DEVREF: _SMART_LBS_DEVREF,
-    _NON_SMART_CIRCUIT_BREAKER_DEVREF: _SMART_CIRCUIT_BREAKER_DEVREF,
-    _NON_SMART_CIRCUIT_BREAKER_DEVREF_ALT: _SMART_CIRCUIT_BREAKER_DEVREF,
-}
-
-
 def _center_inside_rect(element: ET.Element, rect: ET.Element) -> bool:
     element_box = _box(element)
     rect_box = _box(rect)
@@ -484,47 +467,6 @@ def _remove_direct_element(root: ET.Element, target: ET.Element) -> bool:
                 parent.remove(child)
                 return True
     return False
-
-
-def _convert_rmu_cbreakerdis_devices_to_smart(
-    elements: list[ET.Element],
-    rect: ET.Element,
-    *,
-    geometry_templates: dict[tuple[str, int], list[SmartIconGeometryTemplate]] | None = None,
-) -> tuple[int, int]:
-    """Switch Jeddah NON-SMART CBreakerDis families to SMART in-place.
-
-    Device identity/topology attributes remain untouched.  When a correct SMART icon
-    with the same rotation exists elsewhere in the current G file, its geometry and
-    electrical port offsets are learned first.  ``x/y/w/h`` are then recomputed so
-    the original ConnectLine attachment coordinates stay exactly fixed after the
-    devref replacement.  If no safe template is available, the previous conservative
-    devref-only behavior is used.
-    """
-
-    changed = 0
-    geometry_adjusted = 0
-    for element in elements:
-        if local_name(element.tag) != "CBreakerDis":
-            continue
-        if not _center_inside_rect(element, rect):
-            continue
-        old_devref = (element.get("devref") or "").strip()
-        new_devref = _JEDDAH_SMART_CBREAKER_DEVREF_MAP.get(old_devref)
-        if new_devref is None:
-            continue
-        applied = apply_devref_preserving_anchors(
-            element,
-            new_devref,
-            elements=elements,
-            templates=geometry_templates,
-        )
-        if applied.devref_changed:
-            changed += 1
-        if applied.geometry_changed:
-            geometry_adjusted += 1
-    return changed, geometry_adjusted
-
 
 
 @dataclass
@@ -600,20 +542,14 @@ def ensure_jeddah_smart_rmu_devices(
     tree: ET.ElementTree,
     file_path: Path,
 ) -> JeddahSmartDeviceAuditResult:
-    """Ensure device icons are SMART for every recognized RMU that contains SMART.
+    """Audit SMART RMUs without changing any device symbol.
 
-    This is a Jeddah-only consistency check and does not change the shared RMU
-    identification engine.  For every recognized distribution RMU whose own frame
-    contains a ``Text[ts=SMART]`` label, the two exact ``CBreakerDis`` icon families
-    used by Jeddah are normalized to their SMART devrefs:
-
-    * Load Breaker Switch (Y1/Y2/Y3): NON-SMART -> SMART
-    * Circuit Breaker (Q1): NO-SMART -> SMART
-
-    IDs, keyids, key_name, node_area, rotation and topology are preserved.  If the
-    SMART and NON-SMART icon families use different internal geometry, only x/y/w/h
-    may be normalized from an already-correct SMART sample so the original electrical
-    ConnectLine attachment coordinates remain unchanged.
+    The old Jeddah-only implementation hard-coded several vendor filenames and
+    changed CBreakerDis elements before the authoritative site profile ran.  That
+    bypassed the server standard and could also alter geometry.  Device replacement
+    is now performed by ``apply_smart_profile_to_tree`` from the visible SMART/SMR
+    cabinet marker and the active server profile.  This compatibility entry point
+    remains as a read-only audit for existing batch-report fields.
     """
 
     file_path = Path(file_path)
@@ -628,11 +564,6 @@ def ensure_jeddah_smart_rmu_devices(
     ]
     if not smart_texts:
         return result
-
-    geometry_templates = build_geometry_templates(
-        elements,
-        {_SMART_LBS_DEVREF, _SMART_CIRCUIT_BREAKER_DEVREF},
-    )
 
     identification = identify_rmus(
         tree,
@@ -651,13 +582,6 @@ def ensure_jeddah_smart_rmu_devices(
         if _smart_text_inside_rmu(smart_texts, rect) is None:
             continue
         result.smart_rmu_count += 1
-        devref_changed, geometry_adjusted = _convert_rmu_cbreakerdis_devices_to_smart(
-            elements,
-            rect,
-            geometry_templates=geometry_templates,
-        )
-        result.cbreaker_smart_devref_changed_count += devref_changed
-        result.geometry_adjusted_count += geometry_adjusted
 
     return result
 
@@ -714,15 +638,26 @@ def remove_jeddah_channel_status_points(
 
     The association logic is intentionally delegated to the existing RMU red-status
     positioning implementation: the same BusDis RMU pairing and the same
-    ``channel_status`` Status lookup are used.  The Jeddah-only difference is the
-    final action: the matched Status element is removed instead of repositioned.
-    No shared RMU/Basic Processing logic is modified.
+    ``channel_status`` Status lookup are used.  Before pairing, this function now
+    obtains the authoritative RMU rectangle IDs from ``identify_rmus()`` so a plain
+    ``BusDis`` rectangle cannot be treated as an RMU accidentally.  The Jeddah-only
+    difference is the final action: the matched Status element is removed instead
+    of repositioned.
     """
 
     file_path = Path(file_path)
     result = JeddahChannelStatusRemovalResult(file_path=file_path)
     layer = _single_layer(tree, file_path)
-    pairs = _rmu_rects_by_bus_tag(layer, "BusDis")
+    identification = identify_rmus(
+        tree,
+        file_path,
+        name_positions=("top",),
+        smart_in_type=True,
+    )
+    validated_rmu_rect_ids = {
+        item.rect_id for item in identification.items if item.rect_id
+    }
+    pairs = _rmu_rects_by_bus_tag(layer, "BusDis", validated_rmu_rect_ids)
     result.scanned_rmu_count = len(pairs)
     claimed: set[int] = set()
     targets: list[ET.Element] = []
@@ -922,15 +857,15 @@ def replace_jeddah_smr_with_smart(
 ) -> JeddahSmrSmartReplacementResult:
     """Jeddah-only SMR -> SMART visual normalization.
 
-    Two site-specific cases are handled without changing the shared RMU engine:
+    SMR is mandatory-normalized to SMART without changing the shared RMU engine:
 
-    1. If the matched SMR cabinet already contains its own SMART label, remove only
+    1. If the matched RMU already contains its own SMART label, remove only
        the external SMR Text and force the cabinet frame to red.  The existing SMART
        label and cabinet devices are left untouched.
     2. If the cabinet has no SMART label, convert the matched SMR Text to a top-centred
        SMART label (font size 20) and force the frame to red. Device devref correctness
-       is deliberately handled by the separate SMART-device audit so the same rule is
-       used for both pre-existing SMART cabinets and newly converted SMR cabinets.
+       is handled by the following fixed SMART-device standardization pass, so the same
+       rule is used for both pre-existing SMART cabinets and newly converted SMR cabinets.
 
     Existing RMU identification remains read-only and unchanged.
     """

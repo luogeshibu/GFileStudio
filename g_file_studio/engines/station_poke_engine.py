@@ -37,6 +37,24 @@ _PARENTHESIZED_RMU_LABEL_RE = re.compile(
     r"^[\(（]\s*(?P<label>[0-9]+)\s*[\)）]$",
 )
 
+# Poke 站点跳转的业务过滤规则：这些分类标记来自“服务器图元同步管理”
+# 的本地缓存。名称落在对应设备周边 300 G 单位内时，不创建、不更新站点跳转。
+STATION_DEVICE_EXCLUSION_DISTANCE = 300.0
+STATION_EXCLUDED_CLASSIFICATION_MARKERS = frozenset({
+    "FUSE",
+    "LBS",
+    "AR",
+    "SEC",
+    "TRANSFORMER_OH",
+})
+_STATION_EXCLUDED_MARKER_KEYS = frozenset(
+    re.sub(r"[\s\-]+", "_", marker).casefold()
+    for marker in STATION_EXCLUDED_CLASSIFICATION_MARKERS
+)
+
+# 站点跳转使用的相邻环网柜名称，超过该距离就不能作为 locateLabel。
+RMU_ADJACENT_NAME_MAX_DISTANCE = 200.0
+
 
 # Canonical station-jump Poke properties copied from the user-provided
 # JM2-J2 reference Poke (id=17001493) in JED-CTL-AJWD-15.sln.pic(2).g.
@@ -166,6 +184,7 @@ class StationPokeRecord:
     recognition_source: str = ""
     reason: str = ""
     locate_label: str = ""
+    current_station: bool = False
 
 
 @dataclass
@@ -179,6 +198,7 @@ class StationPokeResult:
     unchanged_count: int = 0
     removed_duplicate_count: int = 0
     skipped_count: int = 0
+    classification_excluded_count: int = 0
     changes: list[StationPokeChange] = field(default_factory=list)
     records: list[StationPokeRecord] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -234,6 +254,24 @@ def extract_station_key(label: str) -> str:
     return station
 
 
+def extract_interval_locate_label(label: str) -> str:
+    """Build an interval locate label from a station terminal label.
+
+    When a station terminal has no adjacent RMU name, labels such as
+    ``RDS-09`` and ``DHN-40`` identify the interval directly.  The station
+    overview uses the corresponding ``AH3`` prefix: ``AH309`` and ``AH340``.
+    Keep the suffix exactly as drawn so leading zeroes are preserved.
+    """
+    value = re.sub(r"\s+", " ", str(label or "").strip())
+    match = _STATION_LABEL_RE.fullmatch(value)
+    if match is None:
+        return ""
+    suffix = match.group("suffix").strip()
+    if not suffix.isdigit():
+        return ""
+    return f"AH3{suffix}"
+
+
 def build_station_target_file(station_full_name: str, locate_label: str = "") -> str:
     """Build the station overview ahref, optionally focusing on a remote RMU."""
     target = f"{str(station_full_name or '').strip()}.sln.pic.g"
@@ -244,6 +282,10 @@ def build_station_target_file(station_full_name: str, locate_label: str = "") ->
     locate = extract_rmu_locate_label(raw_locate)
     if not locate and re.fullmatch(r"\d+", raw_locate):
         locate = raw_locate
+    # Interval fallback labels are already normalized as AH3 + numeric suffix
+    # (for example RDS-09 -> AH309). Keep this form when building the ahref.
+    if not locate and re.fullmatch(r"AH3\d+", raw_locate, flags=re.IGNORECASE):
+        locate = raw_locate.upper()
     if locate:
         target += f"?locateLabel={locate}&&scaleFlag=true"
     return target
@@ -292,7 +334,7 @@ def _rmu_locate_label_score(station_box: _Box, label_box: _Box) -> tuple[float, 
     adjacency and alignment rather than using unrestricted nearest-text
     matching, which could steal a feeder/device number from the drawing.
     """
-    max_gap = 80.0
+    max_gap = RMU_ADJACENT_NAME_MAX_DISTANCE
     alignment_limit = max(45.0, min(100.0, max(station_box.width, label_box.width) * 0.75))
     station_cx, station_cy = _center(station_box)
     label_cx, label_cy = _center(label_box)
@@ -325,7 +367,101 @@ def _rmu_locate_label_score(station_box: _Box, label_box: _Box) -> tuple[float, 
     # Prefer the normal vertical layout, then the smallest edge gap and best
     # alignment.  The final distance makes ties deterministic for dense text.
     distance = math.hypot(station_cx - label_cx, station_cy - label_cy)
+    if distance > RMU_ADJACENT_NAME_MAX_DISTANCE:
+        return None
     return direction, gap + alignment * 0.01, distance
+
+
+def _classification_marker_key(value: object) -> str:
+    """Normalize operator-owned classification markers for exact matching."""
+    return re.sub(r"[\s\-]+", "_", str(value or "").strip()).casefold()
+
+
+def _devref_keys(value: object) -> tuple[str, str, str]:
+    """Return (file name, element name, full devref) matching keys."""
+    raw = str(value or "").strip().lstrip("#")
+    if not raw:
+        return "", "", ""
+    file_part, separator, element_part = raw.partition(":")
+    file_key = Path(file_part.replace("\\", "/")).name.casefold()
+    element_key = element_part.strip().casefold() if separator else ""
+    return file_key, element_key, raw.casefold()
+
+
+def _classification_entry_values(entry: object) -> tuple[str, str, str]:
+    """Accept the portable tuple form and the sync service's dict form."""
+    if isinstance(entry, dict):
+        return (
+            str(entry.get("file_name", entry.get("name", "")) or ""),
+            str(entry.get("devref", "") or ""),
+            str(entry.get("classification_marker", entry.get("category_marker", "")) or ""),
+        )
+    if isinstance(entry, (tuple, list)) and len(entry) >= 3:
+        return str(entry[0] or ""), str(entry[1] or ""), str(entry[2] or "")
+    return "", "", ""
+
+
+def _classified_device_boxes(
+    layer: ET.Element,
+    classification_marker_entries: tuple[object, ...] | list[object] | None,
+) -> list[tuple[_Box, str]]:
+    """Resolve cached classification markers to graphic element boxes."""
+    marker_by_file: dict[str, str] = {}
+    marker_by_devref: dict[str, str] = {}
+    for entry in classification_marker_entries or ():
+        file_name, devref, marker = _classification_entry_values(entry)
+        marker_key = _classification_marker_key(marker)
+        if marker_key not in _STATION_EXCLUDED_MARKER_KEYS:
+            continue
+        file_key, element_key, full_key = _devref_keys(devref)
+        entry_file_key = Path(file_name.replace("\\", "/")).name.casefold()
+        if entry_file_key:
+            marker_by_file[entry_file_key] = marker.strip()
+        if full_key:
+            marker_by_devref[full_key] = marker.strip()
+        if element_key:
+            marker_by_devref[element_key] = marker.strip()
+        if file_key:
+            marker_by_file[file_key] = marker.strip()
+
+    if not marker_by_file and not marker_by_devref:
+        return []
+
+    result: list[tuple[_Box, str]] = []
+    for element in list(layer):
+        if local_name(element.tag).casefold() in {"text", "dtext", "poke"}:
+            continue
+        element_devref = element.get("devref") or ""
+        file_key, element_key, full_key = _devref_keys(element_devref)
+        marker = (
+            marker_by_devref.get(full_key)
+            or marker_by_devref.get(element_key)
+            or marker_by_file.get(file_key)
+        )
+        if not marker:
+            continue
+        box = _box(element)
+        if box is not None and box.width >= 0 and box.height >= 0:
+            result.append((box, marker))
+    return result
+
+
+def _nearest_classified_device(
+    text_box: _Box,
+    devices: list[tuple[_Box, str]],
+) -> tuple[str, float] | None:
+    """Return the nearest excluded marker and text-center-to-box distance."""
+    cx, cy = _center(text_box)
+    nearest: tuple[str, float] | None = None
+    for device_box, marker in devices:
+        dx = max(device_box.left - cx, 0.0, cx - device_box.right)
+        dy = max(device_box.top - cy, 0.0, cy - device_box.bottom)
+        distance = math.hypot(dx, dy)
+        if distance <= STATION_DEVICE_EXCLUSION_DISTANCE and (
+            nearest is None or distance < nearest[1]
+        ):
+            nearest = marker, distance
+    return nearest
 
 
 def _find_station_rmu_locate_label(layer: ET.Element, station_text: ET.Element) -> str:
@@ -527,6 +663,7 @@ def apply_station_pokes(
     current_station_name: str,
     station_resolver: Callable[[str], Any],
     allow_same_station_terminals: bool = False,
+    classification_marker_entries: tuple[object, ...] | list[object] = (),
 ) -> StationPokeResult:
     """Create/update station-jump Pokes such as DHN-40 -> JED-CTL-DHN.
 
@@ -535,8 +672,9 @@ def apply_station_pokes(
     Line geometry and connection references are not used. Database resolution
     remains the existing SUBSTATION.NAME ->
     SUBAREA_ID -> SUBCONTROLAREA.NAME chain.  A nearby parenthesized
-    pure-number Text is used as ``locateLabel`` only when it is unique; with no
-    such number the target is the plain station overview.
+    pure-number Text is used as ``locateLabel`` only when it is unique. If no
+    RMU name is available, a numeric station suffix such as ``RDS-09`` falls
+    back to the interval locate label ``AH309``.
     """
     result = StationPokeResult(file_path=file_path)
     root = tree.getroot()
@@ -545,6 +683,7 @@ def apply_station_pokes(
     current_key = (current_station_name or "").strip().casefold()
 
     for layer in direct_layers(root):
+        classified_devices = _classified_device_boxes(layer, classification_marker_entries)
         for text in list(layer):
             if local_name(text.tag) != "Text":
                 continue
@@ -564,16 +703,42 @@ def apply_station_pokes(
             adjacent_rmu_names = ", ".join(
                 f"({candidate[1]})" for candidate in locate_candidates
             )
+            classified_device = _nearest_classified_device(text_box, classified_devices)
+            if classified_device is not None:
+                marker, distance = classified_device
+                result.candidate_count += 1
+                result.skipped_count += 1
+                result.classification_excluded_count += 1
+                reason = (
+                    f"站点跳转候选 {label!r} 距离分类图元 {marker!r} 约 {distance:.1f}，"
+                    f"不超过 {int(STATION_DEVICE_EXCLUSION_DISTANCE)}，按规则排除。"
+                )
+                result.records.append(StationPokeRecord(
+                    label_text=label,
+                    station_key=station_key,
+                    adjacent_rmu_names=adjacent_rmu_names,
+                    text_id=(text.get("id") or "").strip(),
+                    action="skipped",
+                    confidence="",
+                    recognition_source="classification_marker_exclusion",
+                    reason=reason,
+                ))
+                continue
             colored_background = _colored_background_contains(
                 layer,
                 text_box,
                 related_pokes=related,
             )
-            locate_label = (
-                locate_candidates[0][1]
-                if len(locate_candidates) == 1
-                else ""
-            )
+            locate_source = ""
+            if len(locate_candidates) == 1:
+                locate_label = locate_candidates[0][1]
+                locate_source = "rmu_name"
+            elif not locate_candidates:
+                locate_label = extract_interval_locate_label(label)
+                if locate_label:
+                    locate_source = "station_interval"
+            else:
+                locate_label = ""
             # Same-station labels are normally local feeder titles and remain
             # protected. A pre-existing Poke with one proven locateLabel is
             # the narrow exception: it is an explicit navigation target, not
@@ -583,6 +748,10 @@ def apply_station_pokes(
                 and related
                 and colored_background
                 and locate_label
+                # The explicit RMU-name locate value is the only safe exception
+                # for a current-station terminal.  An interval fallback must not
+                # re-enable a self-jump merely because the label ends in digits.
+                and locate_source == "rmu_name"
             )
             if current_key and station_key.casefold() == current_key and not same_station_terminal:
                 continue
@@ -635,6 +804,8 @@ def apply_station_pokes(
             else:
                 confidence = "MEDIUM"
                 recognition_source = "background_color"
+            if locate_source == "station_interval":
+                recognition_source = "station_interval"
 
             cache_key = station_key.casefold()
             try:
@@ -671,6 +842,7 @@ def apply_station_pokes(
                     action="skipped",
                     confidence=confidence,
                     recognition_source=recognition_source,
+                    current_station=True,
                     reason=reason,
                 ))
                 continue
@@ -770,7 +942,10 @@ def apply_station_pokes(
             if related and removed:
                 reason += f" 同时删除重复 Poke {removed} 个。"
             if locate_label:
-                reason += f" 已识别相邻环网柜名 ({locate_label})，并写入 locateLabel。"
+                if locate_source == "station_interval":
+                    reason += f" 未找到相邻环网柜名，按站点间隔 {label} 生成 locateLabel={locate_label}。"
+                else:
+                    reason += f" 已识别相邻环网柜名 ({locate_label})，并写入 locateLabel。"
             result.records.append(StationPokeRecord(
                 label_text=label,
                 station_key=station_key,

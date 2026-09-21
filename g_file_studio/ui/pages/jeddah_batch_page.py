@@ -26,7 +26,6 @@ from g_file_studio.ui.widgets import (
     PathRow,
     TaskPanel,
     TemplateSelector,
-    WheelSafeComboBox,
 )
 
 
@@ -99,7 +98,7 @@ class JeddahBatchPage(BasePage):
             "✓ 6. SMR 环网柜外框统一刷成红色",
             "✓ 7. SMR 条件转换 SMART：已有 SMART 时删除外部 SMR并保持原 SMART；没有 SMART 时生成顶部居中 SMART（字号 20）；外框强制红色",
             "✓ 8. SMR 转换后再次执行 SMART 图元检查，确保 LBS / Circuit Breaker devref 正确",
-            "✓ 9. 使用“图元标准检查”中的当前 ACTIVE 标准执行 SMART/NORMAL 图元标准化，并复用同一连接修复规则：纠正 LBS、Circuit Breaker、<ZhaiWaiJieDiDaoZha> 接地刀闸的错误变体/devref与标准几何；按标准 Pin + ConnectLine/FeedLine/BusDis 端点计算双 Pin 真实连接，删除重复贯穿 ConnectLine（旁路贯穿线）并补齐拓扑；单 Pin 轻微斜线自动吸附为水平/垂直",
+            "✓ 9. 使用当前服务器标准，仅纠正环网柜内部 LBS/Circuit Breaker 的 SMART 与非 SMART 变体错误；<ZhaiWaiJieDiDaoZha> 接地刀闸完全不换。服务器缺失的图元只告警不替换；标准图元名称不固定，只按 SMART、NO-SMART、NON-SMART 等类别判断。替换图元时仅保持其原有连接端点锚点，不执行独立的连接线、拓扑或线路级修复",
             "✓ 10. 删除 RMU 红色状态点（channel_status），沿用现有状态点识别/归属规则",
             "✓ 11. 删除带 Bus 的环网柜矩形框、上移标题，并将有效配网 BusDis 母线统一刷为蓝色（无关联时 keyid 兜底）",
             "✓ 12. 将馈线名称移动到母线上方",
@@ -125,17 +124,7 @@ class JeddahBatchPage(BasePage):
         settings_layout.setContentsMargins(16, 18, 16, 14)
         settings_layout.setSpacing(10)
 
-        profile_form = QFormLayout()
         self.profile_service = SiteProfileService()
-        self.rmu_profile = WheelSafeComboBox()
-        self.rmu_profile.setMinimumContentsLength(50)
-        self.rmu_profile.setToolTip(
-            "与“图元标准检查”联动：本页严格使用用户手动设定的全局执行版本，不会因为保存了更新版本而自动切换。"
-            "吉达批处理使用该 GLOBAL 标准执行 SMART/NORMAL 图元变体、devref、标准几何与连接锚点位置偏移纠正，并执行设备连接规范化：双 Pin 设备按标准 Pin 与 ConnectLine/FeedLine/BusDis 端点计算真实断点，安全删除重复贯穿 ConnectLine（旁路贯穿线）并补齐 link/node_area；单 Pin 设备轻微斜线自动正交；这不属于同类图元版本升级。"
-        )
-        self.refresh_profiles(self.user_settings.get_value("jeddah_batch/rmu_profile_name", ""))
-        profile_form.addRow("当前全局图元标准", self.rmu_profile)
-        settings_layout.addLayout(profile_form)
 
         threshold_form = QFormLayout()
         self.threshold = IntegerInput(
@@ -236,45 +225,16 @@ class JeddahBatchPage(BasePage):
         return site_key.startswith("JED") or "JEDDAH" in site_key
 
     def refresh_profiles(self, preferred_name: str = "") -> None:
-        """Show the explicitly selected global execution standard only.
-
-        v2.18.116 decouples the global execution version from the newest editable
-        Profile version.  Jeddah batch must therefore never guess the newest version
-        by profile name; it follows the exact global profile + version selected in
-        “图元标准检查”.
-        """
-        del preferred_name  # compatibility with the existing cross-page signal
-        name, version = self.profile_service.get_global_profile_selection()
-        profile = self.profile_service.get_profile_version(name, version) if name and version is not None else None
-
-        self.rmu_profile.blockSignals(True)
-        self.rmu_profile.clear()
-        if profile is None:
-            self.rmu_profile.addItem("尚未设置全局图元标准，请先到“图元标准检查”选择版本并设为全局", ("", None))
-        elif not self._is_jeddah_profile(profile):
-            self.rmu_profile.addItem(
-                f"当前全局标准不是 Jeddah：{profile.site_name} / {profile.profile_name} / V{profile.profile_version}",
-                (profile.profile_name, profile.profile_version),
-            )
-        else:
-            missing = jeddah_role_issues(profile)
-            readiness = "吉达所需 SMART/NORMAL LBS+Q+接地标准完整" if not missing else ("缺少：" + "、".join(missing))
-            lock_text = " · LOCKED" if profile.locked else ""
-            self.rmu_profile.addItem(
-                f"{profile.site_name} / {profile.profile_name} / V{profile.profile_version} · GLOBAL{lock_text} · {readiness}",
-                (profile.profile_name, profile.profile_version),
-            )
-        self.rmu_profile.setCurrentIndex(0)
-        self.rmu_profile.setEnabled(False)
-        self.rmu_profile.blockSignals(False)
+        """Compatibility hook; the page now reads the current server standard at run time."""
+        del preferred_name
 
     def on_page_activated(self) -> None:
-        """Page-navigation hook: always show the latest shared ACTIVE standard."""
+        """Page-navigation hook: always show the shared current server standard."""
         self.refresh_profiles()
 
     def _persist(self) -> None:
         self.source.persist_all_text()
-        # Global standard selection is owned by “图元标准检查”; this page never overrides it.
+        # Global standard selection is owned by “服务器图元更新检查”; this page never overrides it.
         self.user_settings.set_value("jeddah_batch/small_element_threshold", self.threshold.value())
         self.user_settings.set_value("jeddah_batch/rmu_name_exclusions", self.name_exclusions.text().strip())
         self.user_settings.set_value("jeddah_batch/margin_left", self.margin_left.value())
@@ -303,29 +263,23 @@ class JeddahBatchPage(BasePage):
                 "吉达批处理的 ID 处理阶段必须使用全局 ID 模板。请先在“ID 检查与修复”模块中确认 ID 规则。",
             )
             return
-        profile_data = self.rmu_profile.currentData()
-        profile_name = str(profile_data[0] or "").strip() if isinstance(profile_data, (tuple, list)) and profile_data else ""
-        try:
-            profile_version = int(profile_data[1]) if isinstance(profile_data, (tuple, list)) and len(profile_data) > 1 and profile_data[1] is not None else None
-        except (TypeError, ValueError):
-            profile_version = None
-        if not profile_name or profile_version is None:
+        active_profile = self.profile_service.get_current_server_standard(auto_initialize=False)
+        if active_profile is None:
             QMessageBox.warning(
                 self,
-                "尚未设置全局图元标准",
-                "请先在“图元标准检查”中选择需要执行的版本，并点击“设为全局版本”。",
+                "尚未应用服务器图元标准",
+                "请先在“服务器图元更新检查”中读取服务器标准并点击“手动更新当前标准”。",
             )
             return
-        active_profile = self.profile_service.get_profile_version(profile_name, profile_version)
-        if active_profile is None:
-            QMessageBox.warning(self, "Profile 不存在", f"未找到全局图元标准：{profile_name} V{profile_version}")
-            return
+        profile_name = active_profile.profile_name
+        profile_version = active_profile.profile_version
         missing_roles = jeddah_role_issues(active_profile)
         if missing_roles:
             QMessageBox.warning(
                 self,
                 "吉达所需图元标准不完整",
-                f"当前全局标准 {active_profile.profile_name} V{active_profile.profile_version} 已保存，但吉达固定流程仍缺少：\n"
+                f"当前服务器标准 {active_profile.profile_name}（版本 {active_profile.server_standard_label} UTC）已应用，"
+                "但吉达固定流程仍缺少：\n"
                 + "\n".join(f"- {item}" for item in missing_roles)
                 + "\n\n请在图元标准表中确认这些图元的检查范围（SMART/NORMAL/ANY）和设备类型后保存。",
             )

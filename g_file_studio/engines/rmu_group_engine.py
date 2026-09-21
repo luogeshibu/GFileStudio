@@ -537,8 +537,23 @@ def group_rmu_layer(
     """
     original_children = list(layer)
     blocks, warnings = _scan_merge_blocks(original_children, strict=False)
-    rmu_blocks = [block for block in blocks if block.is_rmu]
-    non_rmu_blocks = [block for block in blocks if not block.is_rmu]
+    if validated_rmu_rect_ids is None:
+        validated_rmu_rect_ids = {
+            (rect.get("id") or "").strip()
+            for rect in _valid_rmu_rects_for_smr(layer)
+            if (rect.get("id") or "").strip()
+        }
+    rmu_blocks = [
+        block
+        for block in blocks
+        if block.is_rmu
+        and any(
+            (rect.get("id") or "").strip() in validated_rmu_rect_ids
+            for rect in block.rects
+        )
+    ]
+    rmu_block_ids = {id(block.merge) for block in rmu_blocks}
+    non_rmu_blocks = [block for block in blocks if id(block.merge) not in rmu_block_ids]
 
     removed_rmu_headers = {id(block.merge) for block in rmu_blocks}
     protected_member_ids = {
@@ -553,17 +568,12 @@ def group_rmu_layer(
     # v2.18.59: 独立“环网柜处理”优先直接使用 RMU 信息汇总 identify_rmus()
     # 已经确认的 rect ID 集合。这样“哪些 rect 是 RMU”只有一套权威识别算法，
     # 组合引擎只负责对识别结果建立 Merge，不再自行猜测柜体。
-    # validated_rmu_only 仅为旧调用保留兼容；新 RMU 页面不会走该回退分支。
-    if validated_rmu_rect_ids is not None:
-        rects = [
-            rect for rect in all_rects
-            if (rect.get("id") or "").strip() in validated_rmu_rect_ids
-        ]
-    elif validated_rmu_only:
-        valid_ids = {id(rect) for rect in _valid_rmu_rects_for_smr(layer)}
-        rects = [rect for rect in all_rects if id(rect) in valid_ids]
-    else:
-        rects = all_rects
+    # validated_rmu_only 仅为旧调用保留兼容；即使旧调用方没有显式传入
+    # rect ID，也必须回退到同一套三元素 RMU 强校验，不能把普通 rect 组合进去。
+    rects = [
+        rect for rect in all_rects
+        if (rect.get("id") or "").strip() in validated_rmu_rect_ids
+    ]
     candidate_rect_ids = {id(rect) for rect in rects}
 
     result = RmuGroupingResult(
@@ -780,7 +790,12 @@ def _lower_released_rects_below_devices(
 
     return working, lowered_ids
 
-def ungroup_rmu_layer(layer: ET.Element, file_path: Path) -> RmuUngroupingResult:
+def ungroup_rmu_layer(
+    layer: ET.Element,
+    file_path: Path,
+    *,
+    validated_rmu_rect_ids: set[str] | None = None,
+) -> RmuUngroupingResult:
     """取消所有环网柜组合，并把环网柜外框放到柜内设备的下层。
 
     处理只改变 Layer 直属元素的顺序：
@@ -790,7 +805,21 @@ def ungroup_rmu_layer(layer: ET.Element, file_path: Path) -> RmuUngroupingResult
     """
     children = list(layer)
     blocks, warnings = _scan_merge_blocks(children, strict=False)
-    rmu_blocks = [block for block in blocks if block.is_rmu]
+    if validated_rmu_rect_ids is None:
+        validated_rmu_rect_ids = {
+            (rect.get("id") or "").strip()
+            for rect in _valid_rmu_rects_for_smr(layer)
+            if (rect.get("id") or "").strip()
+        }
+    rmu_blocks = [
+        block
+        for block in blocks
+        if block.is_rmu
+        and any(
+            (rect.get("id") or "").strip() in validated_rmu_rect_ids
+            for rect in block.rects
+        )
+    ]
     remove_ids = {id(block.merge) for block in rmu_blocks}
     released_member_ids = {id(member) for block in rmu_blocks for member in block.members}
     released_rects = [rect for block in rmu_blocks for rect in block.rects]
@@ -918,8 +947,17 @@ def group_rmu_tree(
     )
 
 
-def ungroup_rmu_tree(tree: ET.ElementTree, file_path: Path) -> RmuUngroupingResult:
-    return ungroup_rmu_layer(_single_layer(tree, file_path), file_path)
+def ungroup_rmu_tree(
+    tree: ET.ElementTree,
+    file_path: Path,
+    *,
+    validated_rmu_rect_ids: set[str] | None = None,
+) -> RmuUngroupingResult:
+    return ungroup_rmu_layer(
+        _single_layer(tree, file_path),
+        file_path,
+        validated_rmu_rect_ids=validated_rmu_rect_ids,
+    )
 
 
 @dataclass
@@ -1014,10 +1052,12 @@ def _center_inside_box(element: ET.Element, box: Box, tolerance: float = 0.5) ->
 
 
 def _valid_rmu_rects_for_smr(layer: ET.Element) -> list[ET.Element]:
-    """Return only real RMU frames, reusing the existing hard cabinet criteria.
+    """Return only real RMU frames using the shared three-element hard rule.
 
-    This helper is intentionally separate from grouping/ungrouping logic so the
-    established RMU Merge behaviour remains untouched.
+    This is the local fallback for legacy/direct callers that do not pass the
+    authoritative IDs returned by ``identify_rmus()``.  It deliberately mirrors
+    the public RMU recognizer: a frame must contain BusDis, CBreakerDis and
+    ZhaiWaiJieDiDaoZha.
     """
     direct = list(layer)
     buses = [e for e in direct if local_name(e.tag) == 'BusDis']
@@ -1062,6 +1102,7 @@ def _color_smr_nearest_rmu_frames(
     layer: ET.Element,
     result: RmuEnhancementResult,
     color: str,
+    validated_rmu_rect_ids: set[str] | None = None,
 ) -> None:
     """Color the nearest *valid* RMU rect for every direct Text[ts=SMR].
 
@@ -1074,6 +1115,11 @@ def _color_smr_nearest_rmu_frames(
     ]
     result.smr_text_count = len(smr_texts)
     rects = _valid_rmu_rects_for_smr(layer)
+    if validated_rmu_rect_ids is not None:
+        rects = [
+            rect for rect in rects
+            if (rect.get('id') or '').strip() in validated_rmu_rect_ids
+        ]
     if smr_texts and not rects:
         result.warnings.append('发现 SMR Text，但未找到满足 BusDis + CBreakerDis + ZhaiWaiJieDiDaoZha 条件的环网柜外框。')
         return
@@ -1117,9 +1163,24 @@ def _color_smr_nearest_rmu_frames(
     result.smr_matched_rect_count = len(matched_rect_ids)
 
 
-def _rmu_rects_by_bus_tag(layer: ET.Element, tag_name: str) -> list[tuple[ET.Element, ET.Element]]:
+def _rmu_rects_by_bus_tag(
+    layer: ET.Element,
+    tag_name: str,
+    validated_rmu_rect_ids: set[str] | None = None,
+) -> list[tuple[ET.Element, ET.Element]]:
+    if validated_rmu_rect_ids is None:
+        validated_rmu_rect_ids = {
+            (rect.get('id') or '').strip()
+            for rect in _valid_rmu_rects_for_smr(layer)
+            if (rect.get('id') or '').strip()
+        }
     matches: list[tuple[ET.Element, ET.Element]] = []
     for rect in _direct_rects(layer):
+        if (
+            validated_rmu_rect_ids is not None
+            and (rect.get('id') or '').strip() not in validated_rmu_rect_ids
+        ):
+            continue
         candidates = [
             element for element in _elements_inside_rect(layer, rect)
             if local_name(element.tag) == tag_name
@@ -1278,6 +1339,7 @@ def _reposition_channel_statuses(
     result: RmuEnhancementResult,
     position: str = 'bottom_left',
     inner_margin: float = 5.0,
+    validated_rmu_rect_ids: set[str] | None = None,
 ) -> None:
     """将每个 BusDis 环网柜的 channel_status 红点移动到框内指定锚点。"""
     position_value = getattr(position, 'value', position)
@@ -1287,7 +1349,7 @@ def _reposition_channel_statuses(
     if inner_margin < 0:
         raise RmuGroupingError('channel_status 框内边距不能小于 0。')
 
-    pairs = _rmu_rects_by_bus_tag(layer, 'BusDis')
+    pairs = _rmu_rects_by_bus_tag(layer, 'BusDis', validated_rmu_rect_ids)
     result.channel_status_rect_count = len(pairs)
     result.channel_status_position = position_value
     claimed: set[int] = set()
@@ -1408,6 +1470,7 @@ def enhance_rmu_layer(
     channel_status_inner_margin: float = 5.0,
     remove_bus_frame_and_reposition_title: bool = False,
     smart_rmu_rect_ids: set[str] | None = None,
+    validated_rmu_rect_ids: set[str] | None = None,
 ) -> RmuEnhancementResult:
     """执行环网柜视觉和布局增强。
 
@@ -1417,10 +1480,18 @@ def enhance_rmu_layer(
     """
     result = RmuEnhancementResult(file_path=file_path)
     rects = _direct_rects(layer)
+    if validated_rmu_rect_ids is None:
+        validated_rmu_rect_ids = {
+            (rect.get('id') or '').strip()
+            for rect in _valid_rmu_rects_for_smr(layer)
+            if (rect.get('id') or '').strip()
+        }
 
     if change_smart_frame_color:
         for rect in rects:
             rect_id = (rect.get('id') or '').strip()
+            if not rect_id or rect_id not in validated_rmu_rect_ids:
+                continue
             if smart_rmu_rect_ids is not None:
                 # Standalone RMU processing can supply the authoritative SMART
                 # cabinet set from RMU Summary / identify_rmus().  This avoids
@@ -1430,14 +1501,21 @@ def enhance_rmu_layer(
                 if not rect_id or rect_id not in smart_rmu_rect_ids:
                     continue
             elif not _rect_contains_smart_text(layer, rect):
-                # Legacy callers keep the historical geometry-only behaviour.
+                # The frame must satisfy the same strict RMU criteria even when
+                # this enhancement function is called directly without an
+                # identification result from the orchestrator.
                 continue
             result.smart_rmu_rect_count += 1
             if _set_static_line_color(rect, smart_frame_color):
                 result.smart_frame_color_changed += 1
 
     if change_smr_frame_color:
-        _color_smr_nearest_rmu_frames(layer, result, smr_frame_color)
+        _color_smr_nearest_rmu_frames(
+            layer,
+            result,
+            smr_frame_color,
+            validated_rmu_rect_ids,
+        )
 
     if reposition_channel_status:
         _reposition_channel_statuses(
@@ -1445,10 +1523,11 @@ def enhance_rmu_layer(
             result,
             position=channel_status_position,
             inner_margin=channel_status_inner_margin,
+            validated_rmu_rect_ids=validated_rmu_rect_ids,
         )
 
     if remove_bus_frame_and_reposition_title:
-        bus_pairs = _rmu_rects_by_bus_tag(layer, 'Bus')
+        bus_pairs = _rmu_rects_by_bus_tag(layer, 'Bus', validated_rmu_rect_ids)
         result.bus_rect_count = len(bus_pairs)
         bus_rects = [rect for rect, _bus in bus_pairs]
         result.bus_merge_removed = _remove_merges_for_rects(layer, bus_rects)

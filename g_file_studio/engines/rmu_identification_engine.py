@@ -9,6 +9,9 @@ from typing import Callable
 from g_file_studio.engines.id_engine import direct_layer_elements, local_name
 
 
+RMU_NAME_MAX_DISTANCE = 200.0
+
+
 @dataclass(frozen=True)
 class _Box:
     left: float
@@ -37,6 +40,7 @@ class _Box:
 class RmuIdentification:
     rect_id: str
     name: str
+    name_text_id: str
     name_position: str
     rmu_type: str
     l_count: int
@@ -79,6 +83,18 @@ class GlobalTextOwner:
 
 _Y_LABEL_RE = re.compile(r"^Y\s*(\d+)$", re.I)
 _Q_LABEL_RE = re.compile(r"^Q\s*(\d+)$", re.I)
+_FIXED_RMU_NAME_EXCLUSIONS = (
+    "SMART",
+    "SMR",
+    "SFI",
+    "NOP",
+    "N.O.P",
+    "N-O-P",
+    "N_O_P",
+    "DAS/OK",
+    "DAS",
+    "OK",
+)
 
 
 def _float(element: ET.Element, name: str, default: float = 0.0) -> float:
@@ -286,7 +302,7 @@ def _candidate_for_position(text: ET.Element, rect: _Box, position: str) -> tupl
     """Return (edge gap, perpendicular-axis offset) for one selected direction.
 
     The direction is a hard user constraint.  This deliberately mirrors the
-    proven DMM RMU label geometry: 120 G-units maximum edge distance and 20
+    proven DMM RMU label geometry: 200 G-units maximum edge distance and 20
     G-units projection tolerance.  A Text may overlap the frame edge by up to
     20 units, but its center must still be on the requested side.
     """
@@ -294,7 +310,7 @@ def _candidate_for_position(text: ET.Element, rect: _Box, position: str) -> tupl
     if box is None:
         return None
 
-    max_distance = 120.0
+    max_distance = RMU_NAME_MAX_DISTANCE
     edge_tolerance = 20.0
 
     if position == "top":
@@ -455,9 +471,76 @@ def _assign_names_globally(
     return result
 
 
+def _assign_names_local_top(
+    texts: list[ET.Element],
+    cabinets: list[tuple[str, _Box]],
+    excluded_names: frozenset[str] = frozenset(),
+    positions: tuple[str, ...] = ("top",),
+) -> dict[str, tuple[str, str, str, list[str], str]]:
+    """Assign names by independent RMU-frame directional-band matching.
+
+    RMU names are a property of the validated RMU frame, not of the nearest
+    arbitrary equipment symbol in the whole drawing.  Build candidates for
+    each frame directly from the narrow ``top`` geometry and resolve conflicts
+    only between RMU frames.  This preserves the one-concrete-Text/one-device
+    rule without allowing transformers, feeders, lines, or other symbols to
+    claim an RMU name first.
+    """
+    positions = tuple(position for position in positions if position in _NAME_POSITIONS) or ("top",)
+    per_rect_raw: dict[str, list[tuple[float, float, str, str, str, bool]]] = {
+        rect_id: _all_candidates_for_rect(texts, rect, positions, excluded_names)
+        for rect_id, rect in cabinets
+    }
+
+    # A name Text may geometrically fall in the top band of two neighbouring
+    # frames.  It still belongs to exactly one RMU: the frame with the smaller
+    # top-band score wins.  No non-RMU element participates in this decision.
+    owners: dict[str, tuple[str, float, tuple[float, float, str, str, str, bool]]] = {}
+    for rect_id, items in per_rect_raw.items():
+        for item in items:
+            text_key = item[4]
+            score = _candidate_score(item, positions)
+            current = owners.get(text_key)
+            if current is None or (score, rect_id) < (current[1], current[0]):
+                owners[text_key] = (rect_id, score, item)
+
+    owned_by_rect: dict[str, list[tuple[float, float, str, str, str, bool]]] = {
+        rect_id: [] for rect_id, _rect in cabinets
+    }
+    for rect_id, _score, item in owners.values():
+        owned_by_rect.setdefault(rect_id, []).append(item)
+
+    text_by_key = {f"__text_object_{id(text)}": text for text in texts}
+    result: dict[str, tuple[str, str, str, list[str], str]] = {}
+    for rect_id, _rect in cabinets:
+        candidates = owned_by_rect.get(rect_id, [])
+        candidates.sort(key=lambda item: (_candidate_score(item, positions), item[3], item[4]))
+        if not candidates:
+            result[rect_id] = ("", "", "未识别", [], "")
+            continue
+
+        warnings: list[str] = []
+        if len(candidates) == 1:
+            chosen = candidates[0]
+            confidence = "高"
+        else:
+            # The selected direction is a hard constraint. Color is intentionally
+            # not a tie-breaker here; the nearest candidate wins.
+            chosen = candidates[0]
+            warnings.append("环网柜框指定方向存在多个名称候选，按最近位置选择")
+            confidence = "中"
+
+        _gap, _axis_offset, position, value, text_key, _green = chosen
+        name_text_id = (text_by_key.get(text_key).get("id") or "").strip() if text_by_key.get(text_key) is not None else ""
+        result[rect_id] = (value, position, confidence, warnings, name_text_id)
+
+    return result
 
 
-_AUTO_NAME_POSITIONS = ("top", "right", "bottom", "left")
+
+
+_NAME_POSITIONS = ("top", "right", "bottom", "left")
+_AUTO_NAME_POSITIONS = _NAME_POSITIONS
 
 
 @dataclass(frozen=True)
@@ -540,7 +623,7 @@ def _candidate_for_auto_position(
         return None
 
     base = max(rect.width, rect.height)
-    max_distance = max(160.0, min(320.0, base * 1.10))
+    max_distance = RMU_NAME_MAX_DISTANCE
     projection_tolerance = max(60.0, min(140.0, base * 0.45))
     edge_tolerance = 45.0
 
@@ -1151,10 +1234,10 @@ def identify_rmus(
 ) -> RmuIdentificationResult:
     """识别环网柜名称、L/T 柜型及 SMART 状态，不修改 XML。
 
-    名称识别固定使用历史模式：只在环网柜外框正上方搜索可见 Text，
-    并按全图一对一规则把每个具体 Text 归属给一个外框。保留
-    ``name_positions`` 和 ``name_resolution_mode`` 参数仅为兼容旧调用方，
-    参数值不再改变 RMU 的强制识别规则。
+    环网柜识别固定要求有效 rect 框内同时存在 BusDis、CBreakerDis、
+    ZhaiWaiJieDiDaoZha。名称只在调用方选择的方向限定区域内查找，并只在
+    环网柜外框之间一对一分配；未选择的方向不参与候选。RMU 框的强制识别
+    规则不受名称方向选择影响。
 
     共同规则：
     1. 必须存在环网柜 rect，且框内同时具有 BusDis、CBreakerDis、ZhaiWaiJieDiDaoZha。
@@ -1173,13 +1256,9 @@ def identify_rmus(
     requested_mode = (name_resolution_mode or "selected_direction").strip().lower()
     if requested_mode not in {"selected_direction", "auto_cluster"}:
         raise ValueError(f"未知 RMU 柜名识别模式：{name_resolution_mode}")
-    # RMU recognition is intentionally strict and site-independent: only the
-    # Text above the validated cabinet frame can be its name.  Older callers may
-    # still pass auto_cluster or a multi-direction setting, but those options must
-    # not weaken this invariant.
-    mode = "selected_direction"
-    name_positions = ("top",)
-
+    selected_positions = tuple(
+        position for position in name_positions if position in _NAME_POSITIONS
+    ) or ("top",)
     intelligent_markers = tuple(
         value for value in intelligent_marker_values if _normalize_excluded_name(value)
     ) or ("SMART", "SMR")
@@ -1190,7 +1269,7 @@ def identify_rmus(
     }
     excluded_names = frozenset(
         key
-        for value in (*excluded_name_values, *intelligent_markers)
+        for value in (*excluded_name_values, *_FIXED_RMU_NAME_EXCLUSIONS, *intelligent_markers)
         if (key := _normalize_excluded_name(value))
     )
 
@@ -1206,9 +1285,9 @@ def identify_rmus(
 
     result = RmuIdentificationResult(file_path=file_path)
 
-    # First determine the complete cabinet set.  Name assignment is deliberately
-    # done globally afterwards so adjacent cabinets cannot reuse/steal the same
-    # Text.  Only user-selected directions are ever considered.
+    # First determine the complete cabinet set.  Every RMU caller uses the same
+    # strict frame-local name rule; no caller may fall back to global equipment
+    # ownership or topology-based name inference.
     valid_cabinets: list[tuple[ET.Element, _Box]] = []
     for rect in rects:
         rect_box = _box(rect)
@@ -1223,35 +1302,12 @@ def identify_rmus(
 
     cabinet_boxes = [((rect.get("id") or f"__rect_{index}"), rect_box)
                      for index, (rect, rect_box) in enumerate(valid_cabinets)]
-    # Name ownership is global across the whole drawing.  RMU-only matching is
-    # applied only after other real equipment has had the first claim on its
-    # nearest Text; topology primitives never enter that competition.
-    if mode == "auto_cluster":
-        # Do not discard a label merely because a neighbouring cabinet is
-        # currently a few pixels closer.  The cluster resolver needs the complete
-        # outer-label pool to learn the common direction and preserve row/column
-        # order across vertically stacked cabinets.
-        globally_owned_name_texts = _cluster_rmu_name_texts(
-            texts, valid_cabinets, excluded_names
-        )
-        name_assignments = _assign_names_auto_cluster(
-            globally_owned_name_texts,
-            cabinet_boxes,
-            excluded_names,
-        )
-    else:
-        globally_owned_name_texts = _globally_owned_rmu_name_texts(
-            texts,
-            elements,
-            valid_cabinets,
-            excluded_names,
-        )
-        name_assignments = _assign_names_globally(
-            globally_owned_name_texts,
-            cabinet_boxes,
-            name_positions,
-            excluded_names,
-        )
+    name_assignments = _assign_names_local_top(
+        texts,
+        cabinet_boxes,
+        excluded_names,
+        selected_positions,
+    )
 
     # User-configured intelligent markers are global RMU markers. They are not
     # required to be fully inside a cabinet frame: a label may sit on / slightly
@@ -1417,8 +1473,8 @@ def identify_rmus(
             type_cross_note = "Y/Q 文字和 devref 均无法识别柜型"
             warnings.append(type_cross_note)
 
-        name, position, confidence, name_warnings = name_assignments.get(
-            rect_key, ("", "", "未识别", [])
+        name, position, confidence, name_warnings, name_text_id = name_assignments.get(
+            rect_key, ("", "", "未识别", [], "")
         )
         warnings.extend(name_warnings)
         smart_count = 0
@@ -1442,6 +1498,7 @@ def identify_rmus(
         result.items.append(RmuIdentification(
             rect_id=(rect.get("id") or "").strip(),
             name=name,
+            name_text_id=name_text_id,
             name_position=position,
             rmu_type=rmu_type,
             l_count=l_count,
@@ -1468,10 +1525,7 @@ def identify_rmus(
     result.ambiguous_name_count = sum(1 for item in result.items if item.confidence == "待确认")
     for item in result.items:
         if not item.name:
-            if mode == "auto_cluster":
-                result.warnings.append(f"rect ID {item.rect_id or '<无ID>'} 自动布局未找到距离足够近的有效柜名。")
-            else:
-                result.warnings.append(f"rect ID {item.rect_id or '<无ID>'} 未找到指定方向且距离足够近的柜名。")
+            result.warnings.append(f"rect ID {item.rect_id or '<无ID>'} 未找到指定方向且距离足够近的柜名。")
         for warning in item.warnings:
             result.warnings.append(f"rect ID {item.rect_id or '<无ID>'}：{warning}")
     return result

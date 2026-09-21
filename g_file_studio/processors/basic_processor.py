@@ -820,10 +820,23 @@ def process_basic(
                     log(f"[同类图元版本升级告警] {input_path.name}：{warning}")
 
             if settings.remove_all_graphic_merges:
+                cleanup_identification = identify_rmus(
+                    tree,
+                    input_path,
+                    name_positions=("top",),
+                    smart_in_type=True,
+                    excluded_name_values=parse_name_exclusions(settings.rmu_name_exclusions),
+                    intelligent_marker_values=parse_intelligent_markers(settings.rmu_intelligent_markers),
+                    name_resolution_mode=settings.rmu_name_resolution_mode,
+                )
+                cleanup_rmu_rect_ids = {
+                    item.rect_id for item in cleanup_identification.items if item.rect_id
+                }
                 cleanup = remove_all_graphic_merges(
                     tree,
                     input_path,
                     lower_rmu_rects=settings.lower_rmu_rects_after_merge_cleanup,
+                    rmu_rect_ids=cleanup_rmu_rect_ids,
                 )
                 total_graphic_merges_removed += cleanup.removed_merge_count
                 total_graphic_merge_cleanup_rmu_rects += cleanup.rmu_rect_count
@@ -862,7 +875,7 @@ def process_basic(
             # 即使用户没有勾选“启用 RMU 信息汇总”，组合动作也会在内存中执行一次只读识别；
             # 不额外生成汇总报告，也不改变信息汇总本身的开关语义。
             grouping_rmu_rect_ids: set[str] | None = None
-            if rmu_action == RmuAction.GROUP and settings.reset_existing_merges_before_rmu_group:
+            if rmu_action == RmuAction.GROUP:
                 grouping_identification = rmu_identification or poke_identification
                 if grouping_identification is None:
                     grouping_positions = tuple(
@@ -957,7 +970,25 @@ def process_basic(
                 if grouping.rect_count == 0:
                     log(f"[环网柜组合] {input_path.name}：未发现直属 <rect>，无需组合。")
             elif rmu_action == RmuAction.UNGROUP:
-                ungrouping = ungroup_rmu_tree(tree, input_path)
+                ungroup_identification = rmu_identification or poke_identification
+                if ungroup_identification is None:
+                    ungroup_identification = identify_rmus(
+                        tree,
+                        input_path,
+                        name_positions=("top",),
+                        smart_in_type=True,
+                        excluded_name_values=parse_name_exclusions(settings.rmu_name_exclusions),
+                        intelligent_marker_values=parse_intelligent_markers(settings.rmu_intelligent_markers),
+                        name_resolution_mode=settings.rmu_name_resolution_mode,
+                    )
+                ungroup_rmu_rect_ids = {
+                    item.rect_id for item in ungroup_identification.items if item.rect_id
+                }
+                ungrouping = ungroup_rmu_tree(
+                    tree,
+                    input_path,
+                    validated_rmu_rect_ids=ungroup_rmu_rect_ids,
+                )
                 total_rmu_ungrouped += ungrouping.removed_rmu_merge_count
                 total_rmu_released_members += ungrouping.released_member_count
                 total_rmu_lowered_rects += ungrouping.lowered_rect_count
@@ -1024,6 +1055,24 @@ def process_basic(
                         f"确认智能 RMU {len(smart_frame_rmu_rect_ids)} 个。"
                     )
 
+                validated_rmu_rect_ids: set[str] | None = None
+                validated_identification = rmu_identification or poke_identification
+                if validated_identification is None:
+                    validated_identification = identify_rmus(
+                        tree,
+                        input_path,
+                        name_positions=("top",),
+                        smart_in_type=True,
+                        excluded_name_values=parse_name_exclusions(settings.rmu_name_exclusions),
+                        intelligent_marker_values=parse_intelligent_markers(settings.rmu_intelligent_markers),
+                        name_resolution_mode=settings.rmu_name_resolution_mode,
+                    )
+                validated_rmu_rect_ids = {
+                    item.rect_id
+                    for item in validated_identification.items
+                    if item.rect_id
+                }
+
                 enhancement = enhance_rmu_tree(
                     tree,
                     input_path,
@@ -1038,6 +1087,7 @@ def process_basic(
                         settings.remove_bus_rmu_frame_and_reposition_title
                     ),
                     smart_rmu_rect_ids=smart_frame_rmu_rect_ids,
+                    validated_rmu_rect_ids=validated_rmu_rect_ids,
                 )
                 total_smart_rmu_rects += enhancement.smart_rmu_rect_count
                 total_smart_rmu_frames_changed += enhancement.smart_frame_color_changed

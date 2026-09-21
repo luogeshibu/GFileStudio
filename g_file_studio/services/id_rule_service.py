@@ -168,7 +168,24 @@ class IdRuleService:
             return set()
         return {str(tag) for tag in data.get("deleted_tags", []) if str(tag).strip()}
 
-    def save_rules(self, rules: Iterable[IdRule], deleted_tags: set[str] | None = None) -> None:
+    def load_server_snapshot(self) -> dict[str, object]:
+        """读取最近一次人工确认固化的服务器规则版本信息。"""
+        if not self.json_path.exists():
+            return {}
+        try:
+            data = json.loads(self.json_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        snapshot = data.get("server_snapshot")
+        return dict(snapshot) if isinstance(snapshot, dict) else {}
+
+    def save_rules(
+        self,
+        rules: Iterable[IdRule],
+        deleted_tags: set[str] | None = None,
+        *,
+        server_snapshot: dict[str, object] | None = None,
+    ) -> None:
         ordered = sorted(rules, key=lambda r: r.tag.lower())
         deleted = self._deleted_tags() if deleted_tags is None else set(deleted_tags)
         payload = {
@@ -178,9 +195,35 @@ class IdRuleService:
             "deleted_tags": sorted(deleted),
             "rules": [asdict(rule) for rule in ordered],
         }
+        snapshot = server_snapshot if server_snapshot is not None else self.load_server_snapshot()
+        if snapshot:
+            payload["server_snapshot"] = snapshot
         tmp = self.json_path.with_suffix(self.json_path.suffix + ".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self.json_path)
+
+    def save_server_snapshot(
+        self,
+        rules: Iterable[IdRule],
+        *,
+        version: str,
+        file_count: int,
+        element_count: int,
+        selected_rule_count: int,
+        candidate_statistics: dict[str, object] | None = None,
+    ) -> None:
+        """保存用户确认后的服务器 ID 规则版本及证据摘要。"""
+        self.save_rules(
+            rules,
+            server_snapshot={
+                "version": str(version),
+                "source": "server_g",
+                "file_count": int(file_count),
+                "element_count": int(element_count),
+                "selected_rule_count": int(selected_rule_count),
+                "candidate_statistics": candidate_statistics or {},
+            },
+        )
 
     def upsert(self, rule: IdRule) -> None:
         rules = self.load_rules()

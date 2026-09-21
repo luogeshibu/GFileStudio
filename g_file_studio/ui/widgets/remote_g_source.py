@@ -315,6 +315,15 @@ class RemoteGSourceWidget(QWidget):
         self._apply_filter()
         self.selectionChanged.emit()
 
+    def select_all_files(self) -> None:
+        """选中当前已加载的全部远程 G 文件，供需要全量读取的模块使用。"""
+        self.table.blockSignals(True)
+        for row in range(self.table.rowCount()):
+            self.table.item(row, 0).setCheckState(Qt.CheckState.Checked)
+        self.table.blockSignals(False)
+        self._apply_filter()
+        self.selectionChanged.emit()
+
     def _clear_checks(self) -> None:
         self.table.blockSignals(True)
         for row in range(self.table.rowCount()):
@@ -345,6 +354,9 @@ class RemoteGSourceWidget(QWidget):
                     selected.append(by_path[remote_path])
         return selected
 
+    def has_loaded_files(self) -> bool:
+        return bool(self._files)
+
     def cache_dir(self) -> Path:
         return self._prepared_dir
 
@@ -357,7 +369,7 @@ class RemoteGSourceWidget(QWidget):
             raise RuntimeError(f"SSH 处理快照目录必须位于本地 workspace 中：{prepared}") from exc
         return prepared
 
-    def prepare_selected(self, *, log=None) -> Path:
+    def prepare_selected(self, *, log=None, progress=None) -> Path:
         selected = self.selected_files()
         if not selected:
             raise ValueError("请先在 SSH G 文件列表中选择一个或多个文件。")
@@ -375,6 +387,7 @@ class RemoteGSourceWidget(QWidget):
             selected_files=selected,
             target_dir=snapshot_dir,
             log=log,
+            progress=progress,
         )
         self.prepared.emit(str(snapshot_dir))
         return snapshot_dir
