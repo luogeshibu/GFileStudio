@@ -496,8 +496,7 @@ class MergePage(BasePage):
             if not validate_existing_directory(self, self.input_path.path(), "馈线图合并输入目录"):
                 return
             self.input_path.persist_valid_path()
-        if not validate_existing_directory(self, self.output_path.path(), "馈线图合并输出目录"):
-            return
+        # Managed workspace output is recreated by begin_managed_run().
         self.remote_source.persist()
         if self.add_frame_after_merge.isChecked() and not self.merge_frame_selector.validate_selection():
             return

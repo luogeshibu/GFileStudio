@@ -220,8 +220,7 @@ class FramePage(BasePage):
     def run(self) -> None:
         if not validate_input_source(self, self.source, display_name="图框添加输入"):
             return
-        if not validate_existing_directory(self, self.output_path.path(), "图框添加输出目录"):
-            return
+        # Managed workspace output is disposable and recreated on demand.
         if not self.template_selector.validate_selection():
             return
         self.source.persist_current()

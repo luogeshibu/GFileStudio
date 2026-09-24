@@ -7,7 +7,6 @@
     "DESIGN.md": "59b57a78cc16d10e2678728a5dd35b1324b919c962a0cd0fac73d88c273fd8ad",
     "README.md": "3e4eb3aa8f0adcd41450d5078720dcf9c39bf09e9833d5d03ceca2143fbe0ea8",
     "app.py": "ec9545afcfb5d7154cb0105928600dcaa5b06856b8215491375e4fcae2225154",
-    "build_exe.ps1": "50d8a00676158e666ed237df1916eb495beccfd093d9dfeabcd37e03827307b7",
     "config/drawing_frame_config.json": "781a4ae6c203945b492678f92d3ae8010cc579d16446a0680733691fafdb49ac",
     "docs/validation/GFileStudio_v2.17.10_VALIDATION.md": "30dc9e9d7441af4e96858227d14c1e5a3111eb04f97d577e88f7ae46b7f835ad",
     "docs/validation/GFileStudio_v2.17.11_VALIDATION.md": "589b5029826c2f4f2946dd95b41dbba084bc6122be8801533ffb242d3b6093ca",
@@ -165,6 +164,10 @@
     "requirements.txt": {
       "release_sha256": "2bf798a6339f4fa17f182eaa25af94f9c4149c5de74acdd382e2d144180cf87e",
       "reason": "v2.18.86 user-approved shared Oracle database module adds python-oracledb runtime dependency only; v2.18.85 business logic remains the baseline."
+    },
+    "build_exe.ps1": {
+      "release_sha256": "b87a7618021dfe605e07c6b01da1e861691067d95103b87055073882dfd7ec60",
+      "reason": "v2.18.163 user-approved Windows build/package reliability fix: detect running GFileStudio, wait for locked dist files, make archive errors terminating, verify ZIP integrity, and support -PackageOnly; no G-file business processing logic changed."
     }
   },
   "approved_frame_replacement_exceptions": {

@@ -1,4 +1,12 @@
-# G File Studio v2.17.47
+# G File Studio v2.18.178
+
+
+## 本地数据与 workspace 规则
+
+- `workspace/` 只保存业务输入、SSH 下载的业务 G 快照、处理中间数据、运行结果与报告；整个目录可以随时删除。
+- 图元分类标记、服务器图元缓存、SSH/文件服务器配置、Oracle 配置、管理员本地状态、ID 规则和图元标准/Profile 均保存到用户 `AppData\Local\NARI\GFileStudio` 对应的 Config / Cache / Data 目录，不得写入 `workspace/`。
+- 历史版本变更统一维护在 `CHANGELOG.md`；当前发布说明见 `RELEASE_NOTES.md`。不再新增 `UPDATE_NOTES_vX.Y.Z.md`。
+
 
 
 ## v2.17.45 更新

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from g_file_studio.services.paths import default_workspace
 from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.widgets.help_widgets import set_secondary
 
@@ -69,6 +70,16 @@ class PathRow(QWidget):
 
         self._restore_initial_path()
 
+    @staticmethod
+    def _is_disposable_workspace_path(path: Path) -> bool:
+        """Return True for runtime paths under the disposable workspace tree."""
+        try:
+            candidate = path.expanduser().resolve(strict=False)
+            workspace = default_workspace().expanduser().resolve(strict=False)
+            return candidate == workspace or workspace in candidate.parents
+        except (OSError, RuntimeError, ValueError):
+            return False
+
     def _restore_initial_path(self) -> None:
         missing: Path | None = None
         restored: Path | None = None
@@ -80,7 +91,15 @@ class PathRow(QWidget):
             restored = result.path
             missing = result.missing_path
 
-        self._missing_restored_path = missing
+        # workspace is disposable runtime data. A previously remembered workspace path
+        # may legitimately disappear between launches; silently fall back to the page's
+        # current default and never interrupt startup with a warning.
+        if missing is not None and self._is_disposable_workspace_path(missing):
+            missing = None
+            self._missing_restored_path = None
+        else:
+            self._missing_restored_path = missing
+
         if restored is not None:
             self.edit.setText(str(restored))
         elif self.default_path is not None and missing is None:
@@ -90,7 +109,7 @@ class PathRow(QWidget):
             recent = self.settings_service.get_path(self.recent_directory_key) if self.recent_directory_key else None
             if recent is not None and not recent.is_dir():
                 self.settings_service.clear(self.recent_directory_key)
-            # 主窗口完成构造后再提示，避免窗口尚未显示时出现无父窗口弹框。
+            # Only non-workspace user paths deserve an interruption.
             QTimer.singleShot(0, lambda p=missing: self._warn_missing_restored_path(p))
 
     def _warn_missing_restored_path(self, missing: Path) -> None:
@@ -115,7 +134,10 @@ class PathRow(QWidget):
             self.recent_directory_key,
             fallback=self._current_hint(),
         )
-        if resolved.missing_saved_directory is not None:
+        if (
+            resolved.missing_saved_directory is not None
+            and not self._is_disposable_workspace_path(resolved.missing_saved_directory)
+        ):
             QMessageBox.warning(
                 self,
                 "上次目录不存在",

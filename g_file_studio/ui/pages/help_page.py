@@ -41,13 +41,14 @@ class HelpPage(BasePage):
 <p>主体图形默认距离画布四边各 500；G File Studio 内置图框会保留并同步调整，不修改其文字和签字内容。客户图框或来源不明的图框需先删除。</p>
 <h3>4. 图框添加</h3>
 <p>适合给没有图框的文件添加 SLD 图框、标题和签字信息；输出文件保持源文件名不变并保存到输出目录。</p>
-<h3>目录建议</h3>
+<h3>目录与本地持久化</h3>
 <pre>
 workspace/input         本地输入/临时输入
-workspace/remote_input  SSH 只读下载快照
+workspace/remote_input  SSH 只读下载的业务 G 快照
 workspace/runs          所有模块运行输出（自动保留 30 天）
-workspace/logs          其他日志
+workspace/work          处理中间数据
 </pre>
+<p><b>workspace 是一次性工作区，整个目录可以随时删除。</b> 图元分类、服务器图元缓存、SSH/Oracle 配置、管理员状态、ID 规则和图元标准库都保存在 AppData 下，不得写入 workspace。</p>
 <h3>文件安全</h3>
 <ul>
 <li>输入文件不会被直接覆盖。</li>
@@ -76,13 +77,14 @@ workspace/logs          其他日志
 <p>The default main-drawing margin is 500 on all four sides. A confirmed built-in G File Studio frame is preserved and adjusted with the drawing; its text and signature content are not changed. Customer or unknown frames must be removed first.</p>
 <h3>4. Drawing Frame</h3>
 <p>Adds an SLD frame, title, and signature information to drawings that do not already have a frame. Output keeps the original source filename and is written to the managed output directory.</p>
-<h3>Recommended Directories</h3>
+<h3>Workspace and persistent local data</h3>
 <pre>
 workspace/input         Local or temporary input
-workspace/remote_input  Read-only SSH download snapshots
+workspace/remote_input  Read-only business-G snapshots downloaded by SSH
 workspace/runs          Output from all modules (retained for 30 days)
-workspace/logs          Other logs
+workspace/work          Processing intermediates
 </pre>
+<p><b>The entire workspace is disposable.</b> Symbol classifications, server-symbol cache, SSH/Oracle settings, administrator state, ID rules and persistent symbol standards live under AppData and must never be stored in workspace.</p>
 <h3>File Safety</h3>
 <ul>
 <li>Input files are never overwritten directly.</li>

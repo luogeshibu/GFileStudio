@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "kind": "GFileStudio prepared remote G processing snapshot",
+  "module": "poke",
+  "updated_at": "2026-09-24T13:26:50.030090+00:00",
+  "endpoint": {
+    "host": "172.16.21.27",
+    "port": 22,
+    "username": "up8000",
+    "remote_directory": "/home/up8000/data/graph/display/sln"
+  },
+  "files": [
+    {
+      "name": "JED-CTL-ADF.sln.pic.g",
+      "remote_path": "/home/up8000/data/graph/display/sln/JED-CTL-ADF.sln.pic.g",
+      "size": 1005435,
+      "mtime_epoch": 1790245109
+    },
+    {
+      "name": "JED-STH-ADEL-06.sln.pic.g",
+      "remote_path": "/home/up8000/data/graph/display/sln/JED-STH-ADEL-06.sln.pic.g",
+      "size": 338745,
+      "mtime_epoch": 1790250905
+    },
+    {
+      "name": "JED-STH-ADEL.sln.pic.g",
+      "remote_path": "/home/up8000/data/graph/display/sln/JED-STH-ADEL.sln.pic.g",
+      "size": 11292224,
+      "mtime_epoch": 1790250905
+    }
+  ]
+}

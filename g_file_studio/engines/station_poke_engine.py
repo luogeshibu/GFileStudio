@@ -37,23 +37,8 @@ _PARENTHESIZED_RMU_LABEL_RE = re.compile(
     r"^[\(（]\s*(?P<label>[0-9]+)\s*[\)）]$",
 )
 
-# Poke 站点跳转的业务过滤规则：这些分类标记来自“服务器图元同步管理”
-# 的本地缓存。名称落在对应设备周边 300 G 单位内时，不创建、不更新站点跳转。
-STATION_DEVICE_EXCLUSION_DISTANCE = 300.0
-STATION_EXCLUDED_CLASSIFICATION_MARKERS = frozenset({
-    "FUSE",
-    "LBS",
-    "AR",
-    "SEC",
-    "TRANSFORMER_OH",
-})
-_STATION_EXCLUDED_MARKER_KEYS = frozenset(
-    re.sub(r"[\s\-]+", "_", marker).casefold()
-    for marker in STATION_EXCLUDED_CLASSIFICATION_MARKERS
-)
-
 # 站点跳转使用的相邻环网柜名称，超过该距离就不能作为 locateLabel。
-RMU_ADJACENT_NAME_MAX_DISTANCE = 200.0
+RMU_ADJACENT_NAME_MAX_DISTANCE = 300.0
 
 
 # Canonical station-jump Poke properties copied from the user-provided
@@ -372,98 +357,6 @@ def _rmu_locate_label_score(station_box: _Box, label_box: _Box) -> tuple[float, 
     return direction, gap + alignment * 0.01, distance
 
 
-def _classification_marker_key(value: object) -> str:
-    """Normalize operator-owned classification markers for exact matching."""
-    return re.sub(r"[\s\-]+", "_", str(value or "").strip()).casefold()
-
-
-def _devref_keys(value: object) -> tuple[str, str, str]:
-    """Return (file name, element name, full devref) matching keys."""
-    raw = str(value or "").strip().lstrip("#")
-    if not raw:
-        return "", "", ""
-    file_part, separator, element_part = raw.partition(":")
-    file_key = Path(file_part.replace("\\", "/")).name.casefold()
-    element_key = element_part.strip().casefold() if separator else ""
-    return file_key, element_key, raw.casefold()
-
-
-def _classification_entry_values(entry: object) -> tuple[str, str, str]:
-    """Accept the portable tuple form and the sync service's dict form."""
-    if isinstance(entry, dict):
-        return (
-            str(entry.get("file_name", entry.get("name", "")) or ""),
-            str(entry.get("devref", "") or ""),
-            str(entry.get("classification_marker", entry.get("category_marker", "")) or ""),
-        )
-    if isinstance(entry, (tuple, list)) and len(entry) >= 3:
-        return str(entry[0] or ""), str(entry[1] or ""), str(entry[2] or "")
-    return "", "", ""
-
-
-def _classified_device_boxes(
-    layer: ET.Element,
-    classification_marker_entries: tuple[object, ...] | list[object] | None,
-) -> list[tuple[_Box, str]]:
-    """Resolve cached classification markers to graphic element boxes."""
-    marker_by_file: dict[str, str] = {}
-    marker_by_devref: dict[str, str] = {}
-    for entry in classification_marker_entries or ():
-        file_name, devref, marker = _classification_entry_values(entry)
-        marker_key = _classification_marker_key(marker)
-        if marker_key not in _STATION_EXCLUDED_MARKER_KEYS:
-            continue
-        file_key, element_key, full_key = _devref_keys(devref)
-        entry_file_key = Path(file_name.replace("\\", "/")).name.casefold()
-        if entry_file_key:
-            marker_by_file[entry_file_key] = marker.strip()
-        if full_key:
-            marker_by_devref[full_key] = marker.strip()
-        if element_key:
-            marker_by_devref[element_key] = marker.strip()
-        if file_key:
-            marker_by_file[file_key] = marker.strip()
-
-    if not marker_by_file and not marker_by_devref:
-        return []
-
-    result: list[tuple[_Box, str]] = []
-    for element in list(layer):
-        if local_name(element.tag).casefold() in {"text", "dtext", "poke"}:
-            continue
-        element_devref = element.get("devref") or ""
-        file_key, element_key, full_key = _devref_keys(element_devref)
-        marker = (
-            marker_by_devref.get(full_key)
-            or marker_by_devref.get(element_key)
-            or marker_by_file.get(file_key)
-        )
-        if not marker:
-            continue
-        box = _box(element)
-        if box is not None and box.width >= 0 and box.height >= 0:
-            result.append((box, marker))
-    return result
-
-
-def _nearest_classified_device(
-    text_box: _Box,
-    devices: list[tuple[_Box, str]],
-) -> tuple[str, float] | None:
-    """Return the nearest excluded marker and text-center-to-box distance."""
-    cx, cy = _center(text_box)
-    nearest: tuple[str, float] | None = None
-    for device_box, marker in devices:
-        dx = max(device_box.left - cx, 0.0, cx - device_box.right)
-        dy = max(device_box.top - cy, 0.0, cy - device_box.bottom)
-        distance = math.hypot(dx, dy)
-        if distance <= STATION_DEVICE_EXCLUSION_DISTANCE and (
-            nearest is None or distance < nearest[1]
-        ):
-            nearest = marker, distance
-    return nearest
-
-
 def _find_station_rmu_locate_label(layer: ET.Element, station_text: ET.Element) -> str:
     candidates = _station_rmu_locate_label_candidates(layer, station_text)
     return candidates[0][1] if len(candidates) == 1 else ""
@@ -530,7 +423,10 @@ def _colored_background_contains(
             continue
         seen.add(marker)
         tag = local_name(element.tag).casefold()
-        if tag == "poke" and (element.get("gfs_rmu_poke") or "") == "1":
+        if tag == "poke" and (
+            (element.get("gfs_rmu_poke") or "") == "1"
+            or (element.get("gfs_device_poke") or "") == "1"
+        ):
             continue
         if tag not in {"poke", "rect", "roundrect", "ellipse"}:
             continue
@@ -554,7 +450,7 @@ def _related_station_pokes(layer: ET.Element, text_box: _Box, station_key: str, 
     for element in list(layer):
         if local_name(element.tag) != "poke":
             continue
-        if (element.get("gfs_rmu_poke") or "") == "1":
+        if (element.get("gfs_rmu_poke") or "") == "1" or (element.get("gfs_device_poke") or "") == "1":
             continue
         if text_id and (element.get("gfs_station_text_id") or "") == text_id:
             candidates.append(element)
@@ -667,8 +563,10 @@ def apply_station_pokes(
 ) -> StationPokeResult:
     """Create/update station-jump Pokes such as DHN-40 -> JED-CTL-DHN.
 
-    Station recognition uses only the user-defined graphic constraints: the
+    Station recognition uses only the station Text graphic constraints: the
     label must contain both letters and digits and have a colored background.
+    Device classifications (AR/LBS/SEC/FUSE/Transformer_OH) never exclude a
+    station candidate.
     Line geometry and connection references are not used. Database resolution
     remains the existing SUBSTATION.NAME ->
     SUBAREA_ID -> SUBCONTROLAREA.NAME chain.  A nearby parenthesized
@@ -683,7 +581,6 @@ def apply_station_pokes(
     current_key = (current_station_name or "").strip().casefold()
 
     for layer in direct_layers(root):
-        classified_devices = _classified_device_boxes(layer, classification_marker_entries)
         for text in list(layer):
             if local_name(text.tag) != "Text":
                 continue
@@ -703,27 +600,6 @@ def apply_station_pokes(
             adjacent_rmu_names = ", ".join(
                 f"({candidate[1]})" for candidate in locate_candidates
             )
-            classified_device = _nearest_classified_device(text_box, classified_devices)
-            if classified_device is not None:
-                marker, distance = classified_device
-                result.candidate_count += 1
-                result.skipped_count += 1
-                result.classification_excluded_count += 1
-                reason = (
-                    f"站点跳转候选 {label!r} 距离分类图元 {marker!r} 约 {distance:.1f}，"
-                    f"不超过 {int(STATION_DEVICE_EXCLUSION_DISTANCE)}，按规则排除。"
-                )
-                result.records.append(StationPokeRecord(
-                    label_text=label,
-                    station_key=station_key,
-                    adjacent_rmu_names=adjacent_rmu_names,
-                    text_id=(text.get("id") or "").strip(),
-                    action="skipped",
-                    confidence="",
-                    recognition_source="classification_marker_exclusion",
-                    reason=reason,
-                ))
-                continue
             colored_background = _colored_background_contains(
                 layer,
                 text_box,

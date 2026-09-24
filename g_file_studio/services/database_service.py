@@ -238,7 +238,13 @@ class OracleDatabaseService:
         # Factory values are used only when the user has never saved a database
         # configuration. Once a user configuration exists, it is authoritative.
         if not self._has_saved_user_config():
-            return OracleConnectionConfig()
+            return OracleConnectionConfig(
+                username="",
+                password="",
+                host="",
+                port=_DEFAULT_PORT,
+                service_name="",
+            )
 
         password = ""
         protected = self.settings.get_value("database/oracle_password_dpapi").strip()

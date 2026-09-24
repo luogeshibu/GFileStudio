@@ -9,9 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable
 
-from platformdirs import user_cache_dir
-
 from g_file_studio.services.remote_g_source import ReadOnlySshClient, RemoteGFile
+from g_file_studio.services.paths import app_cache_root
 from g_file_studio.services.site_profile_service import SiteProfileService
 
 
@@ -86,10 +85,12 @@ def _marker_entry(record: dict[str, object], *, root: str = "") -> dict[str, str
         relative_path = _relative_remote_path(root, remote_path)
     name = Path(str(record.get("name", standard.get("original_name", "")) or "")).name
     devref = str(record.get("devref", standard.get("devref", "")) or "").strip()
+    element_id = str(record.get("element_id", standard.get("element_id", "")) or "").strip()
     return {
         "relative_path": relative_path,
         "file_name": name,
         "devref": devref,
+        "element_id": element_id,
         "classification_marker": _classification_marker(record),
     }
 
@@ -100,6 +101,7 @@ def _normalize_marker_entry(raw: object) -> dict[str, str]:
     relative_path = str(raw.get("relative_path", raw.get("path", "")) or "").strip()
     file_name = Path(str(raw.get("file_name", raw.get("name", "")) or "")).name
     devref = str(raw.get("devref", "") or "").strip()
+    element_id = str(raw.get("element_id", raw.get("id", "")) or "").strip()
     marker = str(
         raw.get("classification_marker", raw.get("category_marker", raw.get("marker", "")))
         or ""
@@ -110,6 +112,7 @@ def _normalize_marker_entry(raw: object) -> dict[str, str]:
         "relative_path": relative_path,
         "file_name": file_name,
         "devref": devref,
+        "element_id": element_id,
         "classification_marker": marker,
     }
 
@@ -222,9 +225,8 @@ class RemoteSymbolLibraryService:
     """
 
     def __init__(self, cache_root: str | Path | None = None) -> None:
-        base = Path(cache_root) if cache_root is not None else Path(user_cache_dir("GFileStudio", "NARI")) / "SymbolLibrary"
+        base = Path(cache_root) if cache_root is not None else app_cache_root() / "SymbolLibrary"
         self.cache_root = base
-        self.cache_root.mkdir(parents=True, exist_ok=True)
         self.standard_service = SiteProfileService()
 
     @staticmethod
@@ -232,27 +234,86 @@ class RemoteSymbolLibraryService:
         digest = hashlib.sha1(str(root).encode("utf-8")).hexdigest()[:12]
         return f"{_safe_component(host)}_{digest}"
 
-    def _library_dir(self, host: str, root: str) -> Path:
+    def _existing_library_dir(self, host: str, root: str) -> Path:
+        """Find an already-saved local cache without creating anything.
+
+        The current deterministic token is checked first.  For compatibility with
+        caches written by older GFileStudio builds, existing child directories are
+        then inspected by the host/root metadata stored in sync_snapshot.json or
+        manifest.json.  This is LOCAL AppData discovery only.
+        """
+        exact = self.cache_root / self._root_token(host, root)
+        if exact.is_dir():
+            return exact
+
+        if not self.cache_root.is_dir():
+            return exact
+
+        wanted_host = str(host).strip().casefold()
+        wanted_root = str(root).strip().rstrip("/").casefold()
+        matches: list[tuple[float, Path]] = []
+
+        try:
+            children = list(self.cache_root.iterdir())
+        except OSError:
+            return exact
+
+        for child in children:
+            if not child.is_dir():
+                continue
+            metadata_paths = (child / "sync_snapshot.json", child / "manifest.json")
+            matched = False
+            newest = 0.0
+            for meta in metadata_paths:
+                if not meta.is_file():
+                    continue
+                try:
+                    payload = json.loads(meta.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                cached_host = str(payload.get("host", "") or "").strip().casefold()
+                cached_root = str(payload.get("root", "") or "").strip().rstrip("/").casefold()
+                if cached_host == wanted_host and cached_root == wanted_root:
+                    matched = True
+                    try:
+                        newest = max(newest, meta.stat().st_mtime)
+                    except OSError:
+                        pass
+            if matched:
+                matches.append((newest, child))
+
+        if not matches:
+            return exact
+        matches.sort(key=lambda item: item[0], reverse=True)
+        return matches[0][1]
+
+    def _library_dir(self, host: str, root: str, *, create: bool = False) -> Path:
         target = self.cache_root / self._root_token(host, root)
-        target.mkdir(parents=True, exist_ok=True)
+        if create:
+            target.mkdir(parents=True, exist_ok=True)
         return target
 
     def library_dir(self, host: str, root: str = DEFAULT_REMOTE_SYMBOL_ROOT) -> Path:
-        """Return/create the persistent local cache directory for one server root."""
-        return self._library_dir(host, root)
+        """Return the cache directory path without creating it."""
+        return self._library_dir(host, root, create=False)
 
-    def _manifest_path(self, host: str, root: str) -> Path:
-        return self._library_dir(host, root) / "manifest.json"
+    def _manifest_path(self, host: str, root: str, *, existing: bool = False) -> Path:
+        base = self._existing_library_dir(host, root) if existing else self._library_dir(host, root)
+        return base / "manifest.json"
 
-    def _sync_snapshot_path(self, host: str, root: str) -> Path:
+    def _sync_snapshot_path(self, host: str, root: str, *, existing: bool = False) -> Path:
         """Return the last complete physical-server-file inventory snapshot."""
-        return self._library_dir(host, root) / "sync_snapshot.json"
+        base = self._existing_library_dir(host, root) if existing else self._library_dir(host, root)
+        return base / "sync_snapshot.json"
 
-    def _marker_overrides_path(self, host: str, root: str) -> Path:
-        return self._library_dir(host, root) / "classification_markers.json"
+    def _marker_overrides_path(self, host: str, root: str, *, existing: bool = False) -> Path:
+        base = self._existing_library_dir(host, root) if existing else self._library_dir(host, root)
+        return base / "classification_markers.json"
 
     def _load_manifest(self, host: str, root: str) -> dict[str, dict[str, object]]:
-        path = self._manifest_path(host, root)
+        path = self._manifest_path(host, root, existing=True)
         if not path.is_file():
             return {}
         try:
@@ -264,6 +325,7 @@ class RemoteSymbolLibraryService:
 
     def _write_manifest(self, host: str, root: str, records: dict[str, dict[str, object]]) -> None:
         path = self._manifest_path(host, root)
+        path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "version": 1,
             "host": str(host),
@@ -298,9 +360,57 @@ class RemoteSymbolLibraryService:
             "saved_at": _utc_now(),
         })
         path = self._sync_snapshot_path(host, root)
+        path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(path)
+
+    def save_cached_sync_snapshot_payload(
+        self,
+        *,
+        host: str,
+        root: str,
+        payload: dict[str, object],
+    ) -> Path:
+        """Persist the currently visible local catalog snapshot without network I/O.
+
+        This is used by the explicit "保存到本地" workflow.  It never contacts SSH;
+        it only makes the current in-memory/local catalog restartable.
+        """
+        rows = payload.get("server_file_records", [])
+        if not isinstance(rows, list):
+            rows = []
+        matched = payload.get("matched_records", {})
+        if not isinstance(matched, dict):
+            matched = {}
+
+        normalized = dict(payload)
+        normalized.update({
+            "schema": 1,
+            "kind": "GFileStudio remote symbol-library sync snapshot",
+            "host": str(host),
+            "root": str(root),
+            "server_file_records": [
+                dict(row) for row in rows
+                if isinstance(row, dict) and _is_g_definition_name(str(row.get("name", "")))
+            ],
+            "matched_records": {
+                str(name): dict(record)
+                for name, record in matched.items()
+                if isinstance(record, dict) and _is_g_definition_name(str(name))
+            },
+            "inventory_complete": bool(payload.get("inventory_complete", True)),
+            "saved_at": _utc_now(),
+            "cached_restore": True,
+        })
+        normalized["scanned_remote_files"] = len(normalized["server_file_records"])
+
+        path = self._sync_snapshot_path(host, root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+        return path
 
     def load_cached_sync_snapshot(self, *, host: str, root: str) -> dict[str, object]:
         """Load the last complete server inventory without contacting SSH.
@@ -310,7 +420,7 @@ class RemoteSymbolLibraryService:
         sync will replace it with the authoritative complete inventory, including
         conflict and parse-error rows.
         """
-        path = self._sync_snapshot_path(host, root)
+        path = self._sync_snapshot_path(host, root, existing=True)
         if path.is_file():
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
@@ -330,6 +440,10 @@ class RemoteSymbolLibraryService:
                 # make saved markers appear to have disappeared.
                 overrides = self._load_marker_overrides(host, root)
                 for row in restored_records:
+                    # classification_markers.json is the authoritative local marker
+                    # layer. Clear any marker embedded in an older snapshot first so
+                    # a central admin sync can also remove classifications.
+                    _set_classification_marker(row, "")
                     remote_path = str(row.get("remote_path", "")).strip()
                     if not remote_path:
                         continue
@@ -348,6 +462,7 @@ class RemoteSymbolLibraryService:
                         if not isinstance(record, dict) or not _is_g_definition_name(str(name)):
                             continue
                         standard = dict(record)
+                        _set_classification_marker(standard, "")
                         candidates = [
                             row for row in restored_records
                             if str(row.get("name", "")).casefold() == str(name).casefold()
@@ -441,7 +556,7 @@ class RemoteSymbolLibraryService:
             return None
 
     def _load_marker_overrides(self, host: str, root: str) -> list[dict[str, str]]:
-        path = self._marker_overrides_path(host, root)
+        path = self._marker_overrides_path(host, root, existing=True)
         if not path.is_file():
             return []
         try:
@@ -466,8 +581,9 @@ class RemoteSymbolLibraryService:
         entries: list[dict[str, str]],
     ) -> None:
         path = self._marker_overrides_path(host, root)
+        path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "schema": 1,
+            "schema": 2,
             "kind": "GFileStudio symbol classification markers",
             "updated_at": _utc_now(),
             "source": {"host": str(host), "root": str(root)},
@@ -477,6 +593,7 @@ class RemoteSymbolLibraryService:
                     str(item.get("relative_path", "")).casefold(),
                     str(item.get("file_name", "")).casefold(),
                     str(item.get("devref", "")).casefold(),
+                    str(item.get("element_id", "")).casefold(),
                 ),
             ),
         }
@@ -613,13 +730,178 @@ class RemoteSymbolLibraryService:
                 tmp.replace(snapshot_path)
         return True
 
+    def update_classification_markers_batch(
+        self,
+        *,
+        host: str,
+        root: str,
+        updates: dict[str, str],
+    ) -> int:
+        """Persist multiple local classification edits with one set of JSON writes.
+
+        This is intentionally local-only.  It never opens SSH.  The previous single-
+        marker API rewrote three JSON files for each edited table cell; callers that
+        debounce edits should use this method so the manifest, marker layer and
+        restart snapshot are each loaded/written at most once per flush.
+        """
+        normalized = {
+            str(remote_path or "").strip(): str(marker or "").strip()
+            for remote_path, marker in dict(updates or {}).items()
+            if str(remote_path or "").strip()
+        }
+        if not normalized:
+            return 0
+
+        records = self._load_manifest(host, root)
+        overrides = self._load_marker_overrides(host, root)
+        override_map = {_marker_entry_key(item): dict(item) for item in overrides}
+
+        snapshot_path = self._sync_snapshot_path(host, root, existing=True)
+        snapshot: dict[str, object] = {}
+        snapshot_rows: list[dict[str, object]] = []
+        snapshot_matched: dict[str, dict[str, object]] = {}
+        if snapshot_path.is_file():
+            try:
+                loaded = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            except Exception:
+                loaded = {}
+            if isinstance(loaded, dict):
+                snapshot = loaded
+                raw_rows = snapshot.get("server_file_records", [])
+                if isinstance(raw_rows, list):
+                    snapshot_rows = [row for row in raw_rows if isinstance(row, dict)]
+                raw_matched = snapshot.get("matched_records", {})
+                if isinstance(raw_matched, dict):
+                    snapshot_matched = {
+                        str(name): record
+                        for name, record in raw_matched.items()
+                        if isinstance(record, dict)
+                    }
+
+        rows_by_path = {
+            str(row.get("remote_path", "")).strip(): row
+            for row in snapshot_rows
+            if str(row.get("remote_path", "")).strip()
+        }
+
+        for remote_key, value in normalized.items():
+            record = records.get(remote_key)
+            if not isinstance(record, dict):
+                cached_row = rows_by_path.get(remote_key)
+                if isinstance(cached_row, dict):
+                    standard = cached_row.get("standard_record", {})
+                    record = {
+                        "name": str(cached_row.get("name", Path(remote_key).name) or Path(remote_key).name),
+                        "remote_path": remote_key,
+                        "relative_path": str(cached_row.get("relative_path", _relative_remote_path(root, remote_key)) or _relative_remote_path(root, remote_key)),
+                        "size": int(cached_row.get("size", 0) or 0),
+                        "mtime_epoch": int(cached_row.get("mtime_epoch", 0) or 0),
+                        "sha256": str(cached_row.get("sha256", "") or ""),
+                        "cache_path": str(cached_row.get("cache_path", "") or ""),
+                        "standard_record": dict(standard) if isinstance(standard, dict) else {},
+                    }
+                else:
+                    record = {
+                        "name": Path(remote_key).name,
+                        "remote_path": remote_key,
+                        "relative_path": _relative_remote_path(root, remote_key),
+                    }
+            _set_classification_marker(record, value)
+            records[remote_key] = record
+
+            entry = _marker_entry(record, root=root)
+            entry["classification_marker"] = value
+            key = _marker_entry_key(entry)
+            override_map.pop(key, None)
+            if value:
+                override_map[key] = entry
+
+            cached_row = rows_by_path.get(remote_key)
+            if isinstance(cached_row, dict):
+                _set_classification_marker(cached_row, value)
+            for standard in snapshot_matched.values():
+                if str(standard.get("remote_path", "")).strip() == remote_key:
+                    _set_classification_marker(standard, value)
+
+        self._write_manifest(host, root, records)
+        self._write_marker_overrides(host, root, list(override_map.values()))
+
+        if snapshot:
+            snapshot["server_file_records"] = snapshot_rows
+            snapshot["matched_records"] = snapshot_matched
+            tmp = snapshot_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(snapshot_path)
+        return len(normalized)
+
     def load_classification_markers(self, *, host: str, root: str) -> dict[str, str]:
-        """Return markers keyed by physical remote path for downstream programs."""
-        result = {
+        """Return the effective local classification layer keyed by remote path.
+
+        ``classification_markers.json`` is the authoritative operator cache.
+        ``manifest.json`` is only a catalog/metadata cache and may be absent, stale,
+        or rebuilt independently.  Merge both sources so a restart never loses
+        markers simply because the manifest does not currently carry them.
+        """
+        records = self._load_manifest(host, root)
+        result: dict[str, str] = {
             str(path): _classification_marker(record)
-            for path, record in self._load_manifest(host, root).items()
+            for path, record in records.items()
             if _classification_marker(record)
         }
+
+        overrides = self._load_marker_overrides(host, root)
+        if not overrides:
+            return result
+
+        # First resolve each override against the current physical manifest.
+        for entry in overrides:
+            marker = str(entry.get("classification_marker", "") or "").strip()
+            if not marker:
+                continue
+
+            target_path = ""
+            relative = str(entry.get("relative_path", "") or "").strip().casefold()
+            if relative:
+                exact = [
+                    str(remote_path)
+                    for remote_path, record in records.items()
+                    if _marker_entry(record, root=root)["relative_path"].casefold() == relative
+                ]
+                if len(exact) == 1:
+                    target_path = exact[0]
+
+            if not target_path:
+                file_name = str(entry.get("file_name", "") or "").strip().casefold()
+                if file_name:
+                    by_name = [
+                        str(remote_path)
+                        for remote_path, record in records.items()
+                        if _marker_entry(record, root=root)["file_name"].casefold() == file_name
+                    ]
+                    if len(by_name) == 1:
+                        target_path = by_name[0]
+
+            if not target_path:
+                devref = str(entry.get("devref", "") or "").strip().casefold()
+                if devref:
+                    by_devref = [
+                        str(remote_path)
+                        for remote_path, record in records.items()
+                        if _marker_entry(record, root=root)["devref"].casefold() == devref
+                    ]
+                    if len(by_devref) == 1:
+                        target_path = by_devref[0]
+
+            # If the manifest is missing/stale, an override with a relative path
+            # can still be mapped deterministically to the configured remote root.
+            if not target_path:
+                raw_relative = str(entry.get("relative_path", "") or "").strip().lstrip("/")
+                if raw_relative:
+                    target_path = f"{str(root).rstrip('/')}/{raw_relative}"
+
+            if target_path:
+                result[target_path] = marker
+
         return result
 
     def load_classification_marker_entries(
@@ -639,8 +921,22 @@ class RemoteSymbolLibraryService:
             if entry["classification_marker"]:
                 entries[_marker_entry_key(entry)] = entry
         for entry in self._load_marker_overrides(host, root):
-            if entry["classification_marker"]:
-                entries[_marker_entry_key(entry)] = entry
+            if not entry["classification_marker"]:
+                continue
+            key = _marker_entry_key(entry)
+            # Older local marker caches (schema 1) did not store element_id. Keep
+            # the authoritative marker from the override but enrich its portable
+            # identity metadata from the manifest so the next JSON export/publish
+            # immediately contains element_id without forcing the operator to
+            # reclassify all existing rows.
+            existing = entries.get(key, {})
+            merged = dict(existing)
+            for field in ("relative_path", "file_name", "devref", "element_id"):
+                value = str(entry.get(field, "") or "").strip()
+                if value:
+                    merged[field] = value
+            merged["classification_marker"] = entry["classification_marker"]
+            entries[key] = merged
         return sorted(
             entries.values(),
             key=lambda item: (
@@ -650,6 +946,22 @@ class RemoteSymbolLibraryService:
             ),
         )
 
+    def build_classification_marker_payload(
+        self,
+        *,
+        host: str,
+        root: str,
+    ) -> dict[str, object]:
+        """Build the portable marker payload without writing a local file."""
+        markers = self.load_classification_marker_entries(host=host, root=root)
+        return {
+            "schema": 2,
+            "kind": "GFileStudio symbol classification markers",
+            "exported_at": _utc_now(),
+            "source": {"host": str(host), "root": str(root)},
+            "markers": markers,
+        }
+
     def export_classification_markers(
         self,
         *,
@@ -658,34 +970,20 @@ class RemoteSymbolLibraryService:
         target_path: str | Path,
     ) -> dict[str, object]:
         """Export local classification markers as a portable JSON configuration."""
-        markers = self.load_classification_marker_entries(host=host, root=root)
-        payload = {
-            "schema": 1,
-            "kind": "GFileStudio symbol classification markers",
-            "exported_at": _utc_now(),
-            "source": {"host": str(host), "root": str(root)},
-            "markers": markers,
-        }
+        payload = self.build_classification_marker_payload(host=host, root=root)
         path = Path(target_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        return {"path": str(path), "count": len(markers)}
+        return {"path": str(path), "count": len(payload.get("markers", []))}
 
-    def import_classification_markers(
+    def import_classification_marker_payload(
         self,
         *,
         host: str,
         root: str,
-        source_path: str | Path,
+        payload: object,
     ) -> dict[str, object]:
-        """Import portable markers and apply all entries that match local files.
-
-        Matching is conservative: relative path wins, then a unique filename,
-        then a unique devref. Unmatched entries remain in the local override file
-        and are applied automatically during a later server-library sync.
-        """
-        path = Path(source_path)
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        """Apply a marker JSON object directly to the local cache."""
         raw_entries = payload.get("markers", []) if isinstance(payload, dict) else []
         if not isinstance(raw_entries, list):
             raise ValueError("分类标记 JSON 缺少 markers 数组。")
@@ -749,8 +1047,98 @@ class RemoteSymbolLibraryService:
             "imported": len(imported),
             "matched": matched,
             "pending": unmatched,
-            "path": str(path),
         }
+
+    def replace_classification_marker_payload(
+        self,
+        *,
+        host: str,
+        root: str,
+        payload: object,
+    ) -> dict[str, object]:
+        """Replace the local classification layer from one authoritative payload.
+
+        This is used only for the central ``symbol_classification.json`` workflow. Entries absent
+        from the central file are deliberately removed locally so all workstations
+        converge on exactly the same administrator-approved classification set.
+        """
+        raw_entries = payload.get("markers", []) if isinstance(payload, dict) else []
+        if not isinstance(raw_entries, list):
+            raise ValueError("中央分类配置缺少 markers 数组。")
+        imported: list[dict[str, str]] = []
+        for raw in raw_entries:
+            entry = _normalize_marker_entry(raw)
+            if entry and entry["classification_marker"]:
+                imported.append(entry)
+
+        records = self._load_manifest(host, root)
+        for record in records.values():
+            _set_classification_marker(record, "")
+
+        matched = 0
+        unmatched = 0
+        for entry in imported:
+            target_path = ""
+            exact = [
+                remote_path for remote_path, record in records.items()
+                if _marker_entry(record, root=root)["relative_path"].casefold()
+                == entry["relative_path"].casefold()
+                and entry["relative_path"]
+            ]
+            if len(exact) == 1:
+                target_path = exact[0]
+            else:
+                by_name = [
+                    remote_path for remote_path, record in records.items()
+                    if _marker_entry(record, root=root)["file_name"].casefold()
+                    == entry["file_name"].casefold()
+                    and entry["file_name"]
+                ]
+                if len(by_name) == 1:
+                    target_path = by_name[0]
+                else:
+                    by_devref = [
+                        remote_path for remote_path, record in records.items()
+                        if _marker_entry(record, root=root)["devref"].casefold()
+                        == entry["devref"].casefold()
+                        and entry["devref"]
+                    ]
+                    if len(by_devref) == 1:
+                        target_path = by_devref[0]
+            if target_path:
+                _set_classification_marker(records[target_path], entry["classification_marker"])
+                matched += 1
+            else:
+                unmatched += 1
+
+        self._write_manifest(host, root, records)
+        # Store the exact central set, not a merge. This makes deletions propagate.
+        self._write_marker_overrides(host, root, imported)
+        return {
+            "imported": len(imported),
+            "matched": matched,
+            "pending": unmatched,
+        }
+
+    def import_classification_markers(
+        self,
+        *,
+        host: str,
+        root: str,
+        source_path: str | Path,
+    ) -> dict[str, object]:
+        """Replace local markers with the imported portable JSON.
+
+        Manual import is authoritative just like an explicit central pull: entries
+        absent from the imported JSON are removed locally.  This keeps the local
+        cache deterministic and matches the UI contract that every manual pull/import
+        directly overwrites, rather than silently merging with, the previous cache.
+        """
+        path = Path(source_path)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        result = self.replace_classification_marker_payload(host=host, root=root, payload=payload)
+        result["path"] = str(path)
+        return result
 
     @staticmethod
     def _record_unchanged(cached: dict[str, object], remote: RemoteGFile) -> bool:
@@ -906,7 +1294,7 @@ class RemoteSymbolLibraryService:
             root=root,
             requested_names=expected,
             checked_at=_utc_now(),
-            cache_root=str(self._library_dir(host, root)),
+            cache_root=str(self._library_dir(host, root, create=True)),
         )
         if progress:
             progress(0)
@@ -915,7 +1303,7 @@ class RemoteSymbolLibraryService:
                 progress(100)
             return result
 
-        library_dir = self._library_dir(host, root)
+        library_dir = self._library_dir(host, root, create=True)
         manifest = self._load_manifest(host, root)
         previous_manifest = {path: dict(row) for path, row in manifest.items()}
         marker_overrides = self._load_marker_overrides(host, root)

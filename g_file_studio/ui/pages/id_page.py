@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import socket
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from uuid import uuid4
 
 from PySide6.QtCore import QThreadPool, QTimer, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
@@ -36,6 +38,10 @@ from g_file_studio.engines.id_rule_engine import (
 from g_file_studio.models import BasicOutputConflictAction, IdAction, IdSettings, InputMode
 from g_file_studio.processors.common import discover_g_inputs
 from g_file_studio.processors.id_processor import _write_id_reports, process_ids
+from g_file_studio.services.classification_registry_service import (
+    ClassificationRegistryService,
+    DEFAULT_ID_RULES_PATH,
+)
 from g_file_studio.services.id_rule_service import IdRule, IdRuleService
 from g_file_studio.services.output_naming import make_task_timestamp
 from g_file_studio.services.remote_g_source import ReadOnlySshClient, download_stable_files
@@ -209,6 +215,12 @@ class IdPage(BasePage):
         self.rule_service = IdRuleService()
         self._last_scan_candidates: dict[str, IdRule] = {}
         self._server_sync_worker: FunctionWorker | None = None
+        self._central_rule_worker: FunctionWorker | None = None
+        self._central_progress_dialog: QProgressDialog | None = None
+        self._machine_id = self.user_settings.get_value("access_control/machine_id", "").strip()
+        self._machine_name = socket.gethostname().strip() or "Unknown-PC"
+        self._is_admin_mode = False
+        self._admin_epoch: int | None = None
         self.last_html_report: Path | None = None
         help_title, help_html = APP_HELP["id_rules"]
         super().__init__(
@@ -264,6 +276,11 @@ class IdPage(BasePage):
         self.server_version_label.setObjectName("mutedText")
         template_layout.addWidget(self.server_version_label)
 
+        self.central_rule_status = QLabel(f"中央 ID 规则：{DEFAULT_ID_RULES_PATH} · 仅手工同步")
+        self.central_rule_status.setObjectName("mutedText")
+        self.central_rule_status.setWordWrap(True)
+        template_layout.addWidget(self.central_rule_status)
+
         self.global_strict = QCheckBox("启用全局 ID 模板强制约束")
         self.global_strict.setChecked(self.user_settings.get_bool("id_rules/global_strict", True))
         self.global_strict.setToolTip(
@@ -281,7 +298,19 @@ class IdPage(BasePage):
         self.server_sync_button.setToolTip(
             "后台读取当前 SSH 配置中的服务器 G 根目录，统计全部 G 文件的 ID 出现次数后，再由你确认哪些规则固化。"
         )
-        for button in (self.add_button, self.edit_button, self.delete_button, self.server_sync_button):
+        self.central_rule_sync_button = QPushButton("从中央同步规则")
+        self.central_rule_sync_button.setToolTip("普通用户可用：下载中央 id_rules.json 并覆盖本机 ID 规则缓存。")
+        self.central_rule_publish_button = QPushButton("发布规则到中央")
+        self.central_rule_publish_button.setToolTip("仅当前 Admin 会话可用：把当前本机 ID 规则发布为中央正式 id_rules.json。")
+        self.central_rule_publish_button.setEnabled(False)
+        for button in (
+            self.add_button,
+            self.edit_button,
+            self.delete_button,
+            self.server_sync_button,
+            self.central_rule_sync_button,
+            self.central_rule_publish_button,
+        ):
             buttons.addWidget(button)
         buttons.addStretch(1)
         template_layout.addLayout(buttons)
@@ -318,11 +347,220 @@ class IdPage(BasePage):
         self.edit_button.clicked.connect(self.edit_rule)
         self.delete_button.clicked.connect(self.delete_rule)
         self.server_sync_button.clicked.connect(self.sync_server_rules)
+        self.central_rule_sync_button.clicked.connect(self._sync_central_rules)
+        self.central_rule_publish_button.clicked.connect(self._publish_central_rules)
         self.task.run_button.clicked.connect(self.run)
         self.report_button.clicked.connect(self.open_last_report)
         self.task.resultReceived.connect(self._task_result)
         self._refresh_table()
         self._refresh_server_version_label()
+
+    def _central_registry_config(self) -> dict[str, object]:
+        host = self.user_settings.get_value("remote_g_source/host", "").strip()
+        username = self.user_settings.get_value("remote_g_source/username", "").strip()
+        password = self.user_settings.get_value("remote_g_source/password", "")
+        port = self.user_settings.get_int("remote_g_source/port", 22)
+        if not host or not username or not password:
+            raise ValueError("请先在“连接与环境”保存本机 SSH 文件服务器配置。")
+        return {
+            "host": host,
+            "port": port,
+            "username": username,
+            "password": password,
+        }
+
+    def _ensure_machine_id(self) -> str:
+        machine_id = self.user_settings.get_value("access_control/machine_id", "").strip()
+        if not machine_id:
+            machine_id = uuid4().hex
+            self.user_settings.set_value("access_control/machine_id", machine_id)
+        self._machine_id = machine_id
+        return machine_id
+
+    def _open_central_progress(self, title: str, label: str) -> QProgressDialog:
+        dialog = QProgressDialog(label, "", 0, 100, self)
+        dialog.setWindowTitle(title)
+        dialog.setCancelButton(None)
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        # Do not flash a transient progress window for fast local/central operations.
+        # Qt will show it only when the operation actually lasts long enough.
+        dialog.setMinimumDuration(800)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.setValue(0)
+        self._central_progress_dialog = dialog
+        return dialog
+
+    def _close_central_progress(self) -> None:
+        dialog = self._central_progress_dialog
+        self._central_progress_dialog = None
+        if dialog is not None:
+            dialog.setValue(100)
+            dialog.close()
+            dialog.deleteLater()
+
+    def set_admin_mode(self, is_admin: bool, admin_epoch: int | None = None) -> None:
+        self._is_admin_mode = bool(is_admin)
+        self._admin_epoch = int(admin_epoch) if is_admin and admin_epoch is not None else None
+        if hasattr(self, "central_rule_publish_button"):
+            self.central_rule_publish_button.setEnabled(
+                self._is_admin_mode and self._central_rule_worker is None
+            )
+
+    def _set_central_rule_busy(self, busy: bool) -> None:
+        self.central_rule_sync_button.setEnabled(not busy)
+        self.central_rule_publish_button.setEnabled(
+            (not busy) and self._is_admin_mode and self._admin_epoch is not None
+        )
+        self.add_button.setEnabled(not busy)
+        self.edit_button.setEnabled(not busy)
+        self.delete_button.setEnabled(not busy)
+
+    def _sync_central_rules(self) -> None:
+        if self._central_rule_worker is not None:
+            return
+        try:
+            cfg = self._central_registry_config()
+        except Exception as exc:
+            QMessageBox.warning(self, "同步中央 ID 规则", str(exc))
+            return
+        if QMessageBox.question(
+            self,
+            "从中央同步 ID 规则",
+            "中央 id_rules.json 将覆盖当前本机 ID 规则缓存。继续吗？",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        self._set_central_rule_busy(True)
+        self.central_rule_status.setText("中央 ID 规则：正在同步…")
+        progress_dialog = self._open_central_progress(
+            "同步中央 ID 规则",
+            "正在读取中央 id_rules.json…",
+        )
+
+        def task(*, log, progress):
+            progress(10)
+            result = ClassificationRegistryService().fetch_id_rules(**cfg, log=log)
+            progress(80)
+            return result
+
+        worker = FunctionWorker(task)
+        self._central_rule_worker = worker
+        worker.signals.progress.connect(progress_dialog.setValue)
+        worker.signals.result.connect(self._on_central_rule_sync_result)
+        worker.signals.error.connect(lambda details: self._on_central_rule_error(details, "同步"))
+        worker.signals.finished.connect(self._on_central_rule_finished)
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_central_rule_sync_result(self, result: object) -> None:
+        if self._central_progress_dialog is not None:
+            self._central_progress_dialog.setLabelText("正在覆盖本机 ID 规则缓存…")
+            self._central_progress_dialog.setValue(90)
+        payload = dict(result) if isinstance(result, dict) else {}
+        rules_payload = payload.get("id_rules")
+        if not isinstance(rules_payload, dict):
+            raise ValueError("中央 ID 规则返回格式无效。")
+        imported = self.rule_service.replace_from_payload(rules_payload)
+        instance = payload.get("instance", {})
+        version = int(instance.get("config_version", 0) or 0) if isinstance(instance, dict) else 0
+        self.user_settings.set_value("local_cache/id_rules_source", "central")
+        self.user_settings.set_value("local_cache/central_id_rules_version", version)
+        self._refresh_table()
+        self._refresh_server_version_label()
+        self.central_rule_status.setText(
+            f"中央 ID 规则：已同步 {imported['rules']} 条 · 中央 V{version}"
+        )
+        self._close_central_progress()
+        QMessageBox.information(
+            self,
+            "中央 ID 规则已同步",
+            f"已用中央 V{version} 覆盖本机 ID 规则，共 {imported['rules']} 条。",
+        )
+
+    def _publish_central_rules(self) -> None:
+        if self._central_rule_worker is not None:
+            return
+        if not self._is_admin_mode or self._admin_epoch is None:
+            QMessageBox.warning(
+                self,
+                "需要 Admin 权限",
+                "普通客户端可以修改/保存本机 ID 规则并从中央同步，但不能发布中央仓库。请先从左侧【配置权限】抢占 Admin。",
+            )
+            return
+        try:
+            cfg = self._central_registry_config()
+            machine_id = self._ensure_machine_id()
+            payload = self.rule_service.export_payload()
+        except Exception as exc:
+            QMessageBox.warning(self, "发布中央 ID 规则", str(exc))
+            return
+        if QMessageBox.question(
+            self,
+            "发布中央 ID 规则",
+            "将当前本机 ID 规则发布为中央正式 id_rules.json？",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        self._set_central_rule_busy(True)
+        self.central_rule_status.setText("中央 ID 规则：正在发布…")
+        progress_dialog = self._open_central_progress(
+            "发布中央 ID 规则",
+            "正在验证管理员并上传 id_rules.json…",
+        )
+
+        def task(*, log, progress):
+            progress(10)
+            service = ClassificationRegistryService()
+            owner = service.fetch_admin_lease(**cfg)
+            if owner is None or owner.machine_id != machine_id:
+                raise RuntimeError("当前进程不是中央 Admin，不能发布中央 ID 规则。")
+            if owner.admin_epoch != int(self._admin_epoch or -1):
+                raise RuntimeError("Admin 权限已被重新抢占，请重新抢占 Admin 后再发布。")
+            result = service.publish_id_rules(
+                **cfg,
+                machine_id=machine_id,
+                machine_name=self._machine_name,
+                expected_admin_epoch=self._admin_epoch,
+                payload=payload,
+                log=log,
+            )
+            progress(90)
+            return result
+
+        worker = FunctionWorker(task)
+        self._central_rule_worker = worker
+        worker.signals.progress.connect(progress_dialog.setValue)
+        worker.signals.result.connect(self._on_central_rule_publish_result)
+        worker.signals.error.connect(lambda details: self._on_central_rule_error(details, "发布"))
+        worker.signals.finished.connect(self._on_central_rule_finished)
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_central_rule_publish_result(self, result: object) -> None:
+        self._close_central_progress()
+        payload = dict(result) if isinstance(result, dict) else {}
+        instance = payload.get("instance", {})
+        rules_payload = payload.get("id_rules", {})
+        version = int(instance.get("config_version", 0) or 0) if isinstance(instance, dict) else 0
+        rule_count = len(rules_payload.get("rules", [])) if isinstance(rules_payload, dict) else 0
+        self.central_rule_status.setText(
+            f"中央 ID 规则：已发布 {rule_count} 条 · 中央 V{version}"
+        )
+        QMessageBox.information(
+            self,
+            "中央 ID 规则已发布",
+            f"中央版本：V{version}\n规则：{rule_count} 条\n\n{DEFAULT_ID_RULES_PATH}",
+        )
+
+    def _on_central_rule_error(self, details: str, action: str) -> None:
+        self._close_central_progress()
+        message = str(details).split("\n\n---TRACEBACK---", 1)[0].strip()
+        self.central_rule_status.setText(f"中央 ID 规则：{action}失败")
+        QMessageBox.warning(self, f"中央 ID 规则{action}失败", message or str(details))
+
+    def _on_central_rule_finished(self) -> None:
+        self._central_rule_worker = None
+        self._close_central_progress()
+        self._set_central_rule_busy(False)
 
     def _refresh_table(self) -> None:
         rules = self.rule_service.load_rules()
@@ -738,12 +976,10 @@ class IdPage(BasePage):
         progress_dialog = QProgressDialog("正在扫描当前 G 文件并检查 ID 规则……", "取消", 0, 100, self)
         progress_dialog.setWindowTitle("扫描当前 G")
         progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
-        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setMinimumDuration(800)
         progress_dialog.setAutoClose(False)
         progress_dialog.setAutoReset(False)
         progress_dialog.setValue(0)
-        progress_dialog.show()
-        QApplication.processEvents()
         try:
             for index, path in enumerate(files, start=1):
                 if progress_dialog.wasCanceled():
@@ -946,8 +1182,7 @@ class IdPage(BasePage):
         if not validate_input_source(self, self.source, display_name="ID 处理输入"):
             return
         action = IdAction.REPAIR
-        if not validate_existing_directory(self, self.output_path.path(), "ID 检查与修复输出目录"):
-            return
+        # Managed workspace output is disposable and recreated on demand.
         self.source.persist_current()
         output_dir = begin_managed_run(self.output_path, "id", "repair")
         timestamp = make_task_timestamp()

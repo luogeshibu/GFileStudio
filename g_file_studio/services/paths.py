@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from platformdirs import user_cache_dir, user_config_dir, user_data_dir
+
 
 def project_root() -> Path:
     """可写项目根目录；打包后为 EXE 所在目录。"""
@@ -23,14 +25,39 @@ def resource_path(relative_path: str | Path) -> Path:
     return resource_root() / Path(relative_path)
 
 
+
+
+def app_config_root() -> Path:
+    """Return the per-user configuration root without creating it.
+
+    Startup/read paths are side-effect free.  A directory is created only by an
+    explicit persistence operation such as Save, Import or manual Central Sync.
+    """
+    return Path(user_config_dir("GFileStudio", "NARI")) / "Config"
+
+
+def app_cache_root() -> Path:
+    """Return the per-user cache root without creating it."""
+    return Path(user_cache_dir("GFileStudio", "NARI"))
+
+
+def app_data_root() -> Path:
+    """Return the per-user persistent-data root without creating it."""
+    return Path(user_data_dir("GFileStudio", "NARI"))
+
 def default_workspace() -> Path:
     return project_root() / "workspace"
 
 
 def ensure_default_workspace() -> Path:
-    """创建程序默认使用的输入、输出与日志目录。"""
+    """Create disposable business/runtime directories only.
+
+    Nothing persistent (configuration, classification markers, symbol caches,
+    standards or access-control state) may be stored under this tree. The whole
+    workspace can be deleted safely between runs.
+    """
     root = default_workspace()
-    for name in ("input", "processed", "merged", "adjusted", "work", "output", "logs", "runs"):
+    for name in ("input", "remote_input", "processed", "merged", "adjusted", "work", "output", "runs"):
         (root / name).mkdir(parents=True, exist_ok=True)
     return root
 

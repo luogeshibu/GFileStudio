@@ -17,6 +17,7 @@ from g_file_studio.jeddah.style_engine import (
     apply_jeddah_busdis_blue,
     apply_jeddah_feedline_solid,
     apply_jeddah_rmu_name_standard,
+    ensure_jeddah_normal_rmu_frames_white,
     ensure_jeddah_smart_rmu_devices,
     ensure_jeddah_smart_rmu_frames_red,
     remove_duplicate_smart_labels_in_rmus,
@@ -45,6 +46,7 @@ from g_file_studio.services.site_profile_service import (
     SiteProfileService,
     authoritative_standard_catalog,
     authoritative_geometry_templates,
+    resolve_jeddah_classification_marker_roles,
     resolve_jeddah_role_devrefs,
 )
 from g_file_studio.services.report_i18n import report_is_english
@@ -77,6 +79,7 @@ class JeddahBatchSettings:
     frame_builtin_template_id: str = "default_sld_frame"
     rmu_profile_name: str = ""
     rmu_profile_version: int | None = None
+    classification_marker_entries: tuple[tuple[str, str, str], ...] = ()
 
 @dataclass
 class _FileSummary:
@@ -88,6 +91,7 @@ class _FileSummary:
     rmu_names_found: int = 0
     rmu_name_text_matched: int = 0
     rmu_name_white_changed: int = 0
+    normal_rmu_frame_white_changed: int = 0
     smr_to_smart_replaced: int = 0
     smr_existing_smart_cleanup: int = 0
     smr_text_removed: int = 0
@@ -240,6 +244,7 @@ def _write_batch_report(
     graphic_merges_removed: int,
     rmu_rects_lowered: int,
     smart_changed: int,
+    normal_frame_white_changed: int,
     smr_changed: int,
     smr_to_smart_replaced: int,
     smr_existing_smart_cleanup: int,
@@ -285,6 +290,7 @@ def _write_batch_report(
         "RMUNamesFound",
         "RMUNameTextMatched",
         "RMUNameWhiteChanged",
+        "NORMALRMUFrameWhiteChanged",
         "SMRToSMARTReplaced",
         "ExistingSMARTCleanupOnly",
         "SMRTextRemoved",
@@ -325,6 +331,7 @@ def _write_batch_report(
         "识别RMU名称",
         "匹配RMU名称文字",
         "RMU名称改白",
+        "非智能RMU外框刷白",
         "SMR替换SMART",
         "已有SMART仅清理SMR",
         "删除SMR文字",
@@ -368,6 +375,7 @@ def _write_batch_report(
             row.rmu_names_found,
             row.rmu_name_text_matched,
             row.rmu_name_white_changed,
+            row.normal_rmu_frame_white_changed,
             row.smr_to_smart_replaced,
             row.smr_existing_smart_cleanup,
             row.smr_text_removed,
@@ -419,7 +427,8 @@ def _write_batch_report(
             f"Server standard revision: {html.escape(server_standard_revision or '-')} UTC; "
             f"Graphic Merge elements removed first: {graphic_merges_removed}; RMU frames sent to back: {rmu_rects_lowered}; "
             f"Abnormal elements removed: {abnormal_removed} (with keyid: {keyid_removed}); "
-            f"SMART frames changed to red: {smart_changed}; SMR frames changed to red: {smr_changed}; "
+            f"SMART frames changed to red: {smart_changed}; NORMAL RMU frames changed to white: {normal_frame_white_changed}; "
+            f"SMR frames changed to red: {smr_changed}; "
             f"SMR labels replaced with SMART: {smr_to_smart_replaced}; "
             f"SMR cabinets already containing SMART (SMR removed only): {smr_existing_smart_cleanup}; "
             f"SMR texts removed: {smr_text_removed}; existing-SMART device devrefs corrected: {smart_device_precheck_changed}; "
@@ -446,7 +455,7 @@ def _write_batch_report(
             f"服务器标准版本：{html.escape(server_standard_revision or '-')} UTC；"
             f"第一步删除图形组合 Merge：{graphic_merges_removed}；RMU 外框置底：{rmu_rects_lowered}；"
             f"删除异常小尺寸图元：{abnormal_removed}（其中带 keyid：{keyid_removed}）；"
-            f"SMART 外框刷红：{smart_changed}；SMR 外框刷红：{smr_changed}；"
+            f"SMART 外框刷红：{smart_changed}；非智能 RMU 外框刷白：{normal_frame_white_changed}；SMR 外框刷红：{smr_changed}；"
             f"SMR 替换 SMART：{smr_to_smart_replaced}；已有 SMART 仅清理 SMR：{smr_existing_smart_cleanup}；"
             f"删除 SMR 文字：{smr_text_removed}；已有 SMART 柜图元校正：{smart_device_precheck_changed}；"
             f"SMR 转换阶段图元切换：{cbreaker_smart_devref_changed}；SMR 转换后 SMART 图元复检校正：{smart_device_postcheck_changed}；"
@@ -541,7 +550,7 @@ def process_jeddah_batch(
     log(f"[吉达批处理] 开始处理 {len(files)} 个单馈线 G 文件。")
     log(
         "[吉达批处理] 固定流程：彻底取消图形组合（删除全部 <Merge>，RMU 外框置底） → 删除异常小尺寸元素 → RMU 名称改白 → "
-        "SMART/SMR 外框刷红 + SMR 强制转换为 SMART + 按 SMART 标记统一柜内 LBS / Circuit Breaker 智能图元 + SMR 转换后再次检查 SMART 图元 + "
+        "SMART/SMR 外框刷红 + SMR 强制转换为 SMART + 无 SMART 的 RMU 外框强制白色 + 按原图元名称识别 Circuit_Breaker/Load_Breaker_Switch，并严格按四个本地分类标记统一 SMART/NO-SMART 目标 + SMR 转换后再次检查 SMART 图元 + "
         "GLOBAL 图元标准化 + 重复贯穿连接线清理 + 单连接点设备连接线正交修复 + "
         "删除带 Bus 外框并上移标题 + "
         "馈线名称上移 + 馈线改实线 + 删除 H.T 文字 + 删除 RMU channel_status 红色状态点 + 清理 RMU 内重复 SMART + "
@@ -626,6 +635,8 @@ def process_jeddah_batch(
     # This Jeddah module only orchestrates them; their algorithms remain untouched.
     smart_matched = 0
     smart_changed = 0
+    normal_frame_white_changed = 0
+    normal_frame_scanned_rmus = 0
     smr_texts = 0
     smr_matched = 0
     smr_changed = 0
@@ -677,7 +688,15 @@ def process_jeddah_batch(
                 f"V{settings.rmu_profile_version or '-'}"
             )
         else:
-            active_rmu_roles = resolve_jeddah_role_devrefs(active_rmu_profile)
+            if settings.classification_marker_entries:
+                active_rmu_roles, marker_issues = resolve_jeddah_classification_marker_roles(
+                    settings.classification_marker_entries
+                )
+                warnings.extend(f"吉达图元分类标记：{item}" for item in marker_issues)
+            else:
+                # Backward-compatible direct API/test path. The normal UI always
+                # supplies locally saved classification markers from v2.18.165 on.
+                active_rmu_roles = resolve_jeddah_role_devrefs(active_rmu_profile)
             profile_geometry_templates = (
                 authoritative_geometry_templates(active_rmu_profile)
                 if active_rmu_profile.managed_standard_files
@@ -692,11 +711,21 @@ def process_jeddah_batch(
                 if active_rmu_profile.managed_standard_files
                 else profile_geometry_templates
             )
+            if settings.classification_marker_entries:
+                standard_keys = {value.casefold() for value in profile_standard_devrefs}
+                for role_key in ("smart_lbs", "smart_breaker", "normal_lbs", "normal_breaker"):
+                    target = str(active_rmu_roles.get(role_key, "") or "").strip()
+                    if target and target.casefold() not in standard_keys:
+                        warnings.append(
+                            f"吉达图元分类标记 {role_key} 指向 {target}，但该图元不在当前已应用服务器标准中。"
+                        )
+                        active_rmu_roles[role_key] = ""
             log(
                 f"[吉达批处理/图元标准] 使用 GLOBAL：{active_rmu_profile.site_name} / "
                 f"{active_rmu_profile.profile_name} / 服务器版本 {active_rmu_profile.server_standard_label} UTC；"
-                f"仅检查 SMART/NORMAL 的 LBS、Circuit Breaker 变体；ZhaiWaiJieDiDaoZha 接地刀闸不替换；"
-                "不执行线路级连接规范化；仅在替换图元时保持原有连接端点锚点。"
+                "目标图元优先使用本地已保存四个分类标记；设备类型以原图元 devref/文件名中的 "
+                "Circuit_Breaker 或 Load_Breaker_Switch 为准，Y/Q 名称不覆盖；"
+                "柜内 SMART 文字只决定 SMART/NO-SMART 目标；ZhaiWaiJieDiDaoZha 接地刀闸不替换。"
             )
     stage3_files = discover_g_inputs(stage_white, InputMode.DIRECTORY)
     for index, source in enumerate(stage3_files, 1):
@@ -736,7 +765,11 @@ def process_jeddah_batch(
             # only CBreakerDis is eligible.  Ground disconnectors are deliberately
             # excluded and retain their original symbol and geometry.
             profile_consistency = None
-            if active_rmu_profile is not None:
+            required_rmu_targets_ready = all(
+                str(active_rmu_roles.get(key, "") or "").strip()
+                for key in ("smart_lbs", "smart_breaker", "normal_lbs", "normal_breaker")
+            )
+            if active_rmu_profile is not None and required_rmu_targets_ready:
                 profile_consistency = apply_smart_profile_to_tree(
                     tree,
                     source,
@@ -752,6 +785,11 @@ def process_jeddah_batch(
                     authoritative_standard_devrefs=profile_standard_devrefs,
                     allow_source_geometry_fallback=False,
                     jeddah_variant_only=True,
+                    jeddah_strict_marker_targets=bool(settings.classification_marker_entries),
+                )
+            elif active_rmu_profile is not None and settings.classification_marker_entries:
+                warnings.append(
+                    f"{source.name}: 吉达四个 SMART/NO-SMART 分类目标不完整，本文件仅执行其他吉达步骤，未替换 LBS/Circuit Breaker 图元。"
                 )
             connection_cleanup = None
             busdis_blue = apply_jeddah_busdis_blue(tree, source)
@@ -761,11 +799,11 @@ def process_jeddah_batch(
             channel_status_cleanup = remove_jeddah_channel_status_points(tree, source)
             duplicate_smart_cleanup = remove_duplicate_smart_labels_in_rmus(tree, source)
             measurement_cleanup = remove_jeddah_adjacent_measurement_texts(tree, source)
-            # Final Jeddah SMART visual consistency pass.  Do not reuse the shared
-            # enhancement engine's stricter full-text containment rule: the Jeddah
-            # device audit already treats SMART as belonging to the RMU when the
-            # SMART Text center is inside the recognized frame.  Frame coloring must
-            # use the exact same ownership rule so every final SMART RMU is red.
+            # Final Jeddah RMU frame-color consistency.  SMR conversion has already
+            # completed, so a recognized cabinet with no in-frame SMART Text is
+            # definitively NORMAL for this batch and must be white.  SMART cabinets
+            # are then forced red with the exact same center-inside ownership rule.
+            normal_frame_audit = ensure_jeddah_normal_rmu_frames_white(tree, source)
             smart_frame_audit = ensure_jeddah_smart_rmu_frames_red(tree, source)
 
             output = stage_visual / source.name
@@ -778,6 +816,9 @@ def process_jeddah_batch(
 
             smart_matched += smart_frame_audit.smart_rmu_count
             smart_changed += smart_frame_audit.frame_red_changed_count
+            normal_frame_white_changed += normal_frame_audit.frame_white_changed_count
+            normal_frame_scanned_rmus += normal_frame_audit.normal_rmu_count
+            summaries[source.name].normal_rmu_frame_white_changed = normal_frame_audit.frame_white_changed_count
             smr_texts += enhancement.smr_text_count
             smr_matched += enhancement.smr_matched_rect_count
             smr_changed += enhancement.smr_frame_color_changed
@@ -850,6 +891,8 @@ def process_jeddah_batch(
                 warnings.append(f"{source.name}: {warning}")
             for warning in smart_device_postcheck.warnings:
                 warnings.append(f"{source.name}: {warning}")
+            for warning in normal_frame_audit.warnings:
+                warnings.append(f"{source.name}: {warning}")
             for warning in smart_frame_audit.warnings:
                 warnings.append(f"{source.name}: {warning}")
             for warning in feeder_titles.warnings:
@@ -872,7 +915,8 @@ def process_jeddah_batch(
                     f"单 Pin 正交修复 {connection_cleanup.straightened_lines}、设备同步对齐 {connection_cleanup.moved_devices}；"
                 )
             log(
-                f"[吉达批处理/图面处理] {source.name}：SMART 匹配 {enhancement.smart_rmu_rect_count}、刷红 {enhancement.smart_frame_color_changed}；"
+                f"[吉达批处理/图面处理] {source.name}：SMART 匹配 {enhancement.smart_rmu_rect_count}、最终刷红 {smart_frame_audit.frame_red_changed_count}；"
+                f"无 SMART 的 NORMAL RMU {normal_frame_audit.normal_rmu_count} 个、外框刷白 {normal_frame_audit.frame_white_changed_count}；"
                 f"SMR Text {enhancement.smr_text_count}、匹配 {enhancement.smr_matched_rect_count}、刷红 {enhancement.smr_frame_color_changed}；"
                 f"已有 SMART 柜图元预检查：SMART 柜 {smart_device_precheck.smart_rmu_count}、校正 devref {smart_device_precheck.cbreaker_smart_devref_changed_count}；"
                 f"SMR→SMART 新生成 {smr_replacement.replaced_count}；已有 SMART 清理 SMR {smr_replacement.existing_smart_cleanup_count}；"
@@ -1019,6 +1063,7 @@ def process_jeddah_batch(
         graphic_merges_removed=graphic_merges_removed,
         rmu_rects_lowered=rmu_rects_lowered,
         smart_changed=smart_changed,
+        normal_frame_white_changed=normal_frame_white_changed,
         smr_changed=smr_changed,
         smr_to_smart_replaced=smr_to_smart_replaced,
         smr_existing_smart_cleanup=smr_existing_smart_cleanup,
@@ -1057,7 +1102,7 @@ def process_jeddah_batch(
         f"[吉达批处理] 完成：最终 G 文件 {len(final_g_files)}/{len(files)} 个；"
         f"服务器标准版本 {active_rmu_profile.server_standard_label if active_rmu_profile else '-'} UTC；"
         f"删除 Merge {graphic_merges_removed}；RMU 外框置底 {rmu_rects_lowered}；"
-        f"异常元素删除 {total_removed}；SMART 外框刷红 {smart_changed}；SMR 外框刷红 {smr_changed}；"
+        f"异常元素删除 {total_removed}；SMART 外框刷红 {smart_changed}；非智能 RMU 外框刷白 {normal_frame_white_changed}；SMR 外框刷红 {smr_changed}；"
         f"SMR 新生成 SMART {smr_to_smart_replaced}；已有 SMART 仅删 SMR {smr_existing_smart_cleanup}；"
         f"删除 SMR Text {smr_text_removed}；已有 SMART 柜图元校正 {smart_device_precheck_changed}；"
         f"SMR 转换阶段图元切换 {cbreaker_smart_devref_changed}；SMR 后复检图元校正 {smart_device_postcheck_changed}；"
@@ -1107,6 +1152,8 @@ def process_jeddah_batch(
             "rmu_name_white_changed_count": white_total,
             "smart_rmu_matched_count": smart_matched,
             "smart_rmu_frame_red_changed_count": smart_changed,
+            "normal_rmu_count": normal_frame_scanned_rmus,
+            "normal_rmu_frame_white_changed_count": normal_frame_white_changed,
             "smr_text_count": smr_texts,
             "smr_matched_rmu_count": smr_matched,
             "smr_rmu_frame_red_changed_count": smr_changed,

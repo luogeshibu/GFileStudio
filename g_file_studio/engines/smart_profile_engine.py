@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -227,6 +228,24 @@ def _device_role(element: ET.Element) -> str | None:
     if name.startswith("Y") or key_name.startswith("Y"):
         return "LBS"
     if name.startswith("Q") or key_name.startswith("Q"):
+        return "BREAKER"
+    return None
+
+
+def _jeddah_device_role_from_original_devref(element: ET.Element) -> str | None:
+    """Identify Jeddah RMU switch type from the element's ORIGINAL icon name.
+
+    Y/Q text is intentionally ignored here.  The original devref/file name decides
+    whether the element is a Load Breaker Switch or Circuit Breaker; the cabinet's
+    SMART label only decides which target variant it should receive.
+    """
+    if local_name(element.tag) != "CBreakerDis":
+        return None
+    devref = (element.get("devref") or "").strip().upper()
+    normalized = re.sub(r"[^A-Z0-9]+", "_", devref).strip("_")
+    if "LOAD_BREAKER_SWITCH" in normalized or "LOADBREAKERSWITCH" in normalized:
+        return "LBS"
+    if "CIRCUIT_BREAKER" in normalized or "CIRCUITBREAKER" in normalized:
         return "BREAKER"
     return None
 
@@ -755,6 +774,7 @@ def apply_smart_profile_to_tree(
     require_template_for_connected_devref_change: bool = False,
     allow_source_geometry_fallback: bool = True,
     jeddah_variant_only: bool = False,
+    jeddah_strict_marker_targets: bool = False,
     progress: Callable[[int], None] | None = None,
 ) -> SmartProfileApplyResult:
     """Apply the shared profile rules, with an optional Jeddah-only restriction.
@@ -763,7 +783,11 @@ def apply_smart_profile_to_tree(
     devrefs. SMR conversion is handled by the Jeddah batch before this pass. When
     ``jeddah_variant_only`` is true, an RMU marked SMART (or the SMR marker that is
     converted to SMART) directly receives the confirmed SMART LBS/Circuit-Breaker
-    symbols; NORMAL cabinets receive only the confirmed NORMAL variants. Ground
+    symbols; NORMAL cabinets receive only confirmed NORMAL variants. When
+    ``jeddah_strict_marker_targets`` is enabled, target devrefs come only from the
+    operator's four explicit classification markers and device type comes only from
+    each element's original icon/devref name; Y/Q labels and peer cabinets cannot
+    override that decision. Ground
     disconnectors are never changed, and missing server definitions are warnings
     only. This keeps the Jeddah restriction out of other modules that use this
     shared engine. When
@@ -852,14 +876,17 @@ def apply_smart_profile_to_tree(
     )
     emit(30)
 
-    if jeddah_variant_only and server_devref_keys:
-        # Jeddah's SMART target is learned from the other already-labelled SMART
-        # cabinets in the same drawing. This handles a server profile whose role
-        # binding is present but stale, and it makes an isolated wrong cabinet
-        # converge to the actual SMART symbols used by the drawing. Only
-        # server-known SMART devrefs participate; a business drawing can never
-        # promote an arbitrary local symbol into the standard.
+    if jeddah_variant_only and server_devref_keys and not jeddah_strict_marker_targets:
+        # Jeddah may contain more than one server-known revision of a SMART/NORMAL
+        # symbol.  Learn the effective variant from peer cabinets in the same
+        # drawing, but only when that devref is already present in the authoritative
+        # server catalog.  A business drawing can therefore select among known
+        # standard symbols, but it can never promote an arbitrary local symbol.
         observed_smart_targets: dict[str, Counter[str]] = {
+            "LBS": Counter(),
+            "BREAKER": Counter(),
+        }
+        observed_normal_targets: dict[str, Counter[str]] = {
             "LBS": Counter(),
             "BREAKER": Counter(),
         }
@@ -867,25 +894,40 @@ def apply_smart_profile_to_tree(
             rect = _find_rect(rects, item)
             if rect is None:
                 continue
-            if _rmu_class(rect, smart_texts, smr_texts) not in {"SMART", "SMR"}:
-                continue
+            cabinet_class = _rmu_class(rect, smart_texts, smr_texts)
+            is_smart = cabinet_class in {"SMART", "SMR"}
             for element in elements:
                 if local_name(element.tag) != "CBreakerDis" or not _center_inside(element, rect):
                     continue
                 role = _device_role(element)
                 old_devref = (element.get("devref") or "").strip()
-                if (
-                    role in observed_smart_targets
-                    and _variant_kind(old_devref) == "SMART"
-                    and old_devref.casefold() in server_devref_keys
-                ):
+                if role not in observed_smart_targets or old_devref.casefold() not in server_devref_keys:
+                    continue
+                variant = _variant_kind(old_devref)
+                if is_smart and variant == "SMART":
                     observed_smart_targets[role][old_devref] += 1
+                elif not is_smart and variant == "NORMAL":
+                    observed_normal_targets[role][old_devref] += 1
+
         learned_lbs = observed_smart_targets["LBS"].most_common(1)
         learned_breaker = observed_smart_targets["BREAKER"].most_common(1)
         if learned_lbs:
             smart_lbs_devref = learned_lbs[0][0]
         if learned_breaker:
             smart_breaker_devref = learned_breaker[0][0]
+
+        # NORMAL targets follow the same peer-cabinet principle requested for the
+        # Jeddah batch.  Be conservative on ties: only a unique most-common NORMAL
+        # symbol overrides the saved GLOBAL binding; otherwise keep the explicit
+        # profile target rather than guessing between equally represented revisions.
+        for role, counter in observed_normal_targets.items():
+            ranked = counter.most_common(2)
+            if not ranked or (len(ranked) > 1 and ranked[0][1] == ranked[1][1]):
+                continue
+            if role == "LBS":
+                normal_lbs_devref = ranked[0][0]
+            else:
+                normal_breaker_devref = ranked[0][0]
 
     result.scanned_rmu_count = len(identification.items)
     element_scope: dict[int, str] = {}
@@ -932,9 +974,13 @@ def apply_smart_profile_to_tree(
             ):
                 continue
             old_devref = (element.get("devref") or "").strip()
-            if id(element) in missing_standard_element_ids:
-                # The server catalog is the authority. A missing current icon is
-                # reported below and must never be guessed or silently upgraded.
+            if id(element) in missing_standard_element_ids and not (
+                jeddah_variant_only and jeddah_strict_marker_targets and tag == "CBreakerDis"
+            ):
+                # In ordinary standard correction, a missing current icon is warning-only.
+                # Jeddah strict mode is different: the user's explicit rule allows an OLD
+                # Circuit_Breaker/Load_Breaker_Switch icon to be normalized even when that
+                # old revision is no longer present in the current server catalog.
                 continue
             if tag == "ZhaiWaiJieDiDaoZha" and not jeddah_variant_only:
                 role = "GROUND"
@@ -946,7 +992,11 @@ def apply_smart_profile_to_tree(
                 else:
                     result.normal_ground_checked_count += 1
             else:
-                role = _device_role(element)
+                role = (
+                    _jeddah_device_role_from_original_devref(element)
+                    if jeddah_variant_only and jeddah_strict_marker_targets
+                    else _device_role(element)
+                )
                 if role not in {"LBS", "BREAKER"}:
                     continue
                 if is_smart_cabinet:
@@ -966,7 +1016,19 @@ def apply_smart_profile_to_tree(
                     else:
                         result.normal_breaker_checked_count += 1
 
-            if jeddah_variant_only:
+            if (
+                jeddah_variant_only
+                and jeddah_strict_marker_targets
+                and server_devref_keys
+                and target.casefold() not in server_devref_keys
+            ):
+                result.warnings.append(
+                    f"{file_path.name}: 分类标记目标图元 {target} 不在当前服务器标准中，元素 "
+                    f"{element.get('id') or '<无ID>'} 保持不变。"
+                )
+                continue
+
+            if jeddah_variant_only and not jeddah_strict_marker_targets:
                 # Jeddah classification is driven only by the visible cabinet
                 # marker.  A SMART/SMR cabinet must use the confirmed SMART
                 # LBS/Circuit-Breaker symbols even when its current devref has
@@ -1030,7 +1092,11 @@ def apply_smart_profile_to_tree(
     if not allow_source_geometry_fallback:
         for element in elements:
             old_devref = (element.get("devref") or "").strip()
-            if not old_devref or id(element) not in missing_standard_element_ids:
+            if (
+                not old_devref
+                or id(element) not in missing_standard_element_ids
+                or id(element) in fixed_processed
+            ):
                 continue
             tag = local_name(element.tag)
             scope = element_scope.get(id(element), "ANY")
@@ -1163,6 +1229,8 @@ def apply_smart_profile_to_file(
     custom_symbols: list[dict[str, object]] | None = None,
     require_template_for_connected_devref_change: bool = False,
     allow_source_geometry_fallback: bool = True,
+    jeddah_variant_only: bool = False,
+    jeddah_strict_marker_targets: bool = False,
     progress: Callable[[int], None] | None = None,
 ) -> SmartProfileApplyResult:
     last_progress = -1
@@ -1197,6 +1265,8 @@ def apply_smart_profile_to_file(
         custom_symbols=custom_symbols,
         require_template_for_connected_devref_change=require_template_for_connected_devref_change,
         allow_source_geometry_fallback=allow_source_geometry_fallback,
+        jeddah_variant_only=jeddah_variant_only,
+        jeddah_strict_marker_targets=jeddah_strict_marker_targets,
         progress=(lambda value: emit(8 + round(value * 0.84))) if progress else None,
     )
     emit(92)

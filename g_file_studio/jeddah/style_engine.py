@@ -368,6 +368,15 @@ def _set_frame_red(rect: ET.Element) -> bool:
     return changed
 
 
+def _set_frame_white(rect: ET.Element) -> bool:
+    """Force only the RMU frame line color to the Jeddah NORMAL white."""
+
+    changed = rect.get("lc") != "255,255,255" or (rect.get("lcc") or "").upper() != "#FFFFFF"
+    rect.set("lc", "255,255,255")
+    rect.set("lcc", "#FFFFFF")
+    return changed
+
+
 _SMART_STYLE_KEYS = (
     "ffT", "p_BoldFontFlag", "p_FontWidth", "p_FontHeight", "fs", "ff",
     "bold", "italic", "p_ItalicFontFlag", "lc", "lcc", "fc", "fcc",
@@ -524,6 +533,62 @@ def ensure_jeddah_smart_rmu_frames_red(
         result.smart_rmu_count += 1
         if _set_frame_red(rect):
             result.frame_red_changed_count += 1
+
+    return result
+
+
+@dataclass
+class JeddahNormalFrameAuditResult:
+    file_path: Path
+    scanned_rmu_count: int = 0
+    normal_rmu_count: int = 0
+    frame_white_changed_count: int = 0
+    warnings: list[str] = field(default_factory=list)
+
+
+def ensure_jeddah_normal_rmu_frames_white(
+    tree: ET.ElementTree,
+    file_path: Path,
+) -> JeddahNormalFrameAuditResult:
+    """Force every recognized Jeddah RMU without its own SMART label to white.
+
+    This pass runs after Jeddah SMR -> SMART conversion.  Classification is therefore
+    intentionally literal and cabinet-local: if no ``Text[ts=SMART]`` center belongs
+    to the recognized RMU rectangle, that cabinet is NORMAL and its frame line must be
+    white.  Device SMART/NORMAL replacement remains the responsibility of the active
+    server-standard profile pass; this function changes only the frame line color.
+    """
+
+    file_path = Path(file_path)
+    result = JeddahNormalFrameAuditResult(file_path=file_path)
+    root = tree.getroot()
+    elements = direct_layer_elements(root)
+    rects = [element for element in elements if local_name(element.tag) == "rect"]
+    smart_texts = [
+        element for element in elements
+        if local_name(element.tag) == "Text"
+        and (element.get("ts") or "").strip().upper() == "SMART"
+    ]
+
+    identification = identify_rmus(
+        tree,
+        file_path,
+        name_positions=("top", "bottom", "left", "right"),
+        smart_in_type=True,
+    )
+    result.scanned_rmu_count = len(identification.items)
+    for item in identification.items:
+        rect = _find_rect_for_identification(rects, item)
+        if rect is None:
+            result.warnings.append(
+                f"{file_path.name}: RMU rect {item.rect_id or '<无ID>'} 未定位到实际 rect，跳过 NORMAL 白框一致性检查。"
+            )
+            continue
+        if _smart_text_inside_rmu(smart_texts, rect) is not None:
+            continue
+        result.normal_rmu_count += 1
+        if _set_frame_white(rect):
+            result.frame_white_changed_count += 1
 
     return result
 

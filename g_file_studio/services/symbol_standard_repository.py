@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
-from platformdirs import user_data_dir
+from g_file_studio.services.paths import app_data_root
 
 
 def _utc_now() -> str:
@@ -94,13 +94,13 @@ class SymbolStandardRepository:
     MANIFEST_VERSION = 1
 
     def __init__(self, root: str | Path | None = None) -> None:
-        self.root = Path(root) if root is not None else Path(user_data_dir("GFileStudio", "NARI")) / "SymbolRepository"
+        self.root = Path(root) if root is not None else app_data_root() / "SymbolRepository"
         self.objects_root = self.root / "objects"
         self.manifests_root = self.root / "manifests"
         self.deleted_manifests_root = self.root / "deleted_manifests"
         self.exports_root = self.root / "exports"
-        for path in (self.objects_root, self.manifests_root, self.deleted_manifests_root, self.exports_root):
-            path.mkdir(parents=True, exist_ok=True)
+        # Read-only construction must not manufacture a repository tree.  Writer
+        # methods create only the directories they actually need.
 
     def object_path(self, sha256: str) -> Path:
         digest = str(sha256 or "").strip().lower()

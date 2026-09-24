@@ -5,7 +5,13 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
+from g_file_studio.engines.classified_device_poke_engine import (
+    apply_classified_device_pokes,
+    assign_device_names,
+    find_classified_devices,
+)
 from g_file_studio.engines.rmu_identification_engine import (
+    RmuIdentificationResult,
     identify_rmus,
     parse_intelligent_markers,
     parse_name_exclusions,
@@ -29,6 +35,9 @@ class PokeProcessingSettings:
     input_mode: InputMode
     output_dir: Path
     enable_rmu_poke: bool = True
+    # AR/LBS/SEC is an independent equipment-Poke branch. It no longer follows
+    # the RMU enable switch.
+    enable_classified_device_poke: bool = True
     enable_station_poke: bool = True
     rmu_name_positions: tuple[str, ...] = ("top",)
     rmu_name_exclusions: str = ""
@@ -60,8 +69,11 @@ def process_pokes(
 ) -> ProcessingResult:
     """Standalone Poke processor without a facID precondition.
 
-    RMU Poke consumes the shared ``identify_rmus()`` result, then resolves EACH
-    intelligent cabinet independently by its RMU name:
+    Detail Poke has two independent equipment branches. RMU Poke consumes the
+    shared ``identify_rmus()`` result. AR/LBS/SEC device Poke consumes only
+    server-symbol classifications AR / LBS / SEC and assigns one nearby Text
+    instance per device under its own hard name rules: red Text, above/right only,
+    within 300 units. Both resolve EACH equipment instance independently by name:
 
         DMS_COMBINED_DEVICE.NAME -> FEEDER_ID -> DMS_FEEDER_DEVICE
         -> SUBSTATION -> SUBCONTROLAREA -> feeder full business name.
@@ -70,9 +82,13 @@ def process_pokes(
     many feeders.  Station-jump Poke is independent from facID as well and uses
     only the detected station key -> SUBSTATION -> SUBCONTROLAREA chain.
     """
-    if not settings.enable_rmu_poke and not settings.enable_station_poke:
+    if not (
+        settings.enable_rmu_poke
+        or settings.enable_classified_device_poke
+        or settings.enable_station_poke
+    ):
         raise ValueError("请至少启用一种 Poke 跳转处理。")
-    if not settings.rmu_name_positions:
+    if settings.enable_rmu_poke and not settings.rmu_name_positions:
         raise ValueError("RMU 柜名位置至少需要一个方向；Poke 模块复用现有 RMU 识别设置。")
 
     files = discover_g_inputs(settings.source_path, settings.input_mode)
@@ -96,6 +112,14 @@ def process_pokes(
         "rmu_updated": 0,
         "rmu_unchanged": 0,
         "rmu_skipped": 0,
+        "classified_device_total": 0,
+        "classified_device_named": 0,
+        "classified_device_database_resolved": 0,
+        "classified_device_database_unresolved": 0,
+        "classified_device_added": 0,
+        "classified_device_updated": 0,
+        "classified_device_unchanged": 0,
+        "classified_device_skipped": 0,
         "station_candidates": 0,
         "station_resolved_count": 0,
         "station_added": 0,
@@ -108,14 +132,21 @@ def process_pokes(
 
     excluded = parse_name_exclusions(settings.rmu_name_exclusions)
     markers = parse_intelligent_markers(settings.rmu_intelligent_markers)
-    if settings.classification_marker_entries:
-        log(
-            f"[Poke/分类标记] 已读取本地服务器图元同步缓存中的 "
-            f"{len(settings.classification_marker_entries)} 条分类标记；"
-            "FUSE、LBS、AR、SEC、Transformer_OH 图元周边 300 以内的站点名称将排除。"
-        )
+    if settings.enable_classified_device_poke:
+        if settings.classification_marker_entries:
+            log(
+                f"[Poke/分类标记] 已读取本地服务器图元同步缓存中的 "
+                f"{len(settings.classification_marker_entries)} 条分类标记；"
+                "AR / LBS / SEC 独立设备 Poke 已启用，名称强制为红色且只认设备上方/右侧（≤300）；"
+                "站点跳转不使用任何设备分类做排除。"
+            )
+        else:
+            log(
+                "[Poke/分类标记] AR/LBS/SEC 独立设备 Poke 已启用，但未找到本地图元分类标记；"
+                "该分支不执行；RMU/站点跳转不受影响。"
+            )
     else:
-        log("[Poke/分类标记] 未找到本地服务器图元分类标记，未执行分类标记排除。")
+        log("[Poke/分类设备] AR/LBS/SEC 独立设备 Poke 未启用。")
 
     for index, input_path in enumerate(files, 1):
         if progress:
@@ -132,6 +163,11 @@ def process_pokes(
             "RMUAdded": 0,
             "RMUUpdated": 0,
             "RMUSkipped": 0,
+            "DeviceRecognized": 0,
+            "DeviceNamed": 0,
+            "DeviceAdded": 0,
+            "DeviceUpdated": 0,
+            "DeviceSkipped": 0,
             "StationCandidates": 0,
             "StationResolved": 0,
             "StationAdded": 0,
@@ -147,36 +183,44 @@ def process_pokes(
             base = (index - 1) / max(len(files), 1) * 90
             progress(min(95, int(base + 12)))
 
-        # Poke always reuses the one public RMU recognition result, including for
-        # station-jump exclusion geometry.  No private RMU detector lives here.
-        identification = identify_rmus(
-            tree,
-            input_path,
-            # Poke must use the same strict RMU resolver: only the Text above the
-            # validated cabinet frame can be used as its name.
-            name_positions=("top",),
-            name_resolution_mode="selected_direction",
-            smart_in_type=True,
-            excluded_name_values=excluded,
-            intelligent_marker_values=markers,
-        )
-        smart_items = [item for item in identification.items if bool(item.smart_count)]
-        smart_count = len(smart_items)
-        stats["rmu_identified_total"] += identification.cabinet_count
-        stats["smart_rmu_identified_total"] += smart_count
-        file_summary["RMURecognized"] = identification.cabinet_count
-        file_summary["SmartRMU"] = smart_count
-        log(
-            f"[Poke/RMU识别] {input_path.name}：复用公共 identify_rmus()，"
-            f"识别 RMU {identification.cabinet_count} 个，智能 RMU {smart_count} 个。"
-        )
+        # RMU recognition is needed only by the RMU or station-jump branches.
+        # A classified-device-only run is now genuinely independent and avoids
+        # scanning RMU frames/names entirely.
+        if settings.enable_rmu_poke or settings.enable_station_poke:
+            identification = identify_rmus(
+                tree,
+                input_path,
+                # Poke must use the same strict RMU resolver: only the Text above the
+                # validated cabinet frame can be used as its name.
+                name_positions=("top",),
+                name_resolution_mode="selected_direction",
+                smart_in_type=True,
+                excluded_name_values=excluded,
+                intelligent_marker_values=markers,
+            )
+            smart_items = [item for item in identification.items if bool(item.smart_count)]
+            smart_count = len(smart_items)
+            stats["rmu_identified_total"] += identification.cabinet_count
+            stats["smart_rmu_identified_total"] += smart_count
+            file_summary["RMURecognized"] = identification.cabinet_count
+            file_summary["SmartRMU"] = smart_count
+            log(
+                f"[Poke/RMU识别] {input_path.name}：复用公共 identify_rmus()，"
+                f"识别 RMU {identification.cabinet_count} 个，智能 RMU {smart_count} 个。"
+            )
+            for warning in identification.warnings:
+                log(f"[Poke/RMU识别告警] {input_path.name}：{warning}")
+        else:
+            identification = RmuIdentificationResult(file_path=input_path)
+            smart_items = []
+            smart_count = 0
+            log(f"[Poke/分类设备] {input_path.name}：仅执行 AR/LBS/SEC，跳过 RMU 识别。")
+
         if not fac_id:
             log(
                 f"[Poke提示] {input_path.name}：facID 为空不影响 Poke 处理；"
-                "RMU Poke 按环网柜名称逐柜查库，站点跳转 Poke 本身不使用 facID。"
+                "设备 Poke 按设备名称逐个查库，站点跳转 Poke 本身不使用 facID。"
             )
-        for warning in identification.warnings:
-            log(f"[Poke/RMU识别告警] {input_path.name}：{warning}")
 
         # Resolve intelligent RMUs in one bounded Oracle query.  Each RMU may map
         # to a different feeder, which is the key fix for station overview G files.
@@ -268,6 +312,80 @@ def process_pokes(
                 warnings.append(f"{input_path.name}: {warning}")
                 log(f"[RMU Poke告警] {input_path.name}：{warning}")
 
+        # AR / LBS / SEC detail Poke is independent from the RMU Poke switch.
+        # Classification markers identify only the target device symbols. Names
+        # must be RED and geometrically ABOVE/RIGHT of the device, within 300 G
+        # units. Equal rendered text remains independent when Text IDs differ.
+        if settings.enable_classified_device_poke and settings.classification_marker_entries:
+            classified_devices = find_classified_devices(root, settings.classification_marker_entries)
+            device_assignments = assign_device_names(classified_devices)
+            device_names = [assignment.name for assignment in device_assignments if assignment.name]
+            device_contexts: dict[str, object] = {}
+            device_db_issues: dict[str, str] = {}
+            if device_names:
+                try:
+                    # These field devices use the same DMS_COMBINED_DEVICE.NAME ->
+                    # FEEDER_ID business chain as the existing RMU detail jump.
+                    device_contexts, device_db_issues = database_service.resolve_rmu_contexts(device_names)
+                except Exception as exc:
+                    message = f"AR/LBS/SEC 名称批量查询失败：{exc}"
+                    for name in device_names:
+                        device_db_issues[_lookup_key(name)] = message
+                    warnings.append(f"{input_path.name}: {message}")
+                    log(f"[设备 Poke数据库告警] {input_path.name}：{message}")
+
+            device_prefixes = {
+                key: str(getattr(context, "feeder_full_name", "") or "").strip()
+                for key, context in device_contexts.items()
+                if str(getattr(context, "feeder_full_name", "") or "").strip()
+            }
+            device_result = apply_classified_device_pokes(
+                tree,
+                input_path,
+                classification_marker_entries=settings.classification_marker_entries,
+                database_prefixes=device_prefixes,
+                database_resolution_errors=device_db_issues,
+            )
+            stats["classified_device_total"] += device_result.device_count
+            stats["classified_device_named"] += device_result.assigned_name_count
+            stats["classified_device_database_resolved"] += len(device_contexts)
+            stats["classified_device_database_unresolved"] += len(device_db_issues)
+            stats["classified_device_added"] += device_result.added_count
+            stats["classified_device_updated"] += device_result.updated_count
+            stats["classified_device_unchanged"] += device_result.unchanged_count
+            stats["classified_device_skipped"] += device_result.skipped_count
+            file_summary["DeviceRecognized"] = device_result.device_count
+            file_summary["DeviceNamed"] = device_result.assigned_name_count
+            file_summary["DeviceAdded"] = device_result.added_count
+            file_summary["DeviceUpdated"] = device_result.updated_count
+            file_summary["DeviceSkipped"] = device_result.skipped_count
+            log(
+                f"[AR/LBS/SEC Poke] {input_path.name}：分类设备 {device_result.device_count}，"
+                f"分配名称 {device_result.assigned_name_count}，新增 {device_result.added_count}，"
+                f"更新 {device_result.updated_count}，跳过 {device_result.skipped_count}。"
+            )
+            for record in device_result.records:
+                report_rows.append({
+                    "File": input_path.name,
+                    "Type": "classified_device",
+                    "SourceName": record.name,
+                    "NameElementID": record.text_id,
+                    "FrameElementID": record.device_id,
+                    "StationKey": record.marker,
+                    "AdjacentRMU": "",
+                    "LocateLabel": "",
+                    "ResolvedBusinessName": device_prefixes.get(record.name.casefold(), ""),
+                    "CurrentStation": "",
+                    "Action": record.action,
+                    "PokeID": record.poke_id,
+                    "TargetAhref": record.target_file,
+                    "Confidence": "HIGH" if record.action != "skipped" else "",
+                    "RecognitionSource": "classification_device_name",
+                    "Reason": record.reason,
+                })
+            for warning in device_result.warnings:
+                warnings.append(f"{input_path.name}: {warning}")
+
         if progress:
             base = (index - 1) / max(len(files), 1) * 90
             progress(min(96, int(base + 40)))
@@ -293,7 +411,8 @@ def process_pokes(
                 # graphic-constraint exception; it does not inspect line
                 # geometry or connection references.
                 allow_same_station_terminals=True,
-                classification_marker_entries=settings.classification_marker_entries,
+                # Station-jump recognition is intentionally independent from
+                # AR/LBS/SEC/FUSE/Transformer_OH classification markers.
             )
             stats["station_candidates"] += station_result.candidate_count
             stats["station_resolved_count"] += station_result.eligible_count
@@ -350,7 +469,11 @@ def process_pokes(
         enforce_confirmed_id_rules(output_path, log)
         outputs.append(output_path)
         stats["processed_count"] += 1
-        if int(file_summary.get("RMUSkipped", 0) or 0) or int(file_summary.get("StationSkipped", 0) or 0):
+        if (
+            int(file_summary.get("RMUSkipped", 0) or 0)
+            or int(file_summary.get("DeviceSkipped", 0) or 0)
+            or int(file_summary.get("StationSkipped", 0) or 0)
+        ):
             file_summary["Status"] = "WARNING"
             file_summary["Reason"] = "部分 Poke 未加跳转，详细原因见下方明细。"
         else:
@@ -369,6 +492,7 @@ def process_pokes(
         f"处理 {stats['processed_count']}/{stats['input_count']} 个文件；"
         f"RMU数据库成功解析 {stats['rmu_database_resolved']}、未解析 {stats['rmu_database_unresolved']}；"
         f"RMU Poke 新增 {stats['rmu_added']}、更新 {stats['rmu_updated']}；"
+        f"AR/LBS/SEC Poke 新增 {stats['classified_device_added']}、更新 {stats['classified_device_updated']}；"
         f"站点跳转 Poke 新增 {stats['station_added']}、更新 {stats['station_updated']}、"
         f"删除重复 {stats['station_duplicate_removed']}。"
     )

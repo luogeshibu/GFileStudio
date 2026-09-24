@@ -141,13 +141,10 @@ class BasicPage(BasePage):
         try:
             if self.source.mode().value == "remote_ssh":
                 self.rules_editor.scan_status.setText("正在只读下载所选服务器 G 文件到 workspace，并扫描元素与属性……")
-                from PySide6.QtWidgets import QApplication
-                from PySide6.QtCore import Qt
-                QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-                try:
-                    local_snapshot = self.source.prepare_for_processing()
-                finally:
-                    QApplication.restoreOverrideCursor()
+                # Remote preparation now downloads in a worker while a nested Qt
+                # event loop keeps the window responsive; do not force the whole
+                # application into a wait-cursor state.
+                local_snapshot = self.source.prepare_for_processing()
                 self.rules_editor.set_input_dir(local_snapshot)
             else:
                 self.rules_editor.set_input_dir(self.source.path())
@@ -451,10 +448,8 @@ class BasicPage(BasePage):
     def _validate_common_paths(self) -> bool:
         if not validate_input_source(self, self.source, display_name="基础处理输入"):
             return False
-        if not validate_existing_directory(self, self.output_path.path(), "基础处理输出目录"):
-            return False
+        # Managed workspace output is disposable and recreated when a run begins.
         self.source.persist_current()
-        self.output_path.persist_valid_path()
         return True
 
     def _selected_rmu_action(self) -> RmuAction:

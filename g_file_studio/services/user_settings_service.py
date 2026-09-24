@@ -5,7 +5,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from platformdirs import user_config_dir
+from g_file_studio.services.paths import app_config_root
 
 
 @dataclass(frozen=True)
@@ -37,10 +37,10 @@ class UserSettingsService:
     """
 
     def __init__(self, ini_path: str | Path | None = None) -> None:
-        base = Path(user_config_dir("GFileStudio", "NARI")) / "Config"
+        base = app_config_root()
         self.ini_path = Path(ini_path) if ini_path is not None else base / "user_settings.ini"
-        self.ini_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._writes_enabled = True
         self._config = configparser.ConfigParser(interpolation=None)
         self._config.optionxform = str
         self._load()
@@ -62,7 +62,27 @@ class UserSettingsService:
             section, option = "general", text
         return section or "general", option
 
+    @property
+    def writes_enabled(self) -> bool:
+        return bool(self._writes_enabled)
+
+    def set_writes_enabled(self, enabled: bool) -> None:
+        """Enable/disable persistence without changing the in-memory loaded state.
+
+        MainWindow disables writes only while it automatically constructs pages.
+        That prevents signal initialization from manufacturing local cache/config
+        files on a fresh workstation.
+        """
+        self._writes_enabled = bool(enabled)
+
+    def has_value(self, key: str) -> bool:
+        section, option = self._split_key(key)
+        with self._lock:
+            return self._config.has_section(section) and self._config.has_option(section, option)
+
     def sync(self) -> None:
+        if not self._writes_enabled:
+            return
         with self._lock:
             self.ini_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.ini_path.with_suffix(self.ini_path.suffix + ".tmp")
@@ -87,20 +107,46 @@ class UserSettingsService:
             return default
 
     def set_value(self, key: str, value: object) -> None:
+        if not self._writes_enabled:
+            return
         section, option = self._split_key(key)
+        new_value = str(value)
         with self._lock:
+            current = self._config.get(section, option, fallback=None)
+            if current == new_value:
+                return
             if not self._config.has_section(section):
                 self._config.add_section(section)
-            self._config.set(section, option, str(value))
+            self._config.set(section, option, new_value)
             self.sync()
 
     def clear(self, key: str) -> None:
+        if not self._writes_enabled:
+            return
         section, option = self._split_key(key)
         with self._lock:
-            if self._config.has_section(section):
+            if not self._config.has_section(section) or not self._config.has_option(section, option):
+                return
+            self._config.remove_option(section, option)
+            if not self._config.items(section):
+                self._config.remove_section(section)
+            self.sync()
+
+    def clear_many(self, keys: tuple[str, ...] | list[str]) -> None:
+        """Remove multiple settings with a single disk sync."""
+        if not self._writes_enabled:
+            return
+        changed = False
+        with self._lock:
+            for key in keys:
+                section, option = self._split_key(key)
+                if not self._config.has_section(section) or not self._config.has_option(section, option):
+                    continue
                 self._config.remove_option(section, option)
+                changed = True
                 if not self._config.items(section):
                     self._config.remove_section(section)
+            if changed:
                 self.sync()
 
     def get_path(self, key: str) -> Path | None:

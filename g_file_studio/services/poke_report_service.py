@@ -41,6 +41,8 @@ def _target_format(row: dict[str, object], *, english: bool) -> str:
     locate_label = str(row.get("LocateLabel") or "").strip()
     if jump_type == "rmu":
         return "RMU detail: {area}-{substation}-{feeder}-{RMU}.com.pic.g" if english else "RMU 明细图：{区域}-{变电站}-{馈线}-{RMU}.com.pic.g"
+    if jump_type == "classified_device":
+        return "Device detail: {area}-{substation}-{feeder}-{device}.com.pic.g" if english else "设备明细图：{区域}-{变电站}-{馈线}-{设备名}.com.pic.g"
     if jump_type == "station":
         if locate_label:
             return "Station overview: {area}-{substation}.sln.pic.g?locateLabel={number}&&scaleFlag=true" if english else "站点馈线总图：{区域}-{变电站}.sln.pic.g?locateLabel={数字}&&scaleFlag=true"
@@ -74,8 +76,8 @@ def _action_text(value: object, *, english: bool) -> str:
 def _type_text(value: object, *, english: bool) -> str:
     key = str(value or "").strip().lower()
     if english:
-        return {"rmu": "RMU Poke", "station": "Station-jump Poke", "file": "File"}.get(key, str(value or ""))
-    return {"rmu": "RMU Poke", "station": "站点跳转 Poke", "file": "文件"}.get(key, str(value or ""))
+        return {"rmu": "RMU Poke", "classified_device": "AR/LBS/SEC Poke", "station": "Station-jump Poke", "file": "File"}.get(key, str(value or ""))
+    return {"rmu": "RMU Poke", "classified_device": "AR/LBS/SEC 设备 Poke", "station": "站点跳转 Poke", "file": "文件"}.get(key, str(value or ""))
 
 
 def _source_text(value: object, *, english: bool) -> str:
@@ -84,6 +86,7 @@ def _source_text(value: object, *, english: bool) -> str:
         return {
             "existing_poke": "Existing Poke",
             "rmu_identification": "Shared RMU identification",
+            "classification_device_name": "AR/LBS/SEC classification + nearest unique Text",
             "background_color": "Colored background",
             "station_interval": "Station interval suffix",
             "locate_label": "Adjacent parenthesized RMU label",
@@ -92,6 +95,7 @@ def _source_text(value: object, *, english: bool) -> str:
     return {
         "existing_poke": "已有 Poke 覆盖",
         "rmu_identification": "公共 RMU 识别",
+        "classification_device_name": "AR/LBS/SEC 分类图元 + 最近唯一名称 Text",
         "background_color": "彩色背景",
         "station_interval": "站点间隔后缀",
         "locate_label": "相邻括号环网柜名",
@@ -138,12 +142,16 @@ def write_poke_reports(
         ("RMU Pokes added" if english else "新增 RMU Poke", statistics.get("rmu_added", 0)),
         ("RMU Pokes updated" if english else "更新/复用 RMU Poke", statistics.get("rmu_updated", 0)),
         ("RMU Pokes skipped" if english else "RMU 未加跳转", statistics.get("rmu_skipped", 0)),
+        ("AR/LBS/SEC devices" if english else "AR/LBS/SEC 分类设备", statistics.get("classified_device_total", 0)),
+        ("Device names assigned" if english else "设备名称已分配", statistics.get("classified_device_named", 0)),
+        ("Device Pokes added" if english else "新增设备 Poke", statistics.get("classified_device_added", 0)),
+        ("Device Pokes updated" if english else "更新设备 Poke", statistics.get("classified_device_updated", 0)),
+        ("Device Pokes skipped" if english else "设备未加跳转", statistics.get("classified_device_skipped", 0)),
         ("Station-jump candidates" if english else "站点跳转候选", statistics.get("station_candidates", 0)),
         ("Stations resolved" if english else "成功解析站点跳转", statistics.get("station_resolved_count", 0)),
         ("Station Pokes added" if english else "新增站点跳转 Poke", statistics.get("station_added", 0)),
         ("Station Pokes updated" if english else "更新/复用站点跳转 Poke", statistics.get("station_updated", 0)),
         ("Station Pokes skipped" if english else "站点 Poke 未加跳转", statistics.get("station_skipped", 0)),
-        ("Excluded by classification" if english else "分类标记排除站点名称", statistics.get("station_classification_excluded", 0)),
         ("Duplicate station Pokes removed" if english else "删除重复站点跳转 Poke", statistics.get("station_duplicate_removed", 0)),
     ]
     card_html = "".join(
@@ -161,12 +169,16 @@ def write_poke_reports(
         "RMUAdded",
         "RMUUpdated",
         "RMUSkipped",
+        "DeviceRecognized",
+        "DeviceNamed",
+        "DeviceAdded",
+        "DeviceUpdated",
+        "DeviceSkipped",
         "StationCandidates",
         "StationResolved",
         "StationAdded",
         "StationUpdated",
         "StationSkipped",
-        "StationClassificationExcluded",
         "DuplicatesRemoved",
         "Status",
         "Reason",
@@ -180,12 +192,16 @@ def write_poke_reports(
         "RMUAdded": "RMU added" if english else "新增 RMU Poke",
         "RMUUpdated": "RMU updated" if english else "更新 RMU Poke",
         "RMUSkipped": "RMU skipped" if english else "RMU 未跳转",
+        "DeviceRecognized": "AR/LBS/SEC devices" if english else "AR/LBS/SEC 设备",
+        "DeviceNamed": "Device names assigned" if english else "设备名称分配",
+        "DeviceAdded": "Device Pokes added" if english else "新增设备 Poke",
+        "DeviceUpdated": "Device Pokes updated" if english else "更新设备 Poke",
+        "DeviceSkipped": "Device Pokes skipped" if english else "设备未跳转",
         "StationCandidates": "Station candidates" if english else "站点跳转候选",
         "StationResolved": "Station resolved" if english else "站点跳转成功解析",
         "StationAdded": "Station added" if english else "新增站点跳转 Poke",
         "StationUpdated": "Station updated" if english else "更新站点跳转 Poke",
         "StationSkipped": "Station skipped" if english else "站点 Poke 未加跳转",
-        "StationClassificationExcluded": "Classification excluded" if english else "分类标记排除",
         "DuplicatesRemoved": "Duplicates removed" if english else "删除重复 Poke",
         "Status": "Status" if english else "状态",
         "Reason": "Reason" if english else "说明",

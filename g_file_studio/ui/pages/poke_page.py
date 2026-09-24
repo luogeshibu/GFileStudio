@@ -31,7 +31,7 @@ class PokePage(BasePage):
         help_title, help_html = APP_HELP["poke"]
         super().__init__(
             "Poke 跳转处理",
-            "独立生成/修复 RMU 与站点跳转 Poke；站点跳转按强制图形条件筛选，数据库查询逻辑保持不变。",
+            "独立生成/修复 RMU、AR/LBS/SEC 设备与站点跳转 Poke。",
             help_title,
             help_html,
             parent,
@@ -39,10 +39,10 @@ class PokePage(BasePage):
 
         self.layout.addWidget(
             InfoBanner(
-                "Poke 已从“环网柜处理”独立，facID 不再作为执行前提。RMU Poke 直接复用公共 RMU 识别结果，"
-                "并按每个已识别环网柜名称查询 DMS_COMBINED_DEVICE.FEEDER_ID，再沿 DMS_FEEDER_DEVICE/SUBSTATION/SUBCONTROLAREA "
-                "生成各自的完整馈线目标；一张大图可同时处理多条馈线。站点跳转 Poke 独立查找，只有同时满足字母+数字站点名和彩色背景的标签才进入数据库查询，"
-                "本身不使用 facID。GRAPH_NAME 不参与目标名称生成。"
+                "RMU Poke 继续复用公共 RMU 识别。AR/LBS/SEC 已独立为单独设备 Poke：先按服务器图元分类标记定位设备，"
+                "名称 Text 必须为红色，并且只能在设备上方或右侧、距离不超过 300；同名 Text 只要 ID 不同即可分别归属不同设备。"
+                "名称识别完成后仍按原逻辑查询所属馈线并生成 {馈线完整业务名}-{设备名}.com.pic.g。"
+                "站点跳转规则保持不变，facID 仍不是 Poke 前提。"
             )
         )
 
@@ -73,14 +73,21 @@ class PokePage(BasePage):
         mode_box = QGroupBox("跳转类型")
         mode_layout = QVBoxLayout(mode_box)
         self.enable_rmu_poke = QCheckBox(
-            "RMU Poke：环网柜明细图　目标：{区域}-{变电站}-{馈线}-{RMU}.com.pic.g"
+            "RMU Poke：环网柜设备明细图　目标：{区域}-{变电站}-{馈线}-{RMU名}.com.pic.g"
+        )
+        self.enable_classified_device_poke = QCheckBox(
+            "AR / LBS / SEC Poke（独立）：设备明细图　目标：{区域}-{变电站}-{馈线}-{设备名}.com.pic.g"
         )
         self.enable_station_poke = QCheckBox(
             "站点跳转 Poke：变电站馈线总图　目标：{区域}-{变电站}.sln.pic.g"
         )
         self.enable_rmu_poke.setChecked(self.user_settings.get_bool("poke/enable_rmu", True))
+        self.enable_classified_device_poke.setChecked(
+            self.user_settings.get_bool("poke/enable_classified_device", True)
+        )
         self.enable_station_poke.setChecked(self.user_settings.get_bool("poke/enable_station", True))
         mode_layout.addWidget(self.enable_rmu_poke)
+        mode_layout.addWidget(self.enable_classified_device_poke)
         mode_layout.addWidget(self.enable_station_poke)
         self.layout.addWidget(mode_box)
 
@@ -88,20 +95,20 @@ class PokePage(BasePage):
         recognition_box = QGroupBox("识别与数据库规则")
         recognition_layout = QVBoxLayout(recognition_box)
         shared_rmu = QLabel(
-            "RMU Poke 不在本模块重新定义 RMU 规则：运行时直接读取“环网柜处理”保存的柜名方向、"
-            "名称排除项和智能标记，并调用同一个 identify_rmus()。识别到柜名后，以 RMU 名称查询 DMS_COMBINED_DEVICE，"
-            "由 FEEDER_ID 找到所属 DMS_FEEDER_DEVICE，再按 SUBSTATION/SUBCONTROLAREA 生成该 RMU 自己的馈线完整业务名；不依赖 facID。"
+            "RMU 继续调用同一个 identify_rmus()。AR/LBS/SEC 已从 RMU Poke 独立抽离，只认服务器图元同步管理中的 "
+            "AR、LBS、SEC 分类标记；设备名称 Text 必须是红色，并且只能位于设备上方或右侧，距离不得超过 300。"
+            "每个目标设备只分配一个名称 Text，每个 Text ID 只归属一个设备；两个 Text 内容即使相同，只要 Text ID 不同，"
+            "仍作为两个独立名称实例参与分配。后续数据库查询和目标 ahref 生成逻辑保持不变。"
         )
         shared_rmu.setWordWrap(True)
         shared_rmu.setObjectName("mutedText")
         recognition_layout.addWidget(shared_rmu)
         station_rule = QLabel(
-            "站点跳转强制规则：站点 Text 必须是字母+数字格式（如 ANS2-44，纯数字不接受），必须有彩色背景；"
-            "通过全部条件后才执行原有 SUBSTATION.NAME → SUBAREA_ID → SUBCONTROLAREA.NAME 查询。若旁边存在唯一的括号纯数字（如 (35033)），"
-            "优先写入该环网柜定位号；如果没有环网柜名，则把站点间隔后缀按 AH3+数字转换（如 RDS-09 → AH309），"
-            "生成 JED-CTL-RDS.sln.pic.g?locateLabel=AH309&&scaleFlag=true。括号数字不属于站点名；"
-            "环网柜名称距离站点超过 200 时不作为 locateLabel。Poke 还会读取服务器图元同步管理的本地分类标记，"
-            "FUSE、LBS、AR、SEC、Transformer_OH 图元周边 300 以内的名称直接排除；条件不满足时不创建或更新站点跳转。"
+            "站点跳转强制规则：只识别站点 Text；Text 必须是字母+数字格式（如 ANS2-44，纯数字不接受），并且必须有彩色背景；"
+            "站点跳转不查找、也不使用 AR/LBS/SEC/FUSE/Transformer_OH 等设备做排除。通过条件后执行原有 "
+            "SUBSTATION.NAME → SUBAREA_ID → SUBCONTROLAREA.NAME 查询。若站点 Text 旁边 300 以内存在唯一的括号纯数字 "
+            "（如 (35033)），将该环网柜名称作为 locateLabel；如果没有环网柜名，则使用站点间隔后缀备用规则 "
+            "（如 RDS-09 → AH309）。括号数字不属于站点名。"
         )
         station_rule.setWordWrap(True)
         station_rule.setObjectName("mutedText")
@@ -120,7 +127,7 @@ class PokePage(BasePage):
         self.task.run_button.setText("开始 Poke 跳转处理")
         self.task.run_button.clicked.connect(self.run)
         self.report_button = QPushButton("打开 Poke 报告")
-        self.report_button.setToolTip("打开最近一次 Poke 跳转处理生成的 HTML 报告；报告包含 RMU/站点跳转识别、写入 ahref、处理动作及未加跳转原因。")
+        self.report_button.setToolTip("打开最近一次 Poke 跳转处理生成的 HTML 报告；报告包含 RMU、AR/LBS/SEC、站点跳转识别和未加跳转原因。")
         set_secondary(self.report_button)
         self.report_button.setEnabled(False)
         self.report_button.clicked.connect(self.open_last_report)
@@ -143,15 +150,14 @@ class PokePage(BasePage):
         """Read operator-owned markers from the local symbol-sync cache only."""
         try:
             cfg = self.source.remote.config()
-            root = str(
-                self.user_settings.get_value(
-                    "site_profile/remote_symbol_library_root",
-                    DEFAULT_REMOTE_SYMBOL_ROOT,
-                )
-                or DEFAULT_REMOTE_SYMBOL_ROOT
-            ).strip() or DEFAULT_REMOTE_SYMBOL_ROOT
+            host = str(cfg.get("host", "")).strip()
+            root = self.user_settings.get_value(
+                "site_profile/remote_symbol_library_root", ""
+            ).strip()
+            if not host or not root:
+                return ()
             entries = RemoteSymbolLibraryService().load_classification_marker_entries(
-                host=str(cfg.get("host", "")).strip(),
+                host=host,
                 root=root,
             )
             return tuple(
@@ -168,26 +174,42 @@ class PokePage(BasePage):
             return ()
 
     def run(self) -> None:
+        self._start_processing(
+            enable_rmu=self.enable_rmu_poke.isChecked(),
+            enable_classified_device=self.enable_classified_device_poke.isChecked(),
+            enable_station=self.enable_station_poke.isChecked(),
+            persist_mode_choices=True,
+        )
+
+    def _start_processing(
+        self,
+        *,
+        enable_rmu: bool,
+        enable_classified_device: bool,
+        enable_station: bool,
+        persist_mode_choices: bool,
+    ) -> None:
         if not validate_input_source(self, self.source, display_name="Poke 跳转处理输入"):
             return
-        if not validate_existing_directory(self, self.output_path.path(), "Poke 跳转处理输出目录"):
-            return
-        if not self.enable_rmu_poke.isChecked() and not self.enable_station_poke.isChecked():
+        if not (enable_rmu or enable_classified_device or enable_station):
             QMessageBox.warning(self, "Poke 跳转处理", "请至少选择一种 Poke 跳转类型。")
             return
 
         self.source.persist_current()
-        self.user_settings.set_value("poke/enable_rmu", self.enable_rmu_poke.isChecked())
-        self.user_settings.set_value("poke/enable_station", self.enable_station_poke.isChecked())
+        if persist_mode_choices:
+            self.user_settings.set_value("poke/enable_rmu", enable_rmu)
+            self.user_settings.set_value("poke/enable_classified_device", enable_classified_device)
+            self.user_settings.set_value("poke/enable_station", enable_station)
         positions, exclusions, markers = self._shared_rmu_settings()
-        classification_marker_entries = self._classification_marker_entries()
+        classification_marker_entries = self._classification_marker_entries() if enable_classified_device else ()
         output_dir = begin_managed_run(self.output_path, "poke", "process")
         settings = PokeProcessingSettings(
             source_path=Path(self.source.path()),
             input_mode=self.source.mode(),
             output_dir=output_dir,
-            enable_rmu_poke=self.enable_rmu_poke.isChecked(),
-            enable_station_poke=self.enable_station_poke.isChecked(),
+            enable_rmu_poke=enable_rmu,
+            enable_classified_device_poke=enable_classified_device,
+            enable_station_poke=enable_station,
             rmu_name_positions=positions,
             rmu_name_exclusions=exclusions,
             rmu_intelligent_markers=markers,
@@ -214,9 +236,9 @@ class PokePage(BasePage):
                 "[Poke报告摘要] "
                 f"识别 RMU {stats.get('rmu_identified_total', 0)} 个，智能 RMU {stats.get('smart_rmu_identified_total', 0)} 个；"
                 f"新增 RMU Poke {stats.get('rmu_added', 0)} 个；"
+                f"AR/LBS/SEC 设备 {stats.get('classified_device_total', 0)} 个，已分配名称 {stats.get('classified_device_named', 0)} 个，新增设备 Poke {stats.get('classified_device_added', 0)} 个；"
                 f"站点跳转候选 {stats.get('station_candidates', 0)} 个，成功解析 {stats.get('station_resolved_count', 0)} 个，"
-                f"新增站点跳转 Poke {stats.get('station_added', 0)} 个，未加跳转 {stats.get('station_skipped', 0)} 个，"
-                f"其中分类标记排除 {stats.get('station_classification_excluded', 0)} 个。"
+                f"新增站点跳转 Poke {stats.get('station_added', 0)} 个，未加跳转 {stats.get('station_skipped', 0)} 个。"
             )
 
     def open_last_report(self) -> None:
@@ -229,4 +251,7 @@ class PokePage(BasePage):
         self.source.persist_all_text()
         self.output_path.persist_current_text()
         self.user_settings.set_value("poke/enable_rmu", self.enable_rmu_poke.isChecked())
+        self.user_settings.set_value(
+            "poke/enable_classified_device", self.enable_classified_device_poke.isChecked()
+        )
         self.user_settings.set_value("poke/enable_station", self.enable_station_poke.isChecked())

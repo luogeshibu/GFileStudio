@@ -8,15 +8,13 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from platformdirs import user_data_dir
+from g_file_studio.services.paths import app_data_root
 from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.services.symbol_standard_repository import SymbolStandardRepository, relative_path_from_record
 
 
 def _standard_library_root() -> Path:
-    root = Path(user_data_dir("GFileStudio", "NARI")) / "Standards"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return app_data_root() / "Standards"
 
 
 def _server_revision_label(timestamp: str) -> str:
@@ -203,6 +201,84 @@ class SiteSmartProfile:
             bool(row.get("enabled", True)) and str(row.get("standard_devref", "")).strip()
             for row in self.custom_symbols
         ))
+
+
+JEDDAH_CLASSIFICATION_MARKER_TO_ROLE = {
+    "CIRCUIT_BREAKER_SMART": "smart_breaker",
+    "LOAD_BREAKER_SWITCH_SMART": "smart_lbs",
+    "CIRCUIT_BREAKER_NO_SMART": "normal_breaker",
+    "LOAD_BREAKER_SWITCH_NO_SMART": "normal_lbs",
+}
+
+
+def _normalize_jeddah_classification_marker(value: object) -> str:
+    """Normalize an operator marker without inferring any business meaning."""
+    return re.sub(r"[^A-Z0-9]+", "_", str(value or "").strip().upper()).strip("_")
+
+
+def resolve_jeddah_classification_marker_roles(
+    entries: object,
+) -> tuple[dict[str, str], list[str]]:
+    """Resolve the four Jeddah RMU target symbols from explicit local markers.
+
+    The marker is authoritative for the *target* symbol only.  Device-role detection
+    in a business G remains based on that element's original devref/file name.  No
+    filename inference or peer-cabinet learning is used to choose these targets.
+
+    Accepted entry shapes are the portable dictionaries returned by
+    ``RemoteSymbolLibraryService.load_classification_marker_entries`` and the compact
+    ``(file_name, devref, marker)`` tuples passed by the Jeddah UI/worker settings.
+    """
+    roles = {
+        "smart_lbs": "",
+        "smart_breaker": "",
+        "smart_ground": "",
+        "normal_lbs": "",
+        "normal_breaker": "",
+        "normal_ground": "",
+    }
+    candidates: dict[str, set[str]] = {key: set() for key in JEDDAH_CLASSIFICATION_MARKER_TO_ROLE.values()}
+    marker_without_devref: set[str] = set()
+
+    raw_entries = entries if isinstance(entries, (list, tuple)) else ()
+    for raw in raw_entries:
+        file_name = ""
+        devref = ""
+        marker = ""
+        if isinstance(raw, dict):
+            file_name = str(raw.get("file_name", raw.get("name", "")) or "").strip()
+            devref = str(raw.get("devref", raw.get("standard_devref", "")) or "").strip()
+            marker = str(raw.get("classification_marker", raw.get("category_marker", raw.get("marker", ""))) or "").strip()
+        elif isinstance(raw, (list, tuple)) and len(raw) >= 3:
+            file_name = str(raw[0] or "").strip()
+            devref = str(raw[1] or "").strip()
+            marker = str(raw[2] or "").strip()
+        else:
+            continue
+
+        normalized = _normalize_jeddah_classification_marker(marker)
+        role_key = JEDDAH_CLASSIFICATION_MARKER_TO_ROLE.get(normalized)
+        if not role_key:
+            continue
+        if not devref:
+            marker_without_devref.add(normalized + (f" ({file_name})" if file_name else ""))
+            continue
+        candidates[role_key].add(devref)
+
+    issues: list[str] = []
+    label_by_role = {value: marker for marker, value in JEDDAH_CLASSIFICATION_MARKER_TO_ROLE.items()}
+    for role_key, marker in label_by_role.items():
+        values = sorted(candidates.get(role_key, set()), key=str.casefold)
+        if len(values) == 1:
+            roles[role_key] = values[0]
+        elif not values:
+            issues.append(f"缺少分类标记 {marker}")
+        else:
+            issues.append(f"分类标记 {marker} 对应多个图元：" + "；".join(values))
+
+    for item in sorted(marker_without_devref, key=str.casefold):
+        issues.append(f"分类标记 {item} 对应的服务器图元没有可用 devref")
+    return roles, issues
 
 
 def resolve_jeddah_role_devrefs(profile: SiteSmartProfile | None) -> dict[str, str]:
@@ -730,7 +806,6 @@ class SiteProfileService:
             settings = UserSettingsService()
             path = settings.ini_path.parent / "site_smart_profiles.json"
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         self._profiles_cache: dict[str, SiteSmartProfile] | None = None
         self._profiles_cache_mtime_ns: int | None = None
         # v2.18.119: Git-style immutable symbol repository.  The repository is
@@ -1012,6 +1087,7 @@ class SiteProfileService:
                 for name, profile in sorted(profiles.items(), key=lambda row: row[0].casefold())
             },
         }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self.path)

@@ -1,42 +1,53 @@
 from __future__ import annotations
 
 from datetime import datetime
+import socket
+from uuid import uuid4
 
 from PySide6.QtCore import QThreadPool, Qt, Signal
 from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QMessageBox,
     QPlainTextEdit,
+    QProgressDialog,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
-from g_file_studio.services.connection_environment_service import ConnectionEnvironmentService
+from g_file_studio.services.classification_registry_service import (
+    ClassificationRegistryService,
+    DEFAULT_CONFIG_DIR,
+    DEFAULT_DATABASE_PATH,
+    DEFAULT_FILE_SERVER_PATH,
+)
 from g_file_studio.services.database_service import OracleConnectionConfig, OracleDatabaseService
-from g_file_studio.services.remote_g_source import ReadOnlySshClient
+from g_file_studio.services.remote_g_source import (
+    DEFAULT_SSH_HOST,
+    DEFAULT_SSH_PASSWORD,
+    DEFAULT_SSH_PORT,
+    DEFAULT_SSH_REMOTE_DIRECTORY,
+    DEFAULT_SSH_USERNAME,
+    ReadOnlySshClient,
+)
 from g_file_studio.services.remote_symbol_library import DEFAULT_REMOTE_SYMBOL_ROOT
 from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.pages.base_page import BasePage
-from g_file_studio.ui.widgets import InfoBanner, WheelSafeComboBox
+from g_file_studio.ui.widgets import InfoBanner
 from g_file_studio.ui.widgets.integer_input import IntegerInput
 from g_file_studio.ui.widgets.wheel_safe_line_edit import WheelSafeLineEdit
 from g_file_studio.workers import FunctionWorker
 
 
 _ENV_HELP = """
-<h2>连接与环境</h2>
-<p>本页集中管理 G File Studio 的公共文件服务器、资源目录和 Oracle 数据库连接。业务页面只选择要处理的数据，不再各自保存账号和连接参数。</p>
-<ul>
-<li>一个“环境”可表示 Jeddah、Madinah、Makkah、Abha 等现场；切换环境会同步切换公共 SSH、业务 G 根目录、标准图元库目录和 Oracle 连接。</li>
-<li>SSH/SFTP 永远严格只读：只允许列目录、读取属性/内容和下载本地副本；程序没有上传、覆盖、删除、重命名、移动、建目录或修改权限的服务器写接口。</li>
-<li>Oracle 公共 API 默认只允许 SELECT / WITH 只读查询。</li>
-<li>Windows 下 Oracle 密码使用当前用户 DPAPI 加密；SSH 配置保持与历史版本兼容并继续存储在当前用户配置中。</li>
-</ul>
+<h3>本地配置</h3>
+<p>每台工作站可以保存自己的文件服务器和 Oracle 配置。</p>
+<h3>中央配置</h3>
+<p>中央目录为 <code>/home/up8000/nari-international/gfilestudio/config/</code>。首次启动、再次启动、本机配置缺失或打开本页面时都不读取中央配置；只有用户主动点击“从中央同步”才下载并覆盖本机缓存。只有中央管理员可发布 <code>database.json</code> 和 <code>file_server.json</code>。</p>
+<p>中央配置文件权限按 600 写入；业务 G 和服务器 element 图元目录仍按原有只读方式访问。</p>
 """
 
 
@@ -52,51 +63,48 @@ class DatabasePage(BasePage):
     def __init__(self, user_settings: UserSettingsService, parent=None) -> None:
         self.user_settings = user_settings
         self.database_service = OracleDatabaseService(user_settings)
-        self.environment_service = ConnectionEnvironmentService(user_settings)
         self._pool = QThreadPool.globalInstance()
         self._worker: FunctionWorker | None = None
         self._ssh_worker: FunctionWorker | None = None
+        self._central_worker: FunctionWorker | None = None
+        self._central_progress_dialog: QProgressDialog | None = None
         self._loading_environment = False
+        self._machine_id = self.user_settings.get_value("access_control/machine_id", "").strip()
+        self._machine_name = socket.gethostname().strip() or "Unknown-PC"
+        self._is_admin_mode = False
+        self._admin_epoch: int | None = None
         super().__init__(
             "连接与环境",
-            "统一管理当前现场的只读文件服务器、业务 G/标准图元目录和 Oracle 数据库；所有业务模块复用这里的全局配置。",
+            "只使用本机缓存；中央配置只在用户手工点击同步/发布时访问。",
             "连接与环境说明",
             _ENV_HELP,
             parent,
         )
 
-        self.layout.addWidget(
-            InfoBanner(
-                "这是全局公共配置。切换环境后，异常检测、ID 检查、服务器图元更新检查、图形处理和现场批处理都会复用同一套连接。"
-                "服务器访问是硬性只读原则：只允许列目录、读取文件属性/内容和下载到本地；禁止上传、覆盖、删除、重命名、移动、创建文件/目录、chmod/chown 或任何服务器状态修改。"
-            )
-        )
 
-        env_box = QGroupBox("当前环境")
-        env_layout = QVBoxLayout(env_box)
-        env_layout.setSpacing(10)
-        env_row = QHBoxLayout()
-        env_row.addWidget(QLabel("环境"))
-        self.environment_selector = WheelSafeComboBox()
-        self.environment_selector.setMinimumContentsLength(32)
-        env_row.addWidget(self.environment_selector, 1)
-        self.environment_name = WheelSafeLineEdit()
-        self.environment_name.setPlaceholderText("例如：Jeddah Site / Production")
-        self.environment_name.setMinimumHeight(38)
-        self.environment_name.setStyleSheet("font-size: 14px;")
-        env_row.addWidget(self.environment_name, 1)
-        self.new_environment_button = QPushButton("新建 / 复制环境")
-        self.delete_environment_button = QPushButton("删除环境")
-        self.save_environment_button = QPushButton("保存当前环境")
-        env_row.addWidget(self.new_environment_button)
-        env_row.addWidget(self.delete_environment_button)
-        env_row.addWidget(self.save_environment_button)
-        env_layout.addLayout(env_row)
-        self.environment_summary = QLabel()
-        self.environment_summary.setObjectName("mutedText")
-        self.environment_summary.setWordWrap(True)
-        env_layout.addWidget(self.environment_summary)
-        self.layout.addWidget(env_box)
+
+        central_box = QGroupBox("中央配置（Oracle 数据库 + 文件服务器）")
+        central_layout = QHBoxLayout(central_box)
+        self.central_config_status = QLabel(
+            f"{DEFAULT_CONFIG_DIR} · 同步内容：Oracle 数据库 + 文件服务器（SSH/SFTP） · 不自动读取 · 仅手工同步/发布"
+        )
+        self.central_config_status.setObjectName("mutedText")
+        self.central_config_status.setWordWrap(True)
+        central_layout.addWidget(self.central_config_status, 1)
+        self.central_sync_button = QPushButton("从中央同步")
+        self.central_sync_button.setText("从中央同步数据库和文件服务器")
+        self.central_sync_button.setToolTip(
+            "同时下载中央 database.json（Oracle 数据库）和 file_server.json（文件服务器），并覆盖当前本机连接配置。"
+        )
+        central_layout.addWidget(self.central_sync_button)
+        self.central_publish_button = QPushButton("发布到中央")
+        self.central_publish_button.setText("发布数据库和文件服务器到中央")
+        self.central_publish_button.setToolTip(
+            "仅当前 Admin 会话可用：同时发布 Oracle 数据库配置和文件服务器配置到中央仓库。"
+        )
+        self.central_publish_button.setEnabled(False)
+        central_layout.addWidget(self.central_publish_button)
+        self.layout.addWidget(central_box)
 
         ssh_box = QGroupBox("文件服务器（SSH/SFTP · 严格只读）")
         ssh_box.setObjectName("globalSshConnectionBox")
@@ -144,12 +152,6 @@ class DatabasePage(BasePage):
         ssh_form.addRow(self._field_label("标准图元库"), self.symbol_library_root)
         ssh_layout.addLayout(ssh_form)
 
-        ssh_layout.addWidget(
-            InfoBanner(
-                "服务器严格只读：仅允许测试连接、列目录、读取文件属性/内容和 SFTP GET 下载。"
-                "所有扫描、缓存、解析、纠正、替换、报告和批处理输出都只发生在本地 workspace。"
-            )
-        )
         ssh_actions = QHBoxLayout()
         self.test_ssh_button = QPushButton("测试 SSH 连接")
         self.save_ssh_button = QPushButton("保存文件服务器配置")
@@ -212,12 +214,6 @@ class DatabasePage(BasePage):
         self.endpoint.setObjectName("mutedText")
         self.endpoint.setWordWrap(True)
         db_layout.addWidget(self.endpoint)
-        db_layout.addWidget(
-            InfoBanner(
-                "数据库访问默认只读：连接测试只执行 SELECT 查询；后续业务模块统一复用本公共配置。"
-                "除非未来具体功能由用户明确设计并授权，否则公共数据库 API 不执行 INSERT / UPDATE / DELETE。"
-            )
-        )
         db_actions = QHBoxLayout()
         self.test_button = QPushButton("测试数据库连接")
         self.save_button = QPushButton("保存数据库配置")
@@ -247,14 +243,12 @@ class DatabasePage(BasePage):
         log_layout.addWidget(self.log, 1)
         self.layout.addWidget(log_box, 1)
 
-        self.environment_selector.currentIndexChanged.connect(self._environment_selected)
-        self.new_environment_button.clicked.connect(self._create_environment)
-        self.delete_environment_button.clicked.connect(self._delete_environment)
-        self.save_environment_button.clicked.connect(lambda: self._save_environment(show_message=True))
         self.test_ssh_button.clicked.connect(self._test_ssh_connection)
         self.save_ssh_button.clicked.connect(self._save_file_server_config)
         self.test_button.clicked.connect(self._test_connection)
         self.save_button.clicked.connect(self._save_database_config)
+        self.central_sync_button.clicked.connect(self._sync_central_connection_config)
+        self.central_publish_button.clicked.connect(self._publish_central_connection_config)
         self.copy_log_button.clicked.connect(self._copy_log)
         self.clear_log_button.clicked.connect(self._clear_log)
         for field in (self.username, self.password, self.host, self.port, self.service_name):
@@ -263,8 +257,17 @@ class DatabasePage(BasePage):
             elif hasattr(field, "valueChanged"):
                 field.valueChanged.connect(self._update_endpoint)  # type: ignore[attr-defined]
 
-        self._reload_environment_selector()
-        self._load_active_environment()
+        self._load_shared_connection_config()
+        self._refresh_local_cache_source_status()
+
+    def _ensure_machine_id(self) -> str:
+        """Create the workstation id only when a manual admin/publish action needs it."""
+        machine_id = self.user_settings.get_value("access_control/machine_id", "").strip()
+        if not machine_id:
+            machine_id = uuid4().hex
+            self.user_settings.set_value("access_control/machine_id", machine_id)
+        self._machine_id = machine_id
+        return machine_id
 
     @staticmethod
     def _field_label(text: str) -> QLabel:
@@ -274,28 +277,24 @@ class DatabasePage(BasePage):
         label.setStyleSheet("color:#28474e; font-size:14px; font-weight:650; padding-right:6px;")
         return label
 
-    def _reload_environment_selector(self) -> None:
-        active_uid = self.environment_service.active_uid()
-        self.environment_selector.blockSignals(True)
-        self.environment_selector.clear()
-        target = 0
-        for index, profile in enumerate(self.environment_service.profiles()):
-            self.environment_selector.addItem(profile.name, profile.uid)
-            if profile.uid == active_uid:
-                target = index
-        self.environment_selector.setCurrentIndex(target)
-        self.environment_selector.blockSignals(False)
+    def _load_shared_connection_config(self) -> None:
+        """Load the single local shared SSH/Oracle configuration.
 
-    def _load_active_environment(self) -> None:
+        v2.18.172 removes the obsolete multi-environment Profile UI. Business
+        modules have always consumed these shared keys, so one visible local
+        configuration is now the single source for this workstation.
+        """
         self._loading_environment = True
-        profile = self.environment_service.active()
-        self.environment_name.setText(profile.name)
-        self.ssh_host.setText(profile.ssh_host)
-        self.ssh_port.setValue(profile.ssh_port)
-        self.ssh_username.setText(profile.ssh_username)
-        self.ssh_password.setText(profile.ssh_password)
-        self.business_g_directory.setText(profile.business_g_directory)
-        self.symbol_library_root.setText(profile.symbol_library_root)
+        self.ssh_host.setText(self.user_settings.get_value("remote_g_source/host", "").strip())
+        self.ssh_port.setValue(self.user_settings.get_int("remote_g_source/port", DEFAULT_SSH_PORT))
+        self.ssh_username.setText(self.user_settings.get_value("remote_g_source/username", "").strip())
+        self.ssh_password.setText(self.user_settings.get_value("remote_g_source/password", ""))
+        self.business_g_directory.setText(
+            self.user_settings.get_value("remote_g_source/remote_directory", "").strip()
+        )
+        self.symbol_library_root.setText(
+            self.user_settings.get_value("site_profile/remote_symbol_library_root", "").strip()
+        )
         db = self.database_service.load_config()
         self.username.setText(db.username)
         self.password.setText(db.password)
@@ -303,62 +302,70 @@ class DatabasePage(BasePage):
         self.port.setValue(db.port)
         self.service_name.setText(db.service_name)
         self._update_endpoint()
-        self._update_environment_summary()
         self._loading_environment = False
 
-    def _environment_selected(self, _index: int) -> None:
-        if self._loading_environment:
-            return
-        uid = str(self.environment_selector.currentData() or "")
-        if not uid:
-            return
-        try:
-            profile = self.environment_service.activate(uid)
-        except Exception as exc:
-            QMessageBox.warning(self, "切换环境失败", str(exc))
-            return
-        self._load_active_environment()
-        self._append_log(f"已切换连接环境：{profile.name}")
-        self.environmentChanged.emit(profile.uid)
+    def _refresh_local_cache_source_status(self) -> None:
+        """Show local-only cache provenance without touching the central server.
 
-    def _create_environment(self) -> None:
-        suggested = f"{self.environment_name.text().strip() or 'Site'} Copy"
-        name, ok = QInputDialog.getText(self, "新建 / 复制环境", "新环境名称", text=suggested)
-        if not ok or not name.strip():
+        This method may be called by save/sync callbacks, but it must never make
+        DatabasePage construction fail if the UI is still being assembled.
+        """
+        status_label = getattr(self, "central_config_status", None)
+        if status_label is None:
             return
-        self._save_environment(show_message=False)
-        profile = self.environment_service.create_copy(name.strip())
-        self._reload_environment_selector()
-        self._load_active_environment()
-        self._append_log(f"已从当前配置创建环境：{profile.name}")
-        self.environmentChanged.emit(profile.uid)
+        ssh_configured = any(
+            self.user_settings.has_value(key)
+            for key in (
+                "remote_g_source/host",
+                "remote_g_source/username",
+                "remote_g_source/password",
+                "remote_g_source/remote_directory",
+                "site_profile/remote_symbol_library_root",
+            )
+        )
+        db_configured = self.database_service._has_saved_user_config()
+        ssh_source = (
+            self.user_settings.get_value("local_cache/file_server_source", "local").strip() or "local"
+            if ssh_configured else "missing"
+        )
+        db_source = (
+            self.user_settings.get_value("local_cache/database_source", "local").strip() or "local"
+            if db_configured else "missing"
+        )
+        version = self.user_settings.get_value("local_cache/central_connection_version", "").strip()
+        source_labels = {
+            "central": "中央同步副本",
+            "local": "本地配置",
+            "custom": "本地自定义",
+            "missing": "未配置",
+        }
+        ssh_label = source_labels.get(ssh_source, "本地配置")
+        db_label = source_labels.get(db_source, "本地配置")
+        suffix = f" · 基于中央 V{version}" if version and (ssh_source == "central" or db_source == "central") else ""
+        status_label.setText(
+            f"本机缓存：文件服务器={ssh_label} · Oracle={db_label}{suffix} · 中央同步/发布内容：Oracle 数据库 + 文件服务器（SSH/SFTP） · 不自动读取"
+        )
 
-    def _delete_environment(self) -> None:
-        active = self.environment_service.active()
-        reply = QMessageBox.question(self, "删除环境", f"确定删除连接环境“{active.name}”吗？")
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            profile = self.environment_service.delete(active.uid)
-        except Exception as exc:
-            QMessageBox.warning(self, "无法删除环境", str(exc))
-            return
-        self._reload_environment_selector()
-        self._load_active_environment()
-        self._append_log(f"已删除环境并切换到：{profile.name}")
-        self.environmentChanged.emit(profile.uid)
+    def _mark_local_connection_custom(self, *, file_server: bool = False, database: bool = False) -> None:
+        if file_server:
+            self.user_settings.set_value("local_cache/file_server_source", "custom")
+        if database:
+            self.user_settings.set_value("local_cache/database_source", "custom")
+        self._refresh_local_cache_source_status()
 
     def _persist_ssh_shared(self) -> None:
         host = self.ssh_host.text().strip()
         username = self.ssh_username.text().strip()
         business_dir = self.business_g_directory.text().strip()
-        symbol_root = self.symbol_library_root.text().strip() or DEFAULT_REMOTE_SYMBOL_ROOT
+        symbol_root = self.symbol_library_root.text().strip()
         if not host:
             raise ValueError("SSH IP/主机不能为空。")
         if not username:
             raise ValueError("SSH 用户名不能为空。")
         if not business_dir:
             raise ValueError("业务 G 根目录不能为空。")
+        if not symbol_root:
+            raise ValueError("标准图元库目录不能为空。")
         self.user_settings.set_value("remote_g_source/host", host)
         self.user_settings.set_value("remote_g_source/port", self.ssh_port.value())
         self.user_settings.set_value("remote_g_source/username", username)
@@ -369,45 +376,31 @@ class DatabasePage(BasePage):
     def _save_file_server_config(self) -> None:
         try:
             self._persist_ssh_shared()
-            profile = self.environment_service.save_active_from_shared(name=self.environment_name.text().strip())
         except Exception as exc:
             QMessageBox.warning(self, "保存文件服务器配置失败", str(exc))
             return
-        self._reload_environment_selector()
-        self._update_environment_summary()
-        self._set_inline_status(self.ssh_status, "配置已保存 · 尚未验证", "idle")
-        self._append_log(f"文件服务器配置已保存到环境：{profile.name}")
-        self.environmentChanged.emit(profile.uid)
+        self._mark_local_connection_custom(file_server=True)
+        self._set_inline_status(self.ssh_status, "配置已保存到本机 · 尚未验证", "idle")
+        self._append_log("文件服务器配置已保存到本机缓存；未访问中央配置。")
+        self.environmentChanged.emit("shared")
 
     def _save_environment(self, *, show_message: bool) -> None:
+        """Backward-compatible helper: save the workstation shared connection config."""
         try:
             self._persist_ssh_shared()
-            # Save Oracle only when a password is currently available. This keeps
-            # the existing DPAPI policy; on non-Windows the service never persists it.
             config = self._config_from_form()
             config.validate()
             self.database_service.save_config(config)
-            profile = self.environment_service.save_active_from_shared(name=self.environment_name.text().strip())
         except Exception as exc:
             if show_message:
-                QMessageBox.warning(self, "保存环境失败", str(exc))
+                QMessageBox.warning(self, "保存连接配置失败", str(exc))
             return
-        self._reload_environment_selector()
-        self._update_environment_summary()
-        self._append_log(f"连接环境已保存：{profile.name}")
-        self.environmentChanged.emit(profile.uid)
+        self._mark_local_connection_custom(file_server=True, database=True)
+        self._append_log("本机共享连接配置已保存；未访问中央配置。")
+        self.environmentChanged.emit("shared")
         if show_message:
             self._set_inline_status(self.ssh_status, "配置已保存 · 尚未验证", "idle")
             self._set_status("配置已保存 · 尚未验证", "idle")
-
-    def _update_environment_summary(self) -> None:
-        name = self.environment_name.text().strip() or "-"
-        self.environment_summary.setText(
-            f"{name}  ·  SSH {self.ssh_host.text().strip() or '-'}:{self.ssh_port.value()}  ·  "
-            f"Business G {self.business_g_directory.text().strip() or '-'}  ·  "
-            f"Symbol Library {self.symbol_library_root.text().strip() or '-'}  ·  "
-            f"Oracle {self.host.text().strip() or '-'}:{self.port.value()}/{self.service_name.text().strip() or '-'}"
-        )
 
     def _toggle_ssh_password(self, checked: bool) -> None:
         self.ssh_password.setEchoMode(WheelSafeLineEdit.EchoMode.Normal if checked else WheelSafeLineEdit.EchoMode.Password)
@@ -469,8 +462,6 @@ class DatabasePage(BasePage):
     def _update_endpoint(self, *_args) -> None:
         config = self._config_from_form()
         self.endpoint.setText(f"当前连接：{config.username or '-'} @ {config.host or '-'}:{config.port}/{config.service_name or '-'}")
-        if not self._loading_environment:
-            self._update_environment_summary()
 
     def _toggle_password(self, checked: bool) -> None:
         self.password.setEchoMode(WheelSafeLineEdit.EchoMode.Normal if checked else WheelSafeLineEdit.EchoMode.Password)
@@ -486,6 +477,232 @@ class DatabasePage(BasePage):
             "error": "background:#fff0ee;border:1px solid #efb8af;color:#b2382b;",
         }
         return "QLabel { border-radius:7px; padding:8px 12px; font-weight:700; " + styles.get(state, styles["idle"]) + " }"
+
+    def _central_bootstrap(self) -> dict[str, object]:
+        host = self.ssh_host.text().strip()
+        username = self.ssh_username.text().strip()
+        password = self.ssh_password.text()
+        if not host or not username:
+            raise ValueError("请先在本机配置可连接中央服务器的 SSH 地址和账号。")
+        return {
+            "host": host,
+            "port": self.ssh_port.value(),
+            "username": username,
+            "password": password,
+        }
+
+    def _central_database_payload(self) -> dict[str, object]:
+        cfg = self._config_from_form()
+        cfg.validate()
+        return {
+            "username": cfg.username,
+            "password": cfg.password,
+            "host": cfg.host,
+            "port": cfg.port,
+            "service_name": cfg.service_name,
+        }
+
+    def _central_file_server_payload(self) -> dict[str, object]:
+        return {
+            "host": self.ssh_host.text().strip(),
+            "port": self.ssh_port.value(),
+            "username": self.ssh_username.text().strip(),
+            "password": self.ssh_password.text(),
+            "business_g_directory": self.business_g_directory.text().strip(),
+            "symbol_library_root": self.symbol_library_root.text().strip(),
+        }
+
+    def _open_central_progress(self, title: str, label: str) -> QProgressDialog:
+        dialog = QProgressDialog(label, "", 0, 100, self)
+        dialog.setWindowTitle(title)
+        dialog.setCancelButton(None)
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        # Do not flash a transient progress window for fast local/central operations.
+        # Qt will show it only when the operation actually lasts long enough.
+        dialog.setMinimumDuration(800)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.setValue(0)
+        self._central_progress_dialog = dialog
+        return dialog
+
+    def _close_central_progress(self) -> None:
+        dialog = self._central_progress_dialog
+        self._central_progress_dialog = None
+        if dialog is not None:
+            dialog.setValue(100)
+            dialog.close()
+            dialog.deleteLater()
+
+    def _sync_central_connection_config(self) -> None:
+        if self._central_worker is not None:
+            return
+        try:
+            bootstrap = self._central_bootstrap()
+        except Exception as exc:
+            QMessageBox.warning(self, "中央配置", str(exc))
+            return
+        if QMessageBox.question(
+            self,
+            "从中央同步数据库和文件服务器",
+            "将同时从中央仓库下载 database.json（Oracle 数据库）和 file_server.json（文件服务器）；将覆盖当前本机连接配置。继续吗？",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self.central_config_status.setText(
+            f"{DEFAULT_CONFIG_DIR} · 正在同步 Oracle 数据库 + 文件服务器…"
+        )
+        self.central_sync_button.setEnabled(False)
+        self.central_publish_button.setEnabled(False)
+        progress_dialog = self._open_central_progress(
+            "同步中央数据库和文件服务器配置",
+            "正在读取中央 database.json 和 file_server.json…",
+        )
+
+        def task(*, log, progress):
+            del log
+            progress(10)
+            result = ClassificationRegistryService().fetch_connection_configs(**bootstrap)
+            progress(80)
+            return result
+
+        worker = FunctionWorker(task)
+        self._central_worker = worker
+        worker.signals.progress.connect(progress_dialog.setValue)
+        worker.signals.result.connect(self._on_central_connection_sync_result)
+        worker.signals.error.connect(lambda details: self._on_central_connection_error(details, "同步"))
+        worker.signals.finished.connect(self._on_central_connection_finished)
+        self._pool.start(worker)
+
+    def _on_central_connection_sync_result(self, result: object) -> None:
+        if self._central_progress_dialog is not None:
+            self._central_progress_dialog.setLabelText("正在覆盖本机连接配置缓存…")
+            self._central_progress_dialog.setValue(90)
+        payload = dict(result) if isinstance(result, dict) else {}
+        file_server = payload.get("file_server", {})
+        database = payload.get("database", {})
+        instance = payload.get("instance", {})
+        if not isinstance(file_server, dict) or not isinstance(database, dict):
+            QMessageBox.warning(self, "中央配置", "中央连接配置格式无效。")
+            return
+        self.ssh_host.setText(str(file_server.get("host", "")))
+        self.ssh_port.setValue(int(file_server.get("port", 22) or 22))
+        self.ssh_username.setText(str(file_server.get("username", "")))
+        self.ssh_password.setText(str(file_server.get("password", "")))
+        self.business_g_directory.setText(str(file_server.get("business_g_directory", "")))
+        self.symbol_library_root.setText(str(file_server.get("symbol_library_root", "")))
+        self.username.setText(str(database.get("username", "")))
+        self.password.setText(str(database.get("password", "")))
+        self.host.setText(str(database.get("host", "")))
+        self.port.setValue(int(database.get("port", 1521) or 1521))
+        self.service_name.setText(str(database.get("service_name", "")))
+        self._save_environment(show_message=False)
+        version = int(instance.get("config_version", 0) or 0) if isinstance(instance, dict) else 0
+        self.user_settings.set_value("local_cache/file_server_source", "central")
+        self.user_settings.set_value("local_cache/database_source", "central")
+        self.user_settings.set_value("local_cache/central_connection_version", version)
+        self._refresh_local_cache_source_status()
+        self._close_central_progress()
+        QMessageBox.information(self, "中央配置", f"已用中央 V{version} 覆盖本机数据库和文件服务器配置。")
+
+    def set_admin_mode(self, is_admin: bool, admin_epoch: int | None = None) -> None:
+        """Apply process-local Admin permission without touching central config."""
+        self._is_admin_mode = bool(is_admin)
+        self._admin_epoch = int(admin_epoch) if is_admin and admin_epoch is not None else None
+        if hasattr(self, "central_publish_button"):
+            self.central_publish_button.setEnabled(
+                self._is_admin_mode and self._central_worker is None
+            )
+
+    def _publish_central_connection_config(self) -> None:
+        if self._central_worker is not None:
+            return
+        if not self._is_admin_mode or self._admin_epoch is None:
+            QMessageBox.warning(
+                self,
+                "需要 Admin 权限",
+                "普通客户端可以修改/保存本机数据库和文件服务器配置并从中央同步，但不能发布中央仓库。请先从左侧【配置权限】抢占 Admin。",
+            )
+            return
+        self._ensure_machine_id()
+        try:
+            self._save_environment(show_message=False)
+            bootstrap = self._central_bootstrap()
+            database = self._central_database_payload()
+            file_server = self._central_file_server_payload()
+        except Exception as exc:
+            QMessageBox.warning(self, "发布中央配置", str(exc))
+            return
+        if QMessageBox.question(
+            self,
+            "发布数据库和文件服务器到中央",
+            "将当前本机 Oracle 数据库配置和文件服务器配置同时发布到中央仓库？",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self.central_config_status.setText(
+            f"{DEFAULT_CONFIG_DIR} · 正在发布 Oracle 数据库 + 文件服务器到中央…"
+        )
+        self.central_sync_button.setEnabled(False)
+        self.central_publish_button.setEnabled(False)
+        progress_dialog = self._open_central_progress(
+            "发布中央数据库和文件服务器配置",
+            "正在验证管理员并上传 database.json + file_server.json…",
+        )
+
+        def task(*, log, progress):
+            del log
+            service = ClassificationRegistryService()
+            progress(10)
+            owner = service.fetch_admin_lease(**bootstrap)
+            if owner is None:
+                raise RuntimeError("中央配置当前没有管理员，请通过左侧“配置权限”申请管理员权限。")
+            if owner.machine_id != self._machine_id:
+                raise RuntimeError(f"当前中央管理员为 {owner.owner_text}，本机不能发布中央配置。")
+            if owner.admin_epoch != int(self._admin_epoch or -1):
+                raise RuntimeError("Admin 权限已被重新抢占，请重新抢占 Admin 后再发布。")
+            progress(35)
+            result = service.publish_connection_configs(
+                **bootstrap,
+                machine_id=self._machine_id,
+                expected_admin_epoch=self._admin_epoch,
+                database=database,
+                file_server=file_server,
+            )
+            progress(90)
+            return result
+
+        worker = FunctionWorker(task)
+        self._central_worker = worker
+        worker.signals.progress.connect(progress_dialog.setValue)
+        worker.signals.result.connect(self._on_central_connection_publish_result)
+        worker.signals.error.connect(lambda details: self._on_central_connection_error(details, "发布"))
+        worker.signals.finished.connect(self._on_central_connection_finished)
+        self._pool.start(worker)
+
+    def _on_central_connection_publish_result(self, result: object) -> None:
+        self._close_central_progress()
+        payload = dict(result) if isinstance(result, dict) else {}
+        instance = payload.get("instance", {})
+        version = int(instance.get("config_version", 0) or 0) if isinstance(instance, dict) else 0
+        self.central_config_status.setText(
+            f"{DEFAULT_CONFIG_DIR} · Oracle 数据库 + 文件服务器已发布 · 中央 V{version}"
+        )
+        QMessageBox.information(
+            self,
+            "数据库和文件服务器已发布到中央",
+            f"中央版本：V{version}\n\nOracle 数据库：{DEFAULT_DATABASE_PATH}\n文件服务器：{DEFAULT_FILE_SERVER_PATH}",
+        )
+
+    def _on_central_connection_error(self, details: str, action: str) -> None:
+        self._close_central_progress()
+        message = str(details).split("\n\n---TRACEBACK---", 1)[0].strip()
+        self.central_config_status.setText(f"{DEFAULT_CONFIG_DIR} · {action}失败")
+        QMessageBox.warning(self, f"中央配置{action}失败", message or str(details))
+
+    def _on_central_connection_finished(self) -> None:
+        self._central_worker = None
+        self._close_central_progress()
+        self.central_sync_button.setEnabled(True)
+        self.central_publish_button.setEnabled(self._is_admin_mode and self._admin_epoch is not None)
 
     def _set_inline_status(self, label: QLabel, text: str, state: str) -> None:
         label.setText(text)
@@ -504,19 +721,17 @@ class DatabasePage(BasePage):
             config = self._config_from_form()
             secure_password = self.database_service.save_config(config)
             self._persist_ssh_shared()
-            profile = self.environment_service.save_active_from_shared(name=self.environment_name.text().strip())
         except Exception as exc:
             QMessageBox.warning(self, "保存失败", str(exc))
             return
-        self._reload_environment_selector()
-        self._update_environment_summary()
+        self._mark_local_connection_custom(file_server=True, database=True)
         if secure_password:
-            self._append_log("数据库配置已保存；密码已使用 Windows 当前用户 DPAPI 加密。")
+            self._append_log("数据库配置已保存到本机；密码已使用 Windows 当前用户 DPAPI 加密。")
             self._set_status("配置已保存 · 尚未验证", "idle")
         else:
             self._append_log("数据库配置已保存；当前系统不支持 Windows DPAPI，因此未持久化密码。")
             self._set_status("配置已保存 · 密码未持久化 · 尚未验证", "warning")
-        self.environmentChanged.emit(profile.uid)
+        self.environmentChanged.emit("shared")
 
     # Backward-compatible method name used by older tests/callers.
     def _save_config(self) -> None:
@@ -576,7 +791,6 @@ class DatabasePage(BasePage):
         self.log.clear()
 
     def on_page_activated(self) -> None:
-        # Other modules use the same shared keys. Re-read the active profile whenever
-        # this page becomes visible so the summary never displays stale values.
-        self._reload_environment_selector()
-        self._load_active_environment()
+        # Other modules use the same shared keys. Re-read the shared workstation
+        # connection whenever this page becomes visible.
+        self._load_shared_connection_config()

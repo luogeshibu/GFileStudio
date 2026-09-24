@@ -11,8 +11,8 @@ APP_HELP: dict[str, tuple[str, str]] = {
 <li>首先复用“通用基础处理 → 图形组合处理”的“彻底取消图形组合”能力：删除全部 &lt;Merge&gt;，并将识别到的 RMU 外框置于设备底层；</li>
 <li>删除异常小尺寸 ConnectLine / FeedLine / Bus / BusDis；</li>
 <li>RMU 本体必须是 rect 框内同时存在 BusDis、CBreakerDis、ZhaiWaiJieDiDaoZha 的组合；柜名只从环网柜框正上方的 Text 中按全图一对一规则识别，未找到上方名称时保持为空。识别后的柜名文字统一改为白色、字号固定为 50，并移动到所属环网柜上边框正中间上方，文字下边缘与上边框保持 10 个图形单位净间距；</li>
-<li>将 SMART 与 SMR 环网柜外框统一改为红色；</li>
-<li>SMART 图元检查覆盖整个 RMU 框内：只要 SMART Text 中心位于柜框内，就校正 Y 类 Load_Breaker_Switch 与 Q 类 Circuit_Breaker 的 SMART devref；Q 图元兼容 Circuit_Breaker_NO-SMART 和 Circuit_Breaker_NON-SMART 两种源引用。</li>
+<li>最终按柜内 SMART 文字统一 RMU 外框：存在 SMART 的柜为红色；没有 SMART 的柜强制为白色；</li>
+<li>RMU 图元类型以当前元素原始 devref/图元文件名为准：名称含 Circuit_Breaker 按 Circuit Breaker 处理，名称含 Load_Breaker_Switch 按 LBS 处理；Y/Q 显示名称不覆盖该类型。有 SMART 的柜使用分类标记 CIRCUIT_BREAKER_SMART / LOAD_BREAKER_SWITCH_SMART 指向的目标；无 SMART 的柜使用 CIRCUIT_BREAKER_NO_SMART / LOAD_BREAKER_SWITCH_NO_SMART。目标完全来自本地已保存分类标记，不再从同图其他柜学习或猜测版本。接地刀闸不替换。</li>
 <li>对精确 SMR 标识做吉达专用智能处理：若对应柜内已经存在 SMART，只删除外部 SMR 并将外框保持红色；若柜内没有 SMART，则将 SMR 转为顶部居中的 SMART（字号固定 20）；之后再次执行 SMART 图元检查。</li>
 <li>复用“服务器图元更新检查”的当前服务器标准执行环网柜图元检查；吉达批处理中的独立线路、拓扑和连接规范化不在本流程执行。</li>
 <li>删除带 Bus 的环网柜矩形框，并将对应标题移动到母线上方；</li>
@@ -33,15 +33,14 @@ APP_HELP: dict[str, tuple[str, str]] = {
     "site_profile": (
         "服务器图元同步管理帮助",
         """
-<h3>用途</h3>
-<p>这是服务器图元目录的只读同步与本地分类管理模块。它不检查图元是否符合某个标准，也不生成纠正副本；目的只是把远程服务器上的图元信息同步到本机，方便后续分析和编程。</p>
-<h3>同步规则</h3>
-<p>点击“同步服务器图元信息”后，程序递归读取服务器 <code>/home/up8000/data/graph/element</code> 下的 .g 文件。文件名、相对路径、大小、修改时间和解析信息会保存到本地缓存；文件未变化时复用缓存，只有新增或变化的文件才重新获取。服务器始终只读。</p>
-<p>表格展示文件名、主体 ID、XML 图元类型、devref、尺寸、AlignCenter、Pins、同步状态和服务器相对路径。读取/解析失败或同名冲突的文件也保留在表格中，便于后续人工分析，不会被静默丢弃。</p>
-<h3>分类标记迁移</h3>
-<p>“分类标记”是用户维护的本地字段，可直接编辑并被后续程序读取。进入页面和同步服务器目录时会自动加载本地已有标记。可通过“导出分类标记 JSON”和“载入分类标记 JSON”在不同现场之间迁移；程序优先按服务器相对路径匹配，其次按唯一文件名或唯一 devref 匹配。暂时找不到的标记会保留，后续同步时自动再次匹配。JSON 不包含服务器账号、密码或图元文件内容。</p>
-<h3>运行结果与安全</h3>
-<p>本地缓存和分类标记是长期数据；服务器 G 文件不会被覆盖、删除或回写。本模块不依赖业务 G，也不承担拓扑分析。</p>
+<h3>中央配置</h3>
+<p>中央目录固定为 <code>/home/up8000/nari-international/gfilestudio/config/</code>。<code>instance.json</code> 记录当前管理员机器、IP 和中央配置版本；图元分类保存在唯一的 <code>symbol_classification.json</code>。</p>
+<h3>本地与中央</h3>
+<p>每台工作站都可以维护自己的本地图元分类、文件服务器、Oracle、ID 规则和操作习惯。启动时所有页面按原有方式完整创建并只恢复本机 AppData 缓存；不读取中央 instance.json / symbol_classification.json / database.json / file_server.json，也不测试 SSH/Oracle。首次启动即使本机没有任何配置，也保持未配置状态，绝不自动拉取中央配置。只有用户主动点击“从服务器同步”时才下载中央业务配置并覆盖对应本机缓存；发布中央配置和配置权限操作也只在用户明确点击时访问服务器。</p>
+<h3>管理员</h3>
+<p>同一时间只有 <code>instance.json</code> 记录的机器可以发布中央配置。管理员权限必须显式释放，释放后其他机器才能接管。关闭软件不会自动释放中央管理员。</p>
+<h3>服务器图元</h3>
+<p>原始 <code>element</code> 图元目录始终只读；中央配置文件位于独立的 gfilestudio/config 目录，不修改任何原始图元。</p>
 """,
     ),
     "small_elements": (
@@ -181,7 +180,7 @@ APP_HELP: dict[str, tuple[str, str]] = {
 </ol>
 <p>各页面独立执行、独立选择输入与输出，便于检查每一步结果。</p>
 <h3>最近目录</h3>
-<p>每个页面会分别记住单文件、目录输入、输出目录以及客户模板目录。下次点击浏览时会从上次目录打开；若目录已被删除或移动，程序会提示并要求重新选择。</p>
+<p>每个页面会记住用户选择的业务文件/目录和模板位置。外部业务路径被删除或移动时会提示重新选择；workspace 属于可随时删除的运行目录，缺失时静默忽略并在实际运行时自动重建。</p>
 <h3>程序图标与发布</h3>
 <p>项目内置绿色 app.ico/app.png。PyInstaller 打包脚本使用 app.ico 设置 EXE 图标，App 启动时使用同一图标设置窗口和任务栏图标。</p>
 <p>文件夹模式打包后，需要把 dist/GFileStudio 整个目录压缩成 ZIP 分享，不能只发送 GFileStudio.exe。</p>
@@ -218,8 +217,8 @@ APP_HELP_EN: dict[str, tuple[str, str]] = {
 <li>First reuse Basic Processing &gt; Graphic Group Processing &gt; Fully Ungroup Graphics: remove every &lt;Merge&gt; and send recognized RMU frames behind devices.</li>
 <li>Remove abnormal small ConnectLine / FeedLine / Bus / BusDis elements.</li>
 <li>Keep RMU cabinet/type/SMART recognition strict: a rect must contain BusDis, CBreakerDis and ZhaiWaiJieDiDaoZha, and the cabinet name is assigned one-to-one only from Text above the frame. Then set the recognized name text to white at font size 50, centered above its RMU top frame with a 10-unit clear gap.</li>
-<li>Set SMART and SMR RMU frames to red.</li>
-<li>SMART device validation covers the whole RMU frame: whenever a SMART Text center lies inside the frame, normalize Y Load_Breaker_Switch and Q Circuit_Breaker devrefs to SMART. Q devices support both Circuit_Breaker_NO-SMART and Circuit_Breaker_NON-SMART source references.</li>
+<li>Finalize RMU frame color from the cabinet-local SMART marker: SMART present = red; no SMART = white.</li>
+<li>Determine each RMU switch role from its original devref/symbol filename: names containing Circuit_Breaker are Circuit Breakers and names containing Load_Breaker_Switch are LBS; Y/Q display labels never override that role. SMART cabinets use the targets marked CIRCUIT_BREAKER_SMART / LOAD_BREAKER_SWITCH_SMART, while cabinets without SMART use CIRCUIT_BREAKER_NO_SMART / LOAD_BREAKER_SWITCH_NO_SMART. Targets come only from locally saved classification markers; peer cabinets no longer select or guess a revision. Ground disconnectors are not replaced.</li>
 <li>Apply conditional SMR handling: when SMART already exists inside the matched RMU, remove only the external SMR and keep the existing SMART label unchanged; otherwise convert SMR to a top-centered SMART label at font size 20, then run the SMART device validation again.</li>
 <li>Reuse the current GLOBAL Symbol Standard connection-normalization rule: for standard-covered two-pin devices, calculate the real break from authoritative pins plus ConnectLine/FeedLine/BusDis endpoints; when each side uniquely reaches a standard pin, snap endpoints, repair reciprocal link/node_area, and remove the bypass ConnectLine. For one-pin symbols, snap only small, unambiguous skew to horizontal/vertical and translate the device with its pin. Ambiguous or large offsets are left unchanged.</li>
 <li>Remove RMU rectangles containing Bus and move the corresponding title above the bus.</li>
@@ -237,7 +236,7 @@ APP_HELP_EN: dict[str, tuple[str, str]] = {
 <p>This page only orchestrates existing processing capabilities. RMU cabinet/type/SMART recognition uses the shared strict resolver: a rect must contain BusDis, CBreakerDis and ZhaiWaiJieDiDaoZha, and the cabinet name is accepted only from Text above the frame. Other modules keep their existing default name mode and settings. Jeddah-specific parameters do not overwrite other module settings.</p>
 """,
     ),
-    "site_profile": ("Symbol Standard Check Help", """<h3>Purpose</h3><p>Business graphic G files provide inspection evidence only. The read-only server symbol-definition library is the only authoritative standard source. The page does not read the server automatically and does not provide manual symbol upload.</p><h3>Manual workflow</h3><p>Click “Read Server Standard (check only)” to read, parse, cache and compare the server catalog. This action does not update the current standard. After reviewing the result, click “Manually Update Current Standard” to apply the server snapshot. The full symbol-G filename, XML, body ID, size, AlignCenter and Pins remain visible with horizontal scrolling.</p><h3>Authoritative standard library</h3><p>The page reuses shared SSH credentials and recursively reads the configured server symbol root (/home/up8000/data/graph/element by default). It compares path/size/mtime, caches parseable .g files locally, parses authoritative devref/body/size/AlignCenter/pins, and reports same-name content conflicts by SHA256. The server is never modified. Business drawings never contribute authoritative geometry.</p><h3>Versions</h3><p>Server changes are reported only. Nothing is applied until the user explicitly chooses the manual update action; opening or leaving the page does not start a server read.</p><h3>Check and correct</h3><p>Check Symbol Standard is read-only. Instances are found using the active standard and compared with XML/devref, size, AlignCenter and Pins. Correct Standard Issues writes corrected copies only under the workspace; ambiguous cases are skipped and reported rather than guessed.</p><h3>Runtime safety</h3><p>Standard symbols and Profiles are persistent assets in the user-data directory. Files, reports and logs under workspace/runs are disposable runtime output; cleaning runtime output never removes the standards.</p>"""),
+    "site_profile": ("Symbol Standard Check Help", """<h3>Purpose</h3><p>Business graphic G files provide inspection evidence only. The read-only server symbol-definition library is the only authoritative standard source. The page does not read the server automatically and does not provide manual symbol upload.</p><h3>Manual workflow</h3><p>Click “Read Server Standard (check only)” to read, parse, cache and compare the server catalog. This action does not update the current standard. The operator inventory keeps the symbol-definition path, size, AlignCenter, Pins, source, classification and status visible. The XML element-tag field is intentionally not shown.</p><h3>Authoritative standard library</h3><p>The page reuses shared SSH credentials and recursively reads the configured server symbol root (/home/up8000/data/graph/element by default). It compares path/size/mtime, caches parseable .g files locally, parses authoritative devref/body/size/AlignCenter/pins, and reports same-name content conflicts by SHA256. The server is never modified. Business drawings never contribute authoritative geometry.</p><h3>Versions</h3><p>Server changes are reported only. Nothing is applied until the user explicitly chooses the manual update action; opening or leaving the page does not start a server read.</p><h3>Check and correct</h3><p>Check Symbol Standard is read-only. Instances are found using the active standard and compared with XML/devref, size, AlignCenter and Pins. Correct Standard Issues writes corrected copies only under the workspace; ambiguous cases are skipped and reported rather than guessed.</p><h3>Runtime safety</h3><p>Standard symbols and Profiles are persistent assets in the user-data directory. Files, reports and logs under workspace/runs are disposable runtime output; cleaning runtime output never removes the standards.</p>"""),
     "small_elements": ("Abnormal Small Element Detection Help", """<h3>Purpose</h3><p>Scans &lt;ConnectLine&gt;, &lt;FeedLine&gt;, &lt;Bus&gt; and &lt;BusDis&gt; independently. An element is reported when both w and h are below the user threshold (default 10). Bus orientation is not restricted.</p><h3>Reports and deletion</h3><p>Each scan exports CSV and HTML details including file, element type, XML ID, x/y/w/h and keyid. Select one or more findings using the first-column checkboxes, then process them together. If a selected element has a non-empty keyid, deletion requires explicit confirmation.</p><h3>Relation to feeder merge</h3><p>Main-bus merge no longer applies a special w&lt;10 filter. Suspicious short Bus elements are handled in this module.</p>"""),
     "rmu": ("RMU Processing Help", """<h3>RMU graphic processing</h3><p>The RMU page can leave grouping unchanged or group all recognized RMUs. Whole-file ungrouping is available under Basic Processing → Graphic Group Processing; it removes every &lt;Merge&gt; and sends recognized RMU frames behind devices without changing device attributes, coordinates, IDs or references.</p><p>Poke jump processing has been removed from this page and moved to the standalone Poke Jump Processing module. That module still calls the exact same identify_rmus() engine and reads the same RMU exclusion and smart-marker settings, so future shared RMU-recognition updates are inherited automatically.</p><p>Site RMU Device Profile is an independent tool: the user assigns standard samples to a site, scans them to learn SMART LBS / Circuit Breaker devrefs, saves the profile, and can then run a standalone SMART-device consistency check. It does not participate in the existing Start RMU Processing flow.</p><h3>RMU summary</h3><p>G files are parsed directly without OCR. A valid RMU requires a rect containing BusDis, CBreakerDis and ZhaiWaiJieDiDaoZha. Its name is accepted only from Text above the frame and each concrete Text object can belong to only one RMU; no name is kept when no valid top label exists. ConnectLine, FeedLine, BusDis and Bus are never equipment targets. Cabinet type is primarily derived from Y/Q names with devref as fallback when required. SMART and SMR are classified as intelligent RMUs while preserving the recognition source.</p>"""),
     "basic": ("Basic Processing Help", """<h3>Input</h3><p>Basic Processing supports one G file or a directory of G files.</p><h3>Rule-based processing</h3><p>General attribute replacement and element deletion operate only on direct children of the root Layer. They do not recursively modify internal symbol children.</p><h3>Feeder title positioning</h3><p>When enabled, feeder titles are identified from valid horizontal &lt;Bus&gt; geometry and nearby &lt;Text&gt; content. key_name and keyid are not used. Only the target Text x/y position is changed.</p><h3>Connection repair</h3><p>Uses conservative incremental repair. Existing port numbers and references are preserved; ambiguous or invalid candidates are skipped.</p><h3>Line and bus styles</h3><p>Color changes only lc/lcc. Line style changes only ls: solid=1 and dashed=2. Fill, lw, coordinates, IDs and references are not modified.</p><h3>Output conflicts</h3><p>Safe overwrite writes to a temporary file and validates it before replacing the destination.</p>"""),
@@ -273,19 +272,24 @@ APP_HELP["poke"] = (
 <h3>用途</h3>
 <p>Poke 跳转已从“环网柜处理”独立出来，统一复用公共 Oracle 数据库和公共 RMU 识别能力。</p>
 <h3>前置条件</h3>
-<p>不再要求 G 根节点 facID。facID 为空也可以执行两类 Poke；它只作为报告中的可选源文件信息保留。</p>
+<p>不再要求 G 根节点 facID。facID 为空也可以执行设备明细 Poke 与站点跳转 Poke；它只作为报告中的可选源文件信息保留。</p>
 <h3>RMU Poke</h3>
 <p>严格调用与“环网柜处理”相同的 identify_rmus()，并读取同一组柜名方向、名称排除项和智能标记设置。识别出智能 RMU 柜名后，数据库按 DMS_COMBINED_DEVICE.NAME → FEEDER_ID → DMS_FEEDER_DEVICE.NAME/ST_ID → SUBSTATION.NAME/SUBAREA_ID → SUBCONTROLAREA.NAME，为每个 RMU 独立得到所属馈线完整业务名，再追加该 RMU 名。因此同一张变电站馈线总图即使包含多条馈线，也不会被根节点 facID 限制。GRAPH_NAME 不参与命名。</p>
+<h3>AR / LBS / SEC 设备 Poke（独立）</h3>
+<p>该分支已经从 RMU Poke 独立抽离，可通过“跳转类型”中的独立勾选项单独启用或关闭。它只读取“服务器图元同步管理”已保存的 <b>AR、LBS、SEC</b> 三种分类标记，并据此找到当前 G 文件中对应的真实设备图元，不做全图设备猜测。</p>
+<p><b>名称识别是硬规则：</b>候选必须是 Text，文字颜色必须为红色（lc=255,0,0 或 lcc=#FF0000），并且只能位于设备<b>上方或右侧</b>；名称到设备的几何距离必须 ≤ 300。白色/其他颜色、左侧、下方的 Text 一律不参与名称分配。每个目标设备最多分配一个名称 Text，每个具体 Text 实例/ID 也最多属于一个设备。</p>
+<p><b>文字内容不是唯一键。</b>两个 Text 即使 ts 内容完全相同，只要 XML Text ID 不同，就是两个独立名称实例，可以分别分配给两个不同设备；同一个 Text ID 绝不会重复分配。名称识别之外的逻辑保持不变：分配成功后仍沿用原设备明细 Poke 的 Oracle 数据库解析与目标命名规则，按设备名称查询所属馈线完整业务名，目标为 <code>{区域}-{变电站}-{馈线}-{设备名}.com.pic.g</code>。</p>
 <h3>站点跳转 Poke</h3>
 <p>站点跳转必须同时满足全部条件：Text 是字母+数字格式（例如 ANS2-44，纯数字不接受）、Text 有彩色背景。通过这些强制条件后，仍按 SUBSTATION.NAME → SUBAREA_ID → SUBCONTROLAREA.NAME 查询得到完整站点名；数据库查询逻辑不变。若旁边存在唯一的括号环网柜名（例如 (35033)），优先追加对应 <code>locateLabel</code>；如果没有环网柜名，则把站点间隔后缀按 AH3+数字转换，例如 RDS-09 → <code>AH309</code>，目标为 <code>JED-CTL-RDS.sln.pic.g?locateLabel=AH309&amp;&amp;scaleFlag=true</code>。条件不满足时不创建或更新站点 Poke。</p>
 <p>已有 Poke 或几何形状都不能替代彩色背景。相邻环网柜名不唯一时不猜测定位参数；只有没有环网柜名时才使用站点间隔后缀备用规则。数据库唯一匹配成功后才允许修改，多个相关 Poke 删除多余项仅保留一个。</p>
 <h3>Poke 目标文件命名规则</h3>
 <p>智能环网柜名字 Poke 目标文件：<code>{区域}-{变电站}-{馈线}-{RMU}.com.pic.g</code></p>
+<p>AR / LBS / SEC 设备名字 Poke 目标文件：<code>{区域}-{变电站}-{馈线}-{设备名}.com.pic.g</code></p>
 <p>站点跳转 Poke 目标文件：<code>{区域}-{变电站}.sln.pic.g</code></p>
 <h3>样式</h3>
 <p>RMU Poke 继续使用既有蓝色/Invisible 属性规则。站点跳转 Poke 则统一使用用户提供的 JM2-J2 参考 Poke 属性模板：除每个对象自己的 id、x/y/w/h、ahref 及 G File Studio 跟踪元数据外，其余 Poke 属性完全复制参考对象；已有站点 Poke 也会按该模板规范化。</p>
 <h3>处理报告</h3>
-<p>每次成功执行都会在本次运行目录生成 CSV/HTML Poke 报告。报告汇总公共 RMU 识别数量、智能 RMU 数、新增/更新 RMU Poke、站点跳转候选与成功解析数量、新增/更新站点跳转 Poke、重复 Poke 清理数量；明细会记录实际写入的 ahref，以及每个未加跳转候选的具体原因。</p>
+<p>每次成功执行都会在本次运行目录生成 CSV/HTML Poke 报告。报告汇总公共 RMU 识别数量、智能 RMU 数、AR/LBS/SEC 分类设备及名称分配数量、新增/更新设备明细 Poke、站点跳转候选与成功解析数量、新增/更新站点跳转 Poke、重复 Poke 清理数量；明细会记录实际写入的 ahref，以及每个未加跳转候选的具体原因。</p>
 """,
 )
 APP_HELP_EN["poke"] = (
@@ -294,19 +298,24 @@ APP_HELP_EN["poke"] = (
 <h3>Purpose</h3>
 <p>Poke jump processing is independent from RMU Processing and reuses the shared Oracle service and shared RMU recognition engine.</p>
 <h3>Requirement</h3>
-<p>A root facID is no longer required. Blank facID does not block either Poke branch; it is kept only as optional source metadata in the report.</p>
+<p>A root facID is no longer required. Blank facID does not block equipment-detail or station-jump Pokes; it is kept only as optional source metadata in the report.</p>
 <h3>RMU Poke</h3>
 <p>The module calls the same identify_rmus() used by RMU Processing and reads the same name-direction, exclusion and smart-marker settings. Each recognized smart RMU name independently resolves DMS_COMBINED_DEVICE.NAME → FEEDER_ID → DMS_FEEDER_DEVICE.NAME/ST_ID → SUBSTATION.NAME/SUBAREA_ID → SUBCONTROLAREA.NAME. This allows one station overview drawing to contain RMUs from multiple feeders without relying on the root facID. GRAPH_NAME is not used.</p>
+<h3>AR / LBS / SEC device Poke (independent)</h3>
+<p>This branch is separated from RMU Poke. It can be enabled independently or run directly with the “AR/LBS/SEC Only” button. It uses only the locally saved server-symbol classifications <b>AR, LBS and SEC</b> to select real target device instances in the current G file.</p>
+<p><b>Name recognition is a hard contract:</b> the candidate must be a Text whose visible color is red (lc=255,0,0 or lcc=#FF0000), it must be positioned only <b>above or to the right</b> of the device, and its geometric distance must be at most 300 units. White/other-color, left-side and below-device Texts are ignored. Each device receives at most one name and each concrete Text instance/ID can belong to at most one device.</p>
+<p>The rendered text content is <b>not</b> the identity key. Two Text elements with the same ts content remain independent when their XML Text IDs differ, so they can be assigned to different devices. The same Text ID is never reused. Everything after name recognition is unchanged: the existing Oracle lookup and target naming rule produces <code>{area}-{substation}-{feeder}-{device}.com.pic.g</code>.</p>
 <h3>Station-jump Poke</h3>
 <p>A station-jump label must satisfy every hard condition: its Text must contain both letters and digits (for example ANS2-44; a pure number is rejected) and it must have a colored background. Only then does the existing SUBSTATION.NAME → SUBAREA_ID → SUBCONTROLAREA.NAME lookup run. A unique adjacent RMU name such as (35033) is preferred as <code>locateLabel</code>; when no RMU name is available, a numeric station suffix is converted with the AH3 prefix, for example RDS-09 → <code>AH309</code>, producing <code>JED-CTL-RDS.sln.pic.g?locateLabel=AH309&amp;&amp;scaleFlag=true</code>. If any condition fails, no station Poke is created or updated.</p>
 <p>An existing Poke or geometry alone cannot replace the colored background. Ambiguous adjacent RMU names do not produce a guessed locate parameter; the station-interval fallback is used only when no RMU name is available. Only a unique Oracle match may modify XML, and duplicate related Pokes are reduced to one.</p>
 <h3>Target drawing files</h3>
 <p><b>RMU Poke</b> targets use <code>{area}-{substation}-{feeder}-{RMU}.com.pic.g</code>, for example <code>JED-NTH-ABH-AH303-34661.com.pic.g</code>.</p>
+<p><b>AR / LBS / SEC device Poke</b> targets use <code>{area}-{substation}-{feeder}-{device}.com.pic.g</code>.</p>
 <p><b>Station-jump Poke</b> targets use <code>{area}-{substation}.sln.pic.g</code>, for example <code>JED-CTL-DHN.sln.pic.g</code>.</p>
 <p>The Poke module only writes/repairs ahref values in the current G file; it does not generate those target drawings. Prepare the target G files in advance, make sure the actual filenames exactly match the ahref values, and keep them accessible to the runtime system; otherwise clicking the Poke cannot open the target drawing.</p>
 <h3>Style</h3>
 <p>RMU Pokes keep the existing blue/Invisible property rule. Station-jump Pokes use the user-provided JM2-J2 reference Poke as their canonical property template: every non-geometric Poke property is copied from the reference, while id, x/y/w/h, ahref and G File Studio tracking metadata remain target-specific.</p>
 <h3>Processing Report</h3>
-<p>Each successful run writes CSV/HTML Poke reports to the run directory. The report summarizes shared RMU recognition, smart RMUs, added/updated RMU Pokes, station-jump candidates/resolutions, added/updated station Pokes, duplicate cleanup, the exact written ahref, and the specific reason for every candidate whose jump was not added.</p>
+<p>Each successful run writes CSV/HTML Poke reports to the run directory. The report summarizes shared RMU recognition, smart RMUs, AR/LBS/SEC classified devices and name assignments, added/updated equipment-detail Pokes, station-jump candidates/resolutions, added/updated station Pokes, duplicate cleanup, the exact written ahref, and the specific reason for every candidate whose jump was not added.</p>
 """,
 )

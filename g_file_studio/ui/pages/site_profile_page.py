@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import shutil
+import socket
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
-from PySide6.QtCore import Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, Qt, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
     QFormLayout,
+    QInputDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -21,6 +23,8 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QProgressDialog,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -32,6 +36,13 @@ from g_file_studio.processors.smart_profile_processor import (
     SmartProfileProcessingSettings,
     process_smart_profile_consistency,
     process_smart_profile_correction,
+)
+from g_file_studio.services.admin_access_service import AdminAccessService
+from g_file_studio.services.classification_registry_service import (
+    AdminLeaseSnapshot,
+    ClassificationRegistryService,
+    DEFAULT_ADMIN_LEASE_SECONDS,
+    DEFAULT_CLASSIFICATION_PATH,
 )
 from g_file_studio.services.paths import default_workspace
 from g_file_studio.services.remote_g_source import download_stable_files
@@ -53,7 +64,6 @@ from g_file_studio.services.user_settings_service import UserSettingsService
 from g_file_studio.ui.help_content import APP_HELP
 from g_file_studio.ui.pages.base_page import BasePage
 from g_file_studio.ui.path_validation import validate_input_source
-from g_file_studio.ui.table_layout import configure_responsive_table
 from g_file_studio.ui.widgets import InfoBanner, InputSourceSelector, PathRow, SmoothProgressBar, TaskPanel, WheelSafeComboBox
 from g_file_studio.ui.widgets.help_widgets import set_secondary
 from g_file_studio.workers import FunctionWorker
@@ -71,23 +81,58 @@ class SiteProfilePage(BasePage):
     activeProfileChanged = Signal(str)
     connectionSettingsRequested = Signal()
     orthogonalizeRequested = Signal()
+    adminAccessChanged = Signal(object)
 
-    def __init__(self, user_settings: UserSettingsService, parent=None) -> None:
+    def __init__(
+        self,
+        user_settings: UserSettingsService,
+        parent=None,
+        *,
+        defer_catalog_restore: bool = False,
+    ) -> None:
         self.user_settings = user_settings
+        self._defer_catalog_restore = bool(defer_catalog_restore)
+        self._catalog_restore_pending = bool(defer_catalog_restore)
+        self._catalog_restore_started = False
+        self.admin_access = AdminAccessService(user_settings)
+        # Access level is deliberately session-only. Every process starts in the
+        # ordinary/read-only role even on a workstation that was previously used
+        # by an administrator.
+        self._is_admin_mode = False
+        self._machine_id = self.user_settings.get_value("access_control/machine_id", "").strip()
+        self._machine_name = socket.gethostname().strip() or "Unknown-PC"
+        self._admin_lease: AdminLeaseSnapshot | None = None
+        self._admin_lease_worker: FunctionWorker | None = None
+        self._admin_lease_action = ""
         self.service = SiteProfileService()
         self._last_scan = None
         self._last_report_path: Path | None = None
         self._scan_worker: FunctionWorker | None = None
         self._server_sync_worker: FunctionWorker | None = None
         self._profile_operation_worker: FunctionWorker | None = None
+        self._classification_registry_worker: FunctionWorker | None = None
+        self._central_progress_dialog: QProgressDialog | None = None
         self._profile_operation_callback = None
         self._profile_operation_title = ""
         self._last_server_sync_payload: dict[str, object] = {}
-        self._daily_server_sync_interval_ms = 24 * 60 * 60 * 1000
         # Table restoration writes classification cells programmatically.  Those
         # changes must never be mistaken for user edits and trigger one JSON
         # rewrite per row during startup.
         self._suppress_classification_marker_persistence = False
+        # v2.18.200: the server-catalog page is a local-first inventory manager.
+        # Local snapshot I/O and visible-table hydration are staged independently so
+        # neither JSON parsing nor 200-row QTableWidget creation can starve the GUI.
+        self._local_catalog_restore_worker: FunctionWorker | None = None
+        self._inventory_render_generation = 0
+        self._inventory_render_rows: list[dict[str, object]] = []
+        self._inventory_render_cursor = 0
+        self._inventory_render_batch_size = 500
+        # Visible operator columns keep a cheap one-time content width cache.
+        # It is recomputed only after the inventory has been populated; subsequent
+        # resizes reuse these widths instead of rescanning 200 rows.
+        self._inventory_visible_columns = (3, 5, 6, 7, 8, 9, 18)
+        self._inventory_natural_widths: dict[int, int] = {}
+        self._legacy_profile_state_loaded = False
         self._scan_pool = QThreadPool.globalInstance()
         self._selected_version: int | None = None
         self._selected_is_active = False
@@ -112,6 +157,12 @@ class SiteProfilePage(BasePage):
         # catalog.  It includes duplicate relative paths and files that could not
         # be parsed, so the table can account for every remote .g file.
         self._server_file_inventory: list[dict[str, object]] = []
+        # v2.18.196: keep the server inventory table visible.  The operator asked
+        # to remove only the XML element-tag field, not the whole inventory.
+        # The mature 20-column internal row schema is kept for compatibility with
+        # downstream logic; the operator surface exposes only the useful inventory
+        # columns and never shows the XML element-tag column.
+        self._server_inventory_table_enabled = True
         self._server_catalog_ignored: set[str] = set()
         # v2.18.119: a fresh-rescan draft is isolated from the saved ACTIVE/GLOBAL
         # version until the operator explicitly saves it as V(N+1).  The saved
@@ -124,16 +175,27 @@ class SiteProfilePage(BasePage):
         help_title, help_html = APP_HELP["site_profile"]
         super().__init__(
             "服务器图元同步管理",
-            "只同步远程服务器图元信息并维护本地分类标记；服务器只读，不执行图元标准检查或纠正。",
+            "同步服务器图元并维护图元分类。",
             help_title,
             help_html,
             parent,
         )
-        self.layout.addWidget(
-            InfoBanner(
-                "本模块只负责同步服务器 element 目录的图元信息，供后续分析和程序使用；分类标记保存在本机，可导出/载入 JSON。服务器图元不会被修改。"
-            )
-        )
+        # Classification edits are local-first.  Editing a cell updates the in-memory
+        # catalog immediately, then one short debounce persists all pending markers in
+        # a worker.  The old path rewrote manifest.json + classification_markers.json
+        # + sync_snapshot.json synchronously on the GUI thread for every keystroke,
+        # which could freeze the entire window even though no network was involved.
+        self._classification_marker_save_worker: FunctionWorker | None = None
+        self._pending_classification_marker_updates: dict[tuple[str, str, str], str] = {}
+        self._classification_marker_save_timer = QTimer(self)
+        self._classification_marker_save_timer.setSingleShot(True)
+        self._classification_marker_save_timer.setInterval(180)
+        self._classification_marker_save_timer.timeout.connect(self._flush_classification_marker_updates)
+        # Only while this process owns Admin, poll the tiny instance.json every
+        # 10 seconds. This never syncs database/file-server/ID/symbol config.
+        self._admin_ownership_timer = QTimer(self)
+        self._admin_ownership_timer.setInterval(10_000)
+        self._admin_ownership_timer.timeout.connect(self._renew_admin_lease)
         # Detailed rules intentionally live in Page Help/tooltips instead of the main
         # operator surface. Keep these established semantics explicit for maintenance:
         # - 服务器 element 目录是唯一标准源，解析成功的 .g 直接进入标准表。
@@ -142,7 +204,7 @@ class SiteProfilePage(BasePage):
         # - “检查图元标准”不修改 G；纠正仅生成 workspace 副本。
         # - 历史版本导出/恢复只读取本地冻结对象，绝不以服务器当前同名文件替代。
 
-        standard_box = QGroupBox("服务器图元同步与分类管理")
+        standard_box = QGroupBox("服务器图元与分类")
         standard_layout = QVBoxLayout(standard_box)
         standard_layout.setContentsMargins(14, 18, 14, 12)
         standard_layout.setSpacing(10)
@@ -152,12 +214,21 @@ class SiteProfilePage(BasePage):
         self.active_profile_summary.setWordWrap(True)
         standard_layout.addWidget(self.active_profile_summary)
 
-        intro = QLabel(
-            "启动时不自动加载图元表；首次使用请手动同步，之后每天自动同步一次。分类标记按图元文件名沿用，服务器内容变化不影响已有标记。"
-        )
-        intro.setWordWrap(True)
-        intro.setObjectName("mutedText")
-        standard_layout.addWidget(intro)
+
+        # v2.18.171: configuration-administrator access is a global application
+        # concern, not a symbol-sync-page action.  The visible entry lives in the
+        # main-window sidebar.  Keep these legacy widgets in a permanently hidden
+        # container because the mature async admin workflow still updates their text
+        # internally while the sidebar consumes the new adminAccessChanged signal.
+        self._legacy_access_container = QWidget(standard_box)
+        self._legacy_access_container.setVisible(False)
+        self.access_mode_label = QLabel(self._legacy_access_container)
+        self.admin_owner_label = QLabel("当前管理员：检查中…", self._legacy_access_container)
+        self.access_mode_button = QPushButton(self._legacy_access_container)
+        self.access_mode_button.clicked.connect(self._toggle_admin_mode)
+        self.change_admin_password_button = QPushButton("修改管理员密码", self._legacy_access_container)
+        self.change_admin_password_button.clicked.connect(self._change_admin_password)
+
 
         manage_row = QHBoxLayout()
         self.profile_version_label = QLabel("当前标准")
@@ -208,12 +279,6 @@ class SiteProfilePage(BasePage):
         self.set_global_button.setVisible(False)
         self.profile_manage_button.setVisible(False)
         standard_layout.addLayout(manage_row)
-        global_note = QLabel(
-            "同步结果自动保存到本机图元缓存；不会覆盖服务器，也不需要维护标准版本。"
-        )
-        global_note.setObjectName("mutedText")
-        global_note.setWordWrap(True)
-        standard_layout.addWidget(global_note)
 
         self.version_switch_status = QLabel("")
         self.version_switch_status.setObjectName("infoBanner")
@@ -227,12 +292,6 @@ class SiteProfilePage(BasePage):
         self.version_switch_progress.setVisible(False)
         standard_layout.addWidget(self.version_switch_progress)
 
-        repository_note = QLabel(
-            "本地保存服务器图元缓存、同步记录和分类标记；其他现场可通过分类标记 JSON 复用分类配置。"
-        )
-        repository_note.setObjectName("infoBanner")
-        repository_note.setWordWrap(True)
-        standard_layout.addWidget(repository_note)
 
         form = QFormLayout()
         self.site_name = QLineEdit()
@@ -263,16 +322,10 @@ class SiteProfilePage(BasePage):
         self.ground_combo = WheelSafeComboBox()
         self.normal_ground_combo = WheelSafeComboBox()
 
-        standard_note = QLabel(
-            "表格展示服务器图元的解析信息和同步状态，不对图元是否符合某个标准进行判定。"
-        )
-        standard_note.setWordWrap(True)
-        standard_note.setObjectName("mutedText")
-        standard_layout.addWidget(standard_note)
 
         # v2.18.113: the shared read-only server library is the sole authoritative
         # source for standard symbols. The remote library is never written to.
-        server_box = QGroupBox("远程服务器图元信息同步（严格只读）")
+        server_box = QGroupBox("服务器图元")
         server_layout = QVBoxLayout(server_box)
         server_layout.setContentsMargins(12, 16, 12, 10)
         server_layout.setSpacing(8)
@@ -293,8 +346,7 @@ class SiteProfilePage(BasePage):
         server_root_row = QHBoxLayout()
         server_root_row.addWidget(QLabel("图元库根目录"))
         self.server_symbol_root = QLineEdit(
-            self.user_settings.get_value("site_profile/remote_symbol_library_root", DEFAULT_REMOTE_SYMBOL_ROOT)
-            or DEFAULT_REMOTE_SYMBOL_ROOT
+            self.user_settings.get_value("site_profile/remote_symbol_library_root", "").strip()
         )
         self.server_symbol_root.setPlaceholderText(DEFAULT_REMOTE_SYMBOL_ROOT)
         self.server_symbol_root.setToolTip("服务器图元目录由“连接与环境”统一管理；本页只读显示并使用该目录。")
@@ -330,29 +382,31 @@ class SiteProfilePage(BasePage):
         self.server_new_version_button.setEnabled(False)
         self.server_new_version_button.clicked.connect(self._create_next_version_from_server)
         server_root_row.addWidget(self.server_new_version_button)
-        self.server_cache_button = QPushButton("打开本地图元缓存")
+        self.server_cache_button = QPushButton("打开本地缓存")
         set_secondary(self.server_cache_button)
         self.server_cache_button.clicked.connect(self._open_server_symbol_cache)
-        self.export_classification_button = QPushButton("导出分类标记 JSON")
+        server_root_row.addWidget(self.server_cache_button)
+        self.export_classification_button = QPushButton("导出 JSON")
         set_secondary(self.export_classification_button)
         self.export_classification_button.setToolTip(
-            "导出本机已保存的图元分类标记；不包含服务器账号、密码或图元文件内容。"
+            "导出当前本机已保存的分类标记 JSON；不会上传服务器，也不包含服务器账号、密码或图元文件内容。"
         )
         self.export_classification_button.clicked.connect(self._export_classification_markers)
-        server_root_row.addWidget(self.export_classification_button)
-        self.import_classification_button = QPushButton("载入分类标记 JSON")
+        self.import_classification_button = QPushButton("导入 JSON")
         set_secondary(self.import_classification_button)
         self.import_classification_button.setToolTip(
-            "从其他现场导入分类标记；只匹配并更新本机的分类标记，不修改服务器图元。"
+            "导入 JSON 并覆盖本机分类；不会修改中央配置。"
         )
         self.import_classification_button.clicked.connect(self._import_classification_markers)
         server_layout.addLayout(server_root_row)
         classification_row = QHBoxLayout()
-        classification_row.addWidget(self.server_cache_button)
-        self.save_classification_button = QPushButton("保存分类标记")
+        self.local_classification_label = QLabel("本地分类")
+        self.local_classification_label.setObjectName("sectionCaption")
+        classification_row.addWidget(self.local_classification_label)
+        self.save_classification_button = QPushButton("保存到本地")
         set_secondary(self.save_classification_button)
         self.save_classification_button.setToolTip(
-            "将当前表格中的分类标记统一保存到本机缓存；不会修改服务器图元。"
+            "把当前分类保存到本机；不会修改中央配置。"
         )
         self.save_classification_button.clicked.connect(self._save_classification_markers)
         classification_row.addWidget(self.save_classification_button)
@@ -361,127 +415,151 @@ class SiteProfilePage(BasePage):
         classification_row.addStretch(1)
         server_layout.addLayout(classification_row)
 
+        central_row = QHBoxLayout()
+        server_classification_label = QLabel("分类配置")
+        server_classification_label.setObjectName("sectionCaption")
+        central_row.addWidget(server_classification_label)
+        self.central_classification_path = QLineEdit(DEFAULT_CLASSIFICATION_PATH)
+        self.central_classification_path.setReadOnly(True)
+        self.central_classification_path.setToolTip(
+            "所有软件统一读取这一份 symbol_classification.json；服务器 element 图元目录仍保持严格只读。"
+        )
+        central_row.addWidget(self.central_classification_path, 1)
+        self.central_sync_button = QPushButton("从服务器同步")
+        set_secondary(self.central_sync_button)
+        self.central_sync_button.setToolTip(
+            "下载中央 symbol_classification.json，并覆盖本机分类。"
+        )
+        self.central_sync_button.clicked.connect(self._sync_central_classification)
+        central_row.addWidget(self.central_sync_button)
+        self.central_publish_button = QPushButton("上传到服务器")
+        set_secondary(self.central_publish_button)
+        self.central_publish_button.setToolTip(
+            "仅中央管理员可用：保存本地后发布为中央正式分类。"
+        )
+        self.central_publish_button.clicked.connect(self._publish_central_classification)
+        central_row.addWidget(self.central_publish_button)
+        server_layout.addLayout(central_row)
+
+        self.central_classification_status = QLabel("分类状态：默认自动打开本机缓存 · 中央配置不会自动读取")
+        self.central_classification_status.setWordWrap(True)
+        self.central_classification_status.setObjectName("mutedText")
+        server_layout.addWidget(self.central_classification_status)
+
         self.server_library_progress = SmoothProgressBar()
         self.server_library_progress.setRange(0, 100)
         self.server_library_progress.setValue(0)
         self.server_library_progress.setFormat("同步服务器图元信息 %p%")
         self.server_library_progress.setVisible(False)
         server_layout.addWidget(self.server_library_progress)
-        self.server_library_status = QLabel(
-            "尚未同步服务器图元目录；点击“同步服务器图元信息”开始读取。"
-        )
+        self.server_library_status = QLabel("图元状态：尚未同步")
         self.server_library_status.setWordWrap(True)
         self.server_library_status.setObjectName("mutedText")
         server_layout.addWidget(self.server_library_status)
-        server_notice = QLabel(
-            "服务器严格只读；本地只保存图元信息、缓存副本和分类标记，不会修改服务器内容。"
-        )
-        server_notice.setWordWrap(True)
-        server_notice.setObjectName("infoBanner")
-        server_layout.addWidget(server_notice)
-        self.local_storage_summary = QLabel(
-            "本地存储：服务器图元缓存、同步记录和分类标记均在本机；分类标记可供其他模块和后续程序读取。"
-        )
-        self.local_storage_summary.setWordWrap(True)
-        self.local_storage_summary.setObjectName("mutedText")
-        server_layout.addWidget(self.local_storage_summary)
         standard_layout.addWidget(server_box)
 
-        self._server_library_timer = QTimer(self)
-        self._server_library_timer.timeout.connect(self._run_daily_server_sync)
+        # v2.18.176: no automatic remote timers exist. Administrator status,
+        # central configuration and server-symbol refresh are all explicit actions.
 
-        discovery_box = QGroupBox("业务 G 使用情况分析（兼容隐藏）")
-        discovery_layout = QVBoxLayout(discovery_box)
-        discovery_layout.setContentsMargins(12, 16, 12, 10)
-        discovery_layout.setSpacing(8)
-        discovery_note = QLabel(
-            "本页面不使用业务 G 建立服务器标准。该旧分析区仅保留兼容代码，不作为图元标准来源。"
-        )
-        discovery_note.setWordWrap(True)
-        discovery_note.setObjectName("mutedText")
-        discovery_layout.addWidget(discovery_note)
+        # The normal catalog-manager page does not construct the retired business-G
+        # discovery panel at all.  Hidden QWidget trees still cost substantial GUI-
+        # thread time to create, connect and polish; deferring them is essential for
+        # a fast first paint.  Legacy/test callers that opt out of deferred catalog
+        # restore retain the original panel unchanged.
+        discovery_box = None
+        if not self._defer_catalog_restore:
+            discovery_box = QGroupBox("业务 G 使用情况分析（兼容隐藏）")
+            discovery_layout = QVBoxLayout(discovery_box)
+            discovery_layout.setContentsMargins(12, 16, 12, 10)
+            discovery_layout.setSpacing(8)
+            discovery_note = QLabel(
+                "本页面不使用业务 G 建立服务器标准。该旧分析区仅保留兼容代码，不作为图元标准来源。"
+            )
+            discovery_note.setWordWrap(True)
+            discovery_note.setObjectName("mutedText")
+            discovery_layout.addWidget(discovery_note)
 
-        # v2.18.119: two distinct workflows are intentionally exposed.  Ordinary
-        # scan updates the current editable discovery draft; fresh rescan creates an
-        # isolated V(N+1) DRAFT from the selected business G set, using the scan as
-        # the source of truth while inheriting only matching prior classifications /
-        # authoritative bindings.  GLOBAL never moves automatically.
-        rescan_version_row = QHBoxLayout()
-        self.rescan_new_version_button = QPushButton("全量重新扫描 → 新版本草稿")
-        set_secondary(self.rescan_new_version_button)
-        self.rescan_new_version_button.setToolTip(
-            "从当前 ACTIVE 标准创建下一版本草稿：重新读取所选业务 G；本次扫描不存在的旧候选不会带入。"
-            "匹配到的旧图元可继承人工分类/标准绑定，保存后才生成新的 ACTIVE；GLOBAL 不自动切换。"
-        )
-        self.rescan_new_version_button.clicked.connect(self._prepare_fresh_rescan_version)
-        self.cancel_rescan_draft_button = QPushButton("取消新版本草稿")
-        set_secondary(self.cancel_rescan_draft_button)
-        self.cancel_rescan_draft_button.setVisible(False)
-        self.cancel_rescan_draft_button.clicked.connect(self._cancel_fresh_rescan_draft)
-        rescan_version_row.addWidget(self.cancel_rescan_draft_button)
-        self.rescan_version_hint = QLabel(
-            "普通扫描更新当前候选；全量重扫创建下一版本草稿。"
-        )
-        self.rescan_version_hint.setObjectName("mutedText")
-        self.rescan_version_hint.setWordWrap(True)
-        rescan_version_row.addWidget(self.rescan_version_hint, 1)
-        discovery_layout.addLayout(rescan_version_row)
+            # v2.18.119: two distinct workflows are intentionally exposed.  Ordinary
+            # scan updates the current editable discovery draft; fresh rescan creates an
+            # isolated V(N+1) DRAFT from the selected business G set, using the scan as
+            # the source of truth while inheriting only matching prior classifications /
+            # authoritative bindings.  GLOBAL never moves automatically.
+            rescan_version_row = QHBoxLayout()
+            self.rescan_new_version_button = QPushButton("全量重新扫描 → 新版本草稿")
+            set_secondary(self.rescan_new_version_button)
+            self.rescan_new_version_button.setToolTip(
+                "从当前 ACTIVE 标准创建下一版本草稿：重新读取所选业务 G；本次扫描不存在的旧候选不会带入。"
+                "匹配到的旧图元可继承人工分类/标准绑定，保存后才生成新的 ACTIVE；GLOBAL 不自动切换。"
+            )
+            self.rescan_new_version_button.clicked.connect(self._prepare_fresh_rescan_version)
+            self.cancel_rescan_draft_button = QPushButton("取消新版本草稿")
+            set_secondary(self.cancel_rescan_draft_button)
+            self.cancel_rescan_draft_button.setVisible(False)
+            self.cancel_rescan_draft_button.clicked.connect(self._cancel_fresh_rescan_draft)
+            rescan_version_row.addWidget(self.cancel_rescan_draft_button)
+            self.rescan_version_hint = QLabel(
+                "普通扫描更新当前候选；全量重扫创建下一版本草稿。"
+            )
+            self.rescan_version_hint.setObjectName("mutedText")
+            self.rescan_version_hint.setWordWrap(True)
+            rescan_version_row.addWidget(self.rescan_version_hint, 1)
+            discovery_layout.addLayout(rescan_version_row)
 
-        # v2.18.107: the whole graphic-G discovery input area is one visibility unit.
-        # When the ACTIVE standard is locked, hide the source mode/SSH/file list as
-        # well as its scan/filter actions. Unlocking restores this panel immediately.
-        self.discovery_input_panel = QWidget()
-        discovery_input_layout = QVBoxLayout(self.discovery_input_panel)
-        discovery_input_layout.setContentsMargins(0, 0, 0, 0)
-        discovery_input_layout.setSpacing(8)
-        self.discovery_source = InputSourceSelector(
-            default_directory=default_workspace() / "input",
-            file_filter="G Files (*.sln.pic.g *.g)",
-            file_tooltip="选择一张用于发现图元候选的图形 G 文件。",
-            directory_tooltip="选择包含大量图形 G 的目录，批量统计其中使用到的图元。",
-            settings_prefix="site_profile_discovery_source",
-            settings_service=self.user_settings,
-        )
-        discovery_input_layout.addWidget(self.discovery_source)
-        discovery_actions = QHBoxLayout()
-        self.discovery_scan_button = QPushButton("分析业务 G 使用情况")
-        self.discovery_scan_button.setToolTip(
-            "普通模式：更新当前可编辑候选；新版本草稿模式：重新读取所选业务 G 并生成 V(N+1) DRAFT。"
-            "两种模式都只读业务 G，不会把业务 G 当作标准图元。"
-        )
-        self.discovery_scan_button.clicked.connect(self._scan_graphic_symbol_candidates)
-        discovery_actions.addWidget(self.discovery_scan_button)
-        # v2.18.119: keep the full-rescan/new-version action beside the ordinary scan.
-        # The previous placement above the source list was easy to miss once the page
-        # was scrolled to the selected G files/table, which made users accidentally
-        # run an ordinary scan and wonder why the saved candidate set stayed unchanged.
-        discovery_actions.addWidget(self.rescan_new_version_button)
-        self.discovery_filter = QLineEdit()
-        self.discovery_filter.setPlaceholderText("筛选表格：设备类型 / XML / devref / 文件名")
-        self.discovery_filter.textChanged.connect(self._apply_standard_table_filter)
-        discovery_actions.addWidget(self.discovery_filter, 1)
-        self.pending_only_checkbox = QCheckBox("只看待确认服务器匹配")
-        self.pending_only_checkbox.toggled.connect(self._apply_standard_table_filter)
-        discovery_actions.addWidget(self.pending_only_checkbox)
-        discovery_input_layout.addLayout(discovery_actions)
-        # v2.18.112: discovery progress lives directly under the scan action so it
-        # is visible immediately when scanning starts, rather than below the wide
-        # standard table where the user may not see it until much later.
-        self.scan_progress = SmoothProgressBar()
-        self.scan_progress.setRange(0, 100)
-        self.scan_progress.setValue(0)
-        self.scan_progress.setFormat("扫描图形 G 图元 %p%")
-        self.scan_progress.setToolTip("扫描业务/图形 G 并统计图元候选；SSH 下载与本地解析都在后台线程执行。")
-        self.scan_progress.setVisible(False)
-        discovery_input_layout.addWidget(self.scan_progress)
-        discovery_layout.addWidget(self.discovery_input_panel)
-        self.discovery_locked_note = QLabel("服务器图元库已作为唯一标准源；本页面不提供图元上传或图元扫描。")
-        self.discovery_locked_note.setWordWrap(True)
-        self.discovery_locked_note.setObjectName("mutedText")
-        self.discovery_locked_note.setVisible(False)
-        discovery_layout.addWidget(self.discovery_locked_note)
-        standard_layout.addWidget(discovery_box)
-        discovery_box.setVisible(False)
+            # v2.18.107: the whole graphic-G discovery input area is one visibility unit.
+            # When the ACTIVE standard is locked, hide the source mode/SSH/file list as
+            # well as its scan/filter actions. Unlocking restores this panel immediately.
+            self.discovery_input_panel = QWidget()
+            discovery_input_layout = QVBoxLayout(self.discovery_input_panel)
+            discovery_input_layout.setContentsMargins(0, 0, 0, 0)
+            discovery_input_layout.setSpacing(8)
+            self.discovery_source = InputSourceSelector(
+                default_directory=default_workspace() / "input",
+                file_filter="G Files (*.sln.pic.g *.g)",
+                file_tooltip="选择一张用于发现图元候选的图形 G 文件。",
+                directory_tooltip="选择包含大量图形 G 的目录，批量统计其中使用到的图元。",
+                settings_prefix="site_profile_discovery_source",
+                settings_service=self.user_settings,
+            )
+            discovery_input_layout.addWidget(self.discovery_source)
+            discovery_actions = QHBoxLayout()
+            self.discovery_scan_button = QPushButton("分析业务 G 使用情况")
+            self.discovery_scan_button.setToolTip(
+                "普通模式：更新当前可编辑候选；新版本草稿模式：重新读取所选业务 G 并生成 V(N+1) DRAFT。"
+                "两种模式都只读业务 G，不会把业务 G 当作标准图元。"
+            )
+            self.discovery_scan_button.clicked.connect(self._scan_graphic_symbol_candidates)
+            discovery_actions.addWidget(self.discovery_scan_button)
+            # v2.18.119: keep the full-rescan/new-version action beside the ordinary scan.
+            # The previous placement above the source list was easy to miss once the page
+            # was scrolled to the selected G files/table, which made users accidentally
+            # run an ordinary scan and wonder why the saved candidate set stayed unchanged.
+            discovery_actions.addWidget(self.rescan_new_version_button)
+            self.discovery_filter = QLineEdit()
+            self.discovery_filter.setPlaceholderText("筛选表格：设备类型 / XML / devref / 文件名")
+            self.discovery_filter.textChanged.connect(self._apply_standard_table_filter)
+            discovery_actions.addWidget(self.discovery_filter, 1)
+            self.pending_only_checkbox = QCheckBox("只看待确认服务器匹配")
+            self.pending_only_checkbox.toggled.connect(self._apply_standard_table_filter)
+            discovery_actions.addWidget(self.pending_only_checkbox)
+            discovery_input_layout.addLayout(discovery_actions)
+            # v2.18.112: discovery progress lives directly under the scan action so it
+            # is visible immediately when scanning starts, rather than below the wide
+            # standard table where the user may not see it until much later.
+            self.scan_progress = SmoothProgressBar()
+            self.scan_progress.setRange(0, 100)
+            self.scan_progress.setValue(0)
+            self.scan_progress.setFormat("扫描图形 G 图元 %p%")
+            self.scan_progress.setToolTip("扫描业务/图形 G 并统计图元候选；SSH 下载与本地解析都在后台线程执行。")
+            self.scan_progress.setVisible(False)
+            discovery_input_layout.addWidget(self.scan_progress)
+            discovery_layout.addWidget(self.discovery_input_panel)
+            self.discovery_locked_note = QLabel("服务器图元库已作为唯一标准源；本页面不提供图元上传或图元扫描。")
+            self.discovery_locked_note.setWordWrap(True)
+            self.discovery_locked_note.setObjectName("mutedText")
+            self.discovery_locked_note.setVisible(False)
+            discovery_layout.addWidget(self.discovery_locked_note)
+            standard_layout.addWidget(discovery_box)
+            discovery_box.setVisible(False)
 
         custom_actions = QHBoxLayout()
         self.upload_standard_button = QPushButton("为选中图元上传 / 更新标准 G")
@@ -527,29 +605,46 @@ class SiteProfilePage(BasePage):
         custom_actions.addWidget(self.lock_standard_button)
         standard_layout.addLayout(custom_actions)
 
-        self.standard_table_overview = QLabel("服务器图元目录（左侧为序号）：尚未同步")
+        # Operator inventory.  Keep the proven internal row schema, but show a
+        # compact table modeled on Distribution Model Manager: definition file,
+        # geometry, source, classification and status.
+        self.standard_table_overview = QLabel("服务器图元目录：尚未同步")
         self.standard_table_overview.setObjectName("sectionCaption")
         self.standard_table_overview.setWordWrap(True)
-        self.standard_table_overview.setToolTip(
-            "统计服务器目录中的物理 .g 文件；这里只展示同步信息，不执行图元标准检查。"
-        )
+        self.standard_table_overview.setVisible(True)
         standard_layout.addWidget(self.standard_table_overview)
 
         standard_search_row = QHBoxLayout()
-        standard_search_row.addWidget(QLabel("搜索服务器图元"))
+        self.standard_table_search_label = QLabel("筛选")
+        self.standard_table_search_label.setVisible(True)
+        standard_search_row.addWidget(self.standard_table_search_label)
         self.standard_table_search = QLineEdit()
-        self.standard_table_search.setPlaceholderText("输入文件名、XML、分类标记或服务器相对路径")
+        self.standard_table_search.setPlaceholderText("输入图元文件名、分类标记、状态或服务器相对路径")
         self.standard_table_search.setClearButtonEnabled(True)
         self.standard_table_search.setToolTip("只筛选本地同步目录，不会重新读取或修改服务器文件。")
         self.standard_table_search.textChanged.connect(self._apply_standard_table_filter)
+        self.standard_table_search.setVisible(True)
         standard_search_row.addWidget(self.standard_table_search, 1)
         standard_layout.addLayout(standard_search_row)
 
+        # v2.18.203: the local cache is restored asynchronously.  Do not expose an
+        # empty native QTableWidget while the worker is parsing the AppData JSON;
+        # on Windows that empty framed viewport appears as a short-lived "popup/box"
+        # before the 200 cached rows arrive.  Keep a borderless status line in its
+        # place and reveal the fully populated table atomically.
+        self.standard_table_loading = QLabel("正在加载本地图元缓存…")
+        self.standard_table_loading.setObjectName("mutedText")
+        self.standard_table_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.standard_table_loading.setMinimumHeight(380)
+        self.standard_table_loading.setVisible(self._defer_catalog_restore)
+        standard_layout.addWidget(self.standard_table_loading)
+
         self.standard_table = QTableWidget(0, 20)
+        self.standard_table.setVisible(not self._defer_catalog_restore)
         self.standard_table.setHorizontalHeaderLabels(
             [
-                "来源", "业务类型 / 设备类型", "图元标签 XML", "服务器图元文件",
-                "主体 ID", "w×h", "AlignCenter", "Pins", "信息来源", "同步状态",
+                "来源", "业务类型 / 设备类型", "内部元素类型", "图元定义文件",
+                "主体 ID", "w×h", "AlignCenter", "Pins", "标准来源", "状态",
                 "图元用途", "设备子类型", "设备层级", "扫描图元 G 文件全名",
                 "图形 G 发现 devref", "发现次数", "样本位置",
                 "下载图元", "分类标记", "服务器相对路径",
@@ -558,10 +653,11 @@ class SiteProfilePage(BasePage):
         # The server-update page is an operator view, not a topology/discovery
         # analysis screen. Keep these fields in the internal row model for
         # compatibility, but do not expose them in the table.
-        # Keep the internal row schema stable for cache/import compatibility,
-        # but hide fields that are not useful in this operator-only inventory:
-        # 来源、主体 ID、图形 G 发现 devref，以及 the legacy analysis/action fields.
-        self._hidden_standard_columns = {0, 1, 4, 10, 11, 12, 13, 14, 15, 16, 17}
+        # Keep the internal row schema stable for cache/import compatibility.
+        # XML element type (column 2) is intentionally removed from the operator
+        # surface.  The relative path is displayed in column 3, so the duplicate
+        # path column 19 is hidden as well.
+        self._hidden_standard_columns = {0, 1, 2, 4, 10, 11, 12, 13, 14, 15, 16, 17, 19}
         for column in self._hidden_standard_columns:
             self.standard_table.setColumnHidden(column, True)
         self.standard_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -594,23 +690,37 @@ class SiteProfilePage(BasePage):
         header.setSectionsMovable(False)
         header.setTextElideMode(Qt.TextElideMode.ElideNone)
         header.setMinimumSectionSize(72)
-        # Keep the operator action at the far right: the server-relative path is
-        # information, while downloading is the final action for a row.
-        download_visual = header.visualIndex(17)
-        path_visual = header.visualIndex(19)
-        if download_visual >= 0 and path_visual >= 0 and download_visual < path_visual:
-            header.moveSection(download_visual, path_visual)
+        # v2.18.198: follow the stable Distribution Model Manager table pattern.
+        # Do not keep QHeaderView in ResizeToContents while rows are inserted and do
+        # not move sections during first-show.  Both operations cause repeated native
+        # size-hint/layout work on Windows and were responsible for the white/frozen
+        # startup window when the cached inventory was restored.  Fixed/interactive
+        # widths are applied once after population; the horizontal scrollbar exposes
+        # long values without any continuous content scan.
         for column in range(self.standard_table.columnCount()):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
         self.standard_table.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.standard_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.standard_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        # Match the ID-rule table behavior: every field keeps its readable natural
+        # width, and a table-local horizontal scrollbar is always available when
+        # the viewport cannot show all content at once.
         self.standard_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.standard_table.setMinimumHeight(380)
-        configure_responsive_table(self.standard_table)
+        # Listen to the real table viewport, not only the outer page. Qt layouts can
+        # change the viewport width without delivering a resizeEvent to this page;
+        # that was the reason the columns could occupy only half of the available
+        # table width after first show. The event filter only reapplies cached widths
+        # and never scans table rows.
+        self.standard_table.viewport().installEventFilter(self)
+        # This inventory intentionally does not use the generic responsive-table
+        # event filter: that helper samples all 20 internal columns on every show/
+        # resize.  Only seven columns are visible here, so stable explicit widths are
+        # substantially cheaper and match the reference application's approach.
         # v2.18.105 continues the discovery-driven standard library.  There are no
         # built-in/system rows and no user-entered locator rule/condition columns.
         self._standard_specs = []
-        self._fit_standard_table_columns()
+        self._apply_fast_inventory_column_widths()
         standard_layout.addWidget(self.standard_table)
 
         save_row = QHBoxLayout()
@@ -635,143 +745,790 @@ class SiteProfilePage(BasePage):
 
         self.layout.addWidget(standard_box)
 
-        source_box = QGroupBox("待检查 G 文件")
-        source_layout = QVBoxLayout(source_box)
-        source_layout.setContentsMargins(14, 18, 14, 12)
-        source_layout.setSpacing(10)
-        source_note = QLabel(
-            "选择待检查 G；服务器源文件只读，程序只下载本地快照，检查/纠正结果写入 workspace。"
+        # Likewise, the retired consistency-check input/task panels are not part of
+        # Server Symbol Sync Management.  Construct them only for an explicit legacy
+        # page instance; the public page keeps the same backend methods but avoids
+        # building two InputSourceSelectors, remote-file tables and a TaskPanel.
+        if not self._defer_catalog_restore:
+            source_box = QGroupBox("待检查 G 文件")
+            source_layout = QVBoxLayout(source_box)
+            source_layout.setContentsMargins(14, 18, 14, 12)
+            source_layout.setSpacing(10)
+            source_note = QLabel(
+                "选择待检查 G；服务器源文件只读，程序只下载本地快照，检查/纠正结果写入 workspace。"
+            )
+            source_note.setWordWrap(True)
+            source_note.setObjectName("mutedText")
+            source_layout.addWidget(source_note)
+            self.source = InputSourceSelector(
+                default_directory=default_workspace() / "input",
+                file_filter="G Files (*.sln.pic.g *.g)",
+                file_tooltip="选择一张需要按 ACTIVE 标准检查的业务 G 文件。",
+                directory_tooltip="选择包含需要按 ACTIVE 标准检查的业务 G 文件目录。",
+                settings_prefix="site_profile_source",
+                settings_service=self.user_settings,
+            )
+            source_layout.addWidget(self.source)
+
+            output_row = QHBoxLayout()
+            output_row.addWidget(QLabel("输出目录（workspace）"))
+            self.output_path = PathRow(
+                directory=True,
+                dialog_title="服务器图元更新检查输出目录",
+                recent_directory_key="recent_paths/site_profile/output_directory",
+                persistent_path_key="site_profile/output_directory",
+                default_path=default_workspace() / "runs" / "smart-profile",
+                location_name="服务器图元更新检查输出目录",
+                settings_service=self.user_settings,
+            )
+            configure_managed_output(self.output_path, "smart-profile")
+            output_row.addWidget(self.output_path, 1)
+            source_layout.addLayout(output_row)
+
+            self.layout.addWidget(source_box)
+
+            apply_box = QGroupBox("标准一致性检查与纠正")
+            apply_layout = QVBoxLayout(apply_box)
+            apply_layout.setContentsMargins(14, 18, 14, 12)
+            apply_layout.setSpacing(10)
+
+            self.current_profile_label = QLabel("当前全局执行标准：未选择")
+            self.current_profile_label.setObjectName("sectionCaption")
+            self.current_profile_label.setWordWrap(True)
+            self.current_profile_label.setVisible(False)
+            apply_layout.addWidget(self.current_profile_label)
+
+            execute_note = QLabel(
+                "检查只读；纠正仅生成 workspace 副本，不覆盖源 G。这里仅处理标准图元自身的类型、devref、尺寸、Pin 几何和设备锚点；"
+                "不负责全图拓扑判定，不删除或重画 ConnectLine/FeedLine/Bus，也不执行全图拓扑分析。"
+            )
+            execute_note.setWordWrap(True)
+            execute_note.setObjectName("mutedText")
+            apply_layout.addWidget(execute_note)
+
+            workflow_row = QHBoxLayout()
+            workflow_note = QLabel("后续处理：")
+            workflow_note.setObjectName("mutedText")
+            workflow_row.addWidget(workflow_note)
+            self.orthogonalize_button = QPushButton("进入线路正交化")
+            set_secondary(self.orthogonalize_button)
+            self.orthogonalize_button.setToolTip(
+                "进入线路正交化，执行线路横平竖直、连接点对齐和安全重画。"
+            )
+            self.orthogonalize_button.clicked.connect(self.orthogonalizeRequested.emit)
+            workflow_row.addWidget(self.orthogonalize_button)
+            workflow_row.addStretch(1)
+            apply_layout.addLayout(workflow_row)
+
+            self.result_summary = QLabel("尚未执行服务器图元更新检查。")
+            self.result_summary.setObjectName("mutedText")
+            self.result_summary.setWordWrap(True)
+            apply_layout.addWidget(self.result_summary)
+
+            self.task = TaskPanel()
+            # v2.18.85: symbol-standard inspection/correction always stays in determinate
+            # v2.18.85 is rebased directly from v2.18.82.  Keep the exact 0~100
+            # determinate style, but smooth only the display-side repaint cadence so
+            # queued worker progress does not make the bar flash/jump visually.
+            self.task.set_live_progress_enabled(False)
+            self.task.set_smooth_progress_enabled(True)
+            self.task.progress.setToolTip("服务器图元更新检查/纠正始终以 0~100% 百分比样式显示，并平滑递增；后台真实进度只更新目标值，不会造成进度条闪烁或倒退。")
+            self.task.set_result_dialogs_enabled(False)
+            self.task.run_button.hide()
+            self.check_button = QPushButton("检查图元标准")
+            self.check_button.clicked.connect(self._check_profile)
+            self.task.buttons_layout.insertWidget(0, self.check_button)
+            self.correct_button = QPushButton("生成标准纠正副本")
+            set_secondary(self.correct_button)
+            self.correct_button.clicked.connect(self._correct_profile)
+            self.task.buttons_layout.insertWidget(1, self.correct_button)
+            self.open_report_button = QPushButton("查看检查报告")
+            set_secondary(self.open_report_button)
+            self.open_report_button.setEnabled(False)
+            self.open_report_button.clicked.connect(self._open_report)
+            self.task.buttons_layout.insertWidget(2, self.open_report_button)
+            self.task.open_button.setText("打开结果目录")
+            self.toggle_log_button = QPushButton("显示日志")
+            set_secondary(self.toggle_log_button)
+            self.toggle_log_button.setCheckable(True)
+            self.toggle_log_button.toggled.connect(self._toggle_log)
+            self.task.buttons_layout.insertWidget(4, self.toggle_log_button)
+            self.task.log_view.setVisible(False)
+            self.task.clear_button.setVisible(False)
+            self.task.resultReceived.connect(self._on_processing_result)
+            self.task.busyChanged.connect(self._task_busy_changed)
+            apply_layout.addWidget(self.task)
+            self.layout.addWidget(apply_box, 1)
+
+            # Workflow order: read/maintain the server standard catalog -> choose a
+            # local or server-snapshotted G for check/correction.
+            for widget in (source_box, standard_box, apply_box):
+                self.layout.removeWidget(widget)
+            self.layout.insertWidget(1, standard_box)
+            self.layout.insertWidget(2, source_box)
+            self.layout.insertWidget(3, apply_box)
+
+            # This page is now a catalog manager. The legacy business-G input and
+            # standard inspection/correction panels remain constructed only so old
+            # persisted profiles and signal paths can still be read safely.
+            source_box.setVisible(False)
+            apply_box.setVisible(False)
+            discovery_box.setVisible(False)
+
+        # v2.18.195: once the retired inventory table and compatibility panels are
+        # hidden, the page's preferred height becomes smaller than the QScrollArea
+        # viewport.  Without an explicit top anchor Qt distributes the spare height
+        # into the remaining PageHeader / standard_box widgets, which creates the
+        # huge blank gaps seen after v2.18.194.  Keep this page compact like the
+        # Distribution Model Manager: header and server controls stay at their size
+        # hints and all unused viewport space is consumed below them.  This is a
+        # Keep the page top-aligned while allowing the restored inventory table to
+        # use its requested height.  Server sync, classification, Admin and catalog
+        # logic are untouched.
+        header_widget = self.layout.itemAt(0).widget()
+        if header_widget is not None:
+            header_widget.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
+            )
+        standard_box.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
         )
-        source_note.setWordWrap(True)
-        source_note.setObjectName("mutedText")
-        source_layout.addWidget(source_note)
-        self.source = InputSourceSelector(
-            default_directory=default_workspace() / "input",
-            file_filter="G Files (*.sln.pic.g *.g)",
-            file_tooltip="选择一张需要按 ACTIVE 标准检查的业务 G 文件。",
-            directory_tooltip="选择包含需要按 ACTIVE 标准检查的业务 G 文件目录。",
-            settings_prefix="site_profile_source",
-            settings_service=self.user_settings,
-        )
-        source_layout.addWidget(self.source)
+        self.layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.layout.addStretch(1)
 
-        output_row = QHBoxLayout()
-        output_row.addWidget(QLabel("输出目录（workspace）"))
-        self.output_path = PathRow(
-            directory=True,
-            dialog_title="服务器图元更新检查输出目录",
-            recent_directory_key="recent_paths/site_profile/output_directory",
-            persistent_path_key="site_profile/output_directory",
-            default_path=default_workspace() / "runs" / "smart-profile",
-            location_name="服务器图元更新检查输出目录",
-            settings_service=self.user_settings,
-        )
-        configure_managed_output(self.output_path, "smart-profile")
-        output_row.addWidget(self.output_path, 1)
-        source_layout.addLayout(output_row)
-
-        self.layout.addWidget(source_box)
-
-        apply_box = QGroupBox("标准一致性检查与纠正")
-        apply_layout = QVBoxLayout(apply_box)
-        apply_layout.setContentsMargins(14, 18, 14, 12)
-        apply_layout.setSpacing(10)
-
-        self.current_profile_label = QLabel("当前全局执行标准：未选择")
-        self.current_profile_label.setObjectName("sectionCaption")
-        self.current_profile_label.setWordWrap(True)
-        self.current_profile_label.setVisible(False)
-        apply_layout.addWidget(self.current_profile_label)
-
-        execute_note = QLabel(
-            "检查只读；纠正仅生成 workspace 副本，不覆盖源 G。这里仅处理标准图元自身的类型、devref、尺寸、Pin 几何和设备锚点；"
-            "不负责全图拓扑判定，不删除或重画 ConnectLine/FeedLine/Bus，也不执行全图拓扑分析。"
-        )
-        execute_note.setWordWrap(True)
-        execute_note.setObjectName("mutedText")
-        apply_layout.addWidget(execute_note)
-
-        workflow_row = QHBoxLayout()
-        workflow_note = QLabel("后续处理：")
-        workflow_note.setObjectName("mutedText")
-        workflow_row.addWidget(workflow_note)
-        self.orthogonalize_button = QPushButton("进入线路正交化")
-        set_secondary(self.orthogonalize_button)
-        self.orthogonalize_button.setToolTip(
-            "进入线路正交化，执行线路横平竖直、连接点对齐和安全重画。"
-        )
-        self.orthogonalize_button.clicked.connect(self.orthogonalizeRequested.emit)
-        workflow_row.addWidget(self.orthogonalize_button)
-        workflow_row.addStretch(1)
-        apply_layout.addLayout(workflow_row)
-
-        self.result_summary = QLabel("尚未执行服务器图元更新检查。")
-        self.result_summary.setObjectName("mutedText")
-        self.result_summary.setWordWrap(True)
-        apply_layout.addWidget(self.result_summary)
-
-        self.task = TaskPanel()
-        # v2.18.85: symbol-standard inspection/correction always stays in determinate
-        # v2.18.85 is rebased directly from v2.18.82.  Keep the exact 0~100
-        # determinate style, but smooth only the display-side repaint cadence so
-        # queued worker progress does not make the bar flash/jump visually.
-        self.task.set_live_progress_enabled(False)
-        self.task.set_smooth_progress_enabled(True)
-        self.task.progress.setToolTip("服务器图元更新检查/纠正始终以 0~100% 百分比样式显示，并平滑递增；后台真实进度只更新目标值，不会造成进度条闪烁或倒退。")
-        self.task.set_result_dialogs_enabled(False)
-        self.task.run_button.hide()
-        self.check_button = QPushButton("检查图元标准")
-        self.check_button.clicked.connect(self._check_profile)
-        self.task.buttons_layout.insertWidget(0, self.check_button)
-        self.correct_button = QPushButton("生成标准纠正副本")
-        set_secondary(self.correct_button)
-        self.correct_button.clicked.connect(self._correct_profile)
-        self.task.buttons_layout.insertWidget(1, self.correct_button)
-        self.open_report_button = QPushButton("查看检查报告")
-        set_secondary(self.open_report_button)
-        self.open_report_button.setEnabled(False)
-        self.open_report_button.clicked.connect(self._open_report)
-        self.task.buttons_layout.insertWidget(2, self.open_report_button)
-        self.task.open_button.setText("打开结果目录")
-        self.toggle_log_button = QPushButton("显示日志")
-        set_secondary(self.toggle_log_button)
-        self.toggle_log_button.setCheckable(True)
-        self.toggle_log_button.toggled.connect(self._toggle_log)
-        self.task.buttons_layout.insertWidget(4, self.toggle_log_button)
-        self.task.log_view.setVisible(False)
-        self.task.clear_button.setVisible(False)
-        self.task.resultReceived.connect(self._on_processing_result)
-        self.task.busyChanged.connect(self._task_busy_changed)
-        apply_layout.addWidget(self.task)
-        self.layout.addWidget(apply_box, 1)
-
-        # Workflow order: read/maintain the server standard catalog -> choose a
-        # local or server-snapshotted G for check/correction.
-        for widget in (source_box, standard_box, apply_box):
-            self.layout.removeWidget(widget)
-        self.layout.insertWidget(1, standard_box)
-        self.layout.insertWidget(2, source_box)
-        self.layout.insertWidget(3, apply_box)
-
-        # This page is now a catalog manager. The legacy business-G input and
-        # standard inspection/correction panels remain constructed only so old
-        # persisted profiles and signal paths can still be read safely.
-        source_box.setVisible(False)
-        apply_box.setVisible(False)
-        discovery_box.setVisible(False)
-
-        # Profile restoration also rebuilds the cached server catalog and its
-        # The first event-loop turn restores the page after the window is visible.
-        # Restoring the local snapshot is intentional: only a fresh deployment
-        # without a completed snapshot stays empty and requires the user's first
-        # manual sync.  This never contacts SSH during startup.
-        self._reload_profiles(defer_selection=True, load_catalog=True)
+        # v2.18.200: this visible page is a server-catalog/classification manager.
+        # Do NOT enumerate/hydrate the retired Profile version repository during
+        # normal startup.  load_profile_versions() can hydrate many historical
+        # standard files and was the largest LOCAL-only startup stall.  The legacy
+        # profile state is loaded only if an old compatibility action explicitly
+        # needs it.  MainWindow passes defer_catalog_restore=True and the catalog
+        # itself is restored asynchronously after the page has painted.
+        if not self._defer_catalog_restore:
+            self._reload_profiles(
+                defer_selection=True,
+                load_catalog=False,
+            )
+            self._legacy_profile_state_loaded = True
+            if hasattr(self, "server_library_status"):
+                self.server_library_status.setText("正在自动打开本地图元缓存…")
+            restored = self._restore_cached_server_sync()
+            if not restored and hasattr(self, "server_library_status"):
+                self.server_library_status.setText(
+                    "本机尚无可恢复的图元缓存；不会自动访问服务器。"
+                )
+        self._refresh_access_controls()
         QTimer.singleShot(0, self._finish_initial_load)
+
+    def on_page_activated(self) -> None:
+        """Restore the LOCAL server-symbol cache without blocking the GUI thread.
+
+        The catalog page must paint immediately.  Snapshot JSON parsing therefore
+        runs in a worker and visible rows are hydrated in small GUI-thread batches.
+        No SSH/Oracle/central access is performed here.
+        """
+        if not self._catalog_restore_pending or self._catalog_restore_started:
+            return
+        self._catalog_restore_started = True
+        if hasattr(self, "server_library_status"):
+            self.server_library_status.setText("正在读取本地图元缓存…")
+        # One short event-loop yield is enough for the already-created page to paint.
+        QTimer.singleShot(30, self._restore_catalog_after_activation)
+
+    def _restore_catalog_after_activation(self) -> None:
+        if self._local_catalog_restore_worker is not None:
+            return
+        try:
+            cfg = self._server_library_config()
+            host = str(cfg.get("host", "")).strip()
+            root = str(cfg.get("root", self.server_symbol_root.text())).strip()
+        except Exception:
+            host, root = "", ""
+        if not host or not root:
+            self._catalog_restore_pending = False
+            self._catalog_restore_started = False
+            self._set_local_catalog_loading_state(False)
+            if hasattr(self, "server_library_status"):
+                self.server_library_status.setText("本机尚未配置图元缓存位置；不会自动访问服务器。")
+            return
+
+        def load_local_snapshot(log, progress):
+            progress(5)
+            payload = RemoteSymbolLibraryService().load_cached_sync_snapshot(host=host, root=root)
+            progress(100)
+            return payload
+
+        worker = FunctionWorker(load_local_snapshot)
+        self._local_catalog_restore_worker = worker
+        worker.signals.result.connect(self._on_local_catalog_restore_result)
+        worker.signals.error.connect(self._on_local_catalog_restore_error)
+        worker.signals.finished.connect(self._on_local_catalog_restore_finished)
+        self._scan_pool.start(worker)
+
+    def _set_local_catalog_loading_state(self, loading: bool, *, reveal_table: bool = True) -> None:
+        """Switch the local-cache placeholder/table without transient top-level UI.
+
+        Automatic AppData restore must never create a QMessageBox/QProgressDialog.
+        This helper only toggles child widgets already owned by the page.
+        """
+        if hasattr(self, "standard_table_loading"):
+            self.standard_table_loading.setVisible(bool(loading))
+        if hasattr(self, "standard_table") and reveal_table:
+            self.standard_table.setVisible(not loading)
+
+    def _on_local_catalog_restore_result(self, payload: object) -> None:
+        data = dict(payload) if isinstance(payload, dict) else {}
+        inventory = data.get("server_file_records", [])
+        if not isinstance(inventory, list) or not inventory:
+            self._set_local_catalog_loading_state(False)
+            if hasattr(self, "server_library_status"):
+                self.server_library_status.setText("本机尚无可恢复的图元缓存；不会自动访问服务器。")
+            return
+        data["cached_restore"] = True
+        self._apply_server_library_payload(data, auto_bind=False, compare_profile=False)
+        marked = sum(
+            1 for row in self._server_file_inventory
+            if str(row.get("classification_marker", row.get("category_marker", "")) or "").strip()
+        )
+        if hasattr(self, "server_library_status"):
+            self.server_library_status.setText(
+                f"已读取本机 AppData 缓存：{len(self._server_file_inventory)} 个图元文件，"
+                f"分类标记 {marked} 个；正在分批显示，本次未访问服务器。"
+            )
+
+    def _on_local_catalog_restore_error(self, details: object) -> None:
+        self._set_local_catalog_loading_state(False)
+        if hasattr(self, "server_library_status"):
+            self.server_library_status.setText("本地图元缓存读取失败；不会自动访问服务器。")
+
+    def _on_local_catalog_restore_finished(self) -> None:
+        self._local_catalog_restore_worker = None
+        self._catalog_restore_pending = False
+        self._catalog_restore_started = False
 
     def _finish_initial_load(self) -> None:
         """Complete lightweight page state after the main window is visible."""
         self._refresh_local_storage_summary()
+        self._refresh_access_controls()
         self._update_action_state()
+        # v2.18.174: startup is strictly local-only. Do not read instance.json or
+        # any other central configuration here. Remote central configuration is
+        # contacted only by an explicit operator action such as “从服务器同步”,
+        # “发布到中央”, or opening the global configuration-access dialog.
+
+    def _schedule_inventory_width_update(self) -> None:
+        if not hasattr(self, "standard_table"):
+            return
+        if getattr(self, "_inventory_width_update_pending", False):
+            return
+        self._inventory_width_update_pending = True
+
+        def apply_widths() -> None:
+            self._inventory_width_update_pending = False
+            self._apply_fast_inventory_column_widths()
+
+        QTimer.singleShot(0, apply_widths)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        self._schedule_inventory_width_update()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt API
+        # The table viewport can be resized by the layout after the page itself has
+        # already reached its final geometry. Refit from cached natural widths so the
+        # seven operator fields always consume the whole usable table width.
+        if (
+            hasattr(self, "standard_table")
+            and watched is self.standard_table.viewport()
+            and event.type() in (QEvent.Type.Resize, QEvent.Type.Show)
+        ):
+            self._schedule_inventory_width_update()
+        return super().eventFilter(watched, event)
+
+    def _ensure_machine_id(self) -> str:
+        """Create the machine id only for an explicit administrator action."""
+        machine_id = self.user_settings.get_value("access_control/machine_id", "").strip()
+        if not machine_id:
+            machine_id = uuid4().hex
+            self.user_settings.set_value("access_control/machine_id", machine_id)
+        self._machine_id = machine_id
+        return machine_id
+
+    def _shared_ssh_config_from_local_settings(self) -> dict[str, object]:
+        """Read the shared SSH endpoint directly from the tiny local settings cache.
+
+        The public catalog manager must not instantiate or query a hidden
+        InputSourceSelector merely to obtain credentials.  Reading these scalar
+        values is local-only, deterministic and does not touch SSH.
+        """
+        host = self.user_settings.get_value("remote_g_source/host", "").strip()
+        username = self.user_settings.get_value("remote_g_source/username", "").strip()
+        password = self.user_settings.get_value("remote_g_source/password", "")
+        try:
+            port = int(self.user_settings.get_value("remote_g_source/port", "22") or 22)
+        except (TypeError, ValueError):
+            port = 22
+        remote_directory = self.user_settings.get_value("remote_g_source/remote_directory", "").strip()
+        return {
+            "host": host,
+            "port": port,
+            "username": username,
+            "password": password,
+            "remote_directory": remote_directory,
+        }
+
+    def _admin_lease_config(self) -> dict[str, object]:
+        """Return locally cached SSH credentials for an explicit Admin operation."""
+        cfg = self._shared_ssh_config_from_local_settings()
+        host = str(cfg.get("host", "") or "").strip()
+        username = str(cfg.get("username", "") or "").strip()
+        password = str(cfg.get("password", "") or "")
+        port = int(cfg.get("port", 22) or 22)
+
+        if not host or not username:
+            raise ValueError("请先在“连接与环境”保存本机 SSH 文件服务器配置。")
+        if not password:
+            raise ValueError("请先在“连接与环境”保存 SSH 密码。")
+        return {
+            "host": host,
+            "port": port,
+            "username": username,
+            "password": password,
+        }
+
+    def _toggle_admin_mode(self) -> None:
+        if self._is_admin_mode:
+            self._release_admin_mode()
+            return
+
+        self._ensure_machine_id()
+        lease = self._admin_lease
+        detail = f"当前已知 Admin：{lease.owner_text}。\n\n" if lease is not None else ""
+        if QMessageBox.question(
+            self,
+            "抢占 Admin 权限",
+            detail
+            + "抢占后，本机将获得中央配置发布权限；原 Admin 检测到所有权变化后会自动降级。\n\n"
+            "本操作只变更 Admin 所有权，不会自动同步或发布数据库、文件服务器、ID 规则或图元分类配置。是否继续？",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self._request_admin_mode()
+
+    def _prompt_new_admin_password(self, *, title: str) -> str | None:
+        password, ok = QInputDialog.getText(
+            self,
+            title,
+            "新管理员密码（至少 6 个字符）：",
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok:
+            return None
+        confirm, ok = QInputDialog.getText(
+            self,
+            title,
+            "再次输入管理员密码：",
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok:
+            return None
+        if password != confirm:
+            QMessageBox.warning(self, title, "两次输入的管理员密码不一致。")
+            return None
+        if len(str(password)) < 6 or not str(password).strip():
+            QMessageBox.warning(self, title, "管理员密码至少需要 6 个字符。")
+            return None
+        return str(password)
+
+    def _force_reset_admin_password(self) -> None:
+        """Recover a forgotten central admin password through configured SSH write access."""
+        self._ensure_machine_id()
+        password = self._prompt_new_admin_password(title="强制设置管理员密码")
+        if password is None:
+            return
+        if QMessageBox.question(
+            self,
+            "强制设置管理员密码",
+            "此操作会直接重置中央管理员密码，并由本机接管管理员权限。\n"
+            "无需旧管理员密码，但必须能够使用当前 SSH 配置写入中央 config/instance.json。\n\n"
+            "是否继续？",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            cfg = self._admin_lease_config()
+        except Exception as exc:
+            QMessageBox.warning(self, "无法设置管理员密码", str(exc))
+            return
+        if self._admin_lease_worker is not None:
+            return
+
+        self._admin_lease_action = "reset_password"
+
+        def run_reset(log, progress):
+            progress(10)
+            lease = ClassificationRegistryService().force_set_admin_password(
+                host=str(cfg["host"]),
+                port=int(cfg["port"]),
+                username=str(cfg["username"]),
+                password=str(cfg["password"]),
+                new_admin_password=password,
+                machine_id=self._machine_id,
+                machine_name=self._machine_name,
+                take_over=True,
+            )
+            progress(100)
+            return lease
+
+        worker = FunctionWorker(run_reset)
+        self._admin_lease_worker = worker
+        worker.signals.result.connect(self._on_admin_acquire_result)
+        worker.signals.error.connect(
+            lambda details: self._on_admin_lease_error(details, action="强制设置密码")
+        )
+        worker.signals.finished.connect(self._on_admin_lease_worker_finished)
+        self._refresh_access_controls()
+        QTimer.singleShot(0, lambda w=worker: self._scan_pool.start(w))
+
+    def _initialize_admin_password(self) -> None:
+        self._force_reset_admin_password()
+
+    def _change_admin_password(self) -> None:
+        if not self._is_admin_mode:
+            QMessageBox.warning(self, "需要管理员权限", "请先进入管理员模式。")
+            return
+        password = self._prompt_new_admin_password(title="修改管理员密码")
+        if password is None:
+            return
+        try:
+            cfg = self._admin_lease_config()
+        except Exception as exc:
+            QMessageBox.warning(self, "无法修改管理员密码", str(exc))
+            return
+        try:
+            lease = ClassificationRegistryService().force_set_admin_password(
+                host=str(cfg["host"]),
+                port=int(cfg["port"]),
+                username=str(cfg["username"]),
+                password=str(cfg["password"]),
+                new_admin_password=password,
+                machine_id=self._machine_id,
+                machine_name=self._machine_name,
+                take_over=True,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "修改管理员密码失败", str(exc))
+            return
+        if isinstance(lease, AdminLeaseSnapshot):
+            self._admin_lease = lease
+        QMessageBox.information(self, "管理员密码已更新", "中央管理员密码已更新。")
+
+    def _request_admin_mode(self) -> None:
+        self._ensure_machine_id()
+        if self._admin_lease_worker is not None:
+            return
+        try:
+            cfg = self._admin_lease_config()
+        except Exception as exc:
+            QMessageBox.warning(self, "无法抢占 Admin 权限", str(exc))
+            return
+
+        self._admin_lease_action = "acquire"
+        if hasattr(self, "admin_owner_label"):
+            self.admin_owner_label.setText("当前管理员：正在抢占…")
+
+        def run_acquire(log, progress):
+            progress(10)
+            lease = ClassificationRegistryService().takeover_admin(
+                host=str(cfg["host"]),
+                port=int(cfg["port"]),
+                username=str(cfg["username"]),
+                password=str(cfg["password"]),
+                machine_id=self._machine_id,
+                machine_name=self._machine_name,
+            )
+            progress(100)
+            return lease
+
+        worker = FunctionWorker(run_acquire)
+        self._admin_lease_worker = worker
+        worker.signals.result.connect(self._on_admin_acquire_result)
+        worker.signals.error.connect(lambda details: self._on_admin_lease_error(details, action="抢占"))
+        worker.signals.finished.connect(self._on_admin_lease_worker_finished)
+        self._refresh_access_controls()
+        QTimer.singleShot(0, lambda w=worker: self._scan_pool.start(w))
+
+    def _on_admin_acquire_result(self, result: object) -> None:
+        if not isinstance(result, AdminLeaseSnapshot):
+            return
+        self._admin_lease = result
+        self._is_admin_mode = True
+        self._admin_ownership_timer.start()
+        self.server_library_status.setText(
+            f"Admin 抢占完成：{result.owner_text}。本次仅变更所有权，未同步或发布中央业务配置。"
+        )
+        self._refresh_access_controls()
+        self._update_action_state()
+
+    def _release_admin_mode(self) -> None:
+        lease = self._admin_lease
+        self._is_admin_mode = False
+        self._admin_ownership_timer.stop()
+        self._refresh_access_controls()
+        self._update_action_state()
+        if lease is None or not lease.lease_id:
+            self.server_library_status.setText("已退出管理员模式。")
+            self._refresh_admin_lease_status()
+            return
+        if self._admin_lease_worker is not None:
+            self.server_library_status.setText("管理员操作正在进行，请稍后再释放。")
+            return
+        try:
+            cfg = self._admin_lease_config()
+        except Exception:
+            self.server_library_status.setText("当前无法连接服务器；中央 instance.json 仍保留本机为管理员，请恢复连接后手动释放。")
+            return
+
+        self._admin_lease_action = "release"
+        self.server_library_status.setText("正在释放服务器管理员权限…")
+
+        def run_release(log, progress):
+            progress(20)
+            released = ClassificationRegistryService().release_admin_lease(
+                host=str(cfg["host"]),
+                port=int(cfg["port"]),
+                username=str(cfg["username"]),
+                password=str(cfg["password"]),
+                machine_id=self._machine_id,
+                lease_id=lease.lease_id,
+                expected_admin_epoch=lease.admin_epoch,
+            )
+            progress(100)
+            return released
+
+        worker = FunctionWorker(run_release)
+        self._admin_lease_worker = worker
+        worker.signals.result.connect(self._on_admin_release_result)
+        worker.signals.error.connect(lambda details: self._on_admin_lease_error(details, action="释放", quiet=True))
+        worker.signals.finished.connect(self._on_admin_lease_worker_finished)
+        QTimer.singleShot(0, lambda w=worker: self._scan_pool.start(w))
+
+    def _on_admin_release_result(self, result: object) -> None:
+        self._admin_lease = None
+        self.server_library_status.setText("管理员权限已释放；本机已恢复普通模式。")
+        self._refresh_access_controls()
+        QTimer.singleShot(100, self._refresh_admin_lease_status)
+
+    def _renew_admin_lease(self) -> None:
+        if not self._is_admin_mode or self._admin_lease is None or self._admin_lease_worker is not None:
+            return
+        lease = self._admin_lease
+        try:
+            cfg = self._admin_lease_config()
+        except Exception as exc:
+            self._on_admin_heartbeat_lost(str(exc))
+            return
+
+        self._admin_lease_action = "renew"
+
+        def run_renew(log, progress):
+            return ClassificationRegistryService().renew_admin_lease(
+                host=str(cfg["host"]),
+                port=int(cfg["port"]),
+                username=str(cfg["username"]),
+                password=str(cfg["password"]),
+                machine_id=self._machine_id,
+                lease_id=lease.lease_id,
+                lease_seconds=DEFAULT_ADMIN_LEASE_SECONDS,
+                expected_admin_epoch=lease.admin_epoch,
+            )
+
+        worker = FunctionWorker(run_renew)
+        self._admin_lease_worker = worker
+        worker.signals.result.connect(self._on_admin_renew_result)
+        worker.signals.error.connect(lambda details: self._on_admin_heartbeat_lost(str(details)))
+        worker.signals.finished.connect(self._on_admin_lease_worker_finished)
+        QTimer.singleShot(0, lambda w=worker: self._scan_pool.start(w))
+
+    def _on_admin_renew_result(self, result: object) -> None:
+        if isinstance(result, AdminLeaseSnapshot):
+            self._admin_lease = result
+            self._refresh_access_controls()
+
+    def _on_admin_heartbeat_lost(self, details: str) -> None:
+        if not self._is_admin_mode:
+            return
+        message = str(details).split("\n\n---TRACEBACK---", 1)[0].strip()
+        self._is_admin_mode = False
+        self._admin_ownership_timer.stop()
+        self._refresh_access_controls()
+        self._update_action_state()
+        self.server_library_status.setText("Admin 所有权已变化；本机已自动恢复普通客户端模式。")
+        QMessageBox.warning(
+            self,
+            "管理员权限已失效",
+            (message or "Admin 权限已被其他机器重新抢占。") + "\n\n本机已恢复普通客户端模式；本地配置仍可修改保存和手动同步，但不能发布中央仓库。",
+        )
+
+    def _refresh_admin_lease_status(self) -> None:
+        if self._is_admin_mode or self._admin_lease_worker is not None:
+            return
+        try:
+            cfg = self._admin_lease_config()
+        except Exception:
+            if hasattr(self, "admin_owner_label"):
+                self.admin_owner_label.setText("当前管理员：SSH 未配置")
+            return
+
+        self._admin_lease_action = "status"
+
+        def run_status(log, progress):
+            return ClassificationRegistryService().fetch_admin_lease(
+                host=str(cfg["host"]),
+                port=int(cfg["port"]),
+                username=str(cfg["username"]),
+                password=str(cfg["password"]),
+            )
+
+        worker = FunctionWorker(run_status)
+        self._admin_lease_worker = worker
+        worker.signals.result.connect(self._on_admin_status_result)
+        worker.signals.error.connect(lambda details: self._on_admin_lease_error(details, action="状态", quiet=True))
+        worker.signals.finished.connect(self._on_admin_lease_worker_finished)
+        QTimer.singleShot(0, lambda w=worker: self._scan_pool.start(w))
+
+    def _on_admin_status_result(self, result: object) -> None:
+        self._admin_lease = result if isinstance(result, AdminLeaseSnapshot) else None
+        self._refresh_access_controls()
+
+    def _on_admin_lease_error(self, details: str, *, action: str, quiet: bool = False) -> None:
+        message = str(details).split("\n\n---TRACEBACK---", 1)[0].strip()
+        if action in {"申请", "抢占"}:
+            self._is_admin_mode = False
+            self._admin_ownership_timer.stop()
+            self.server_library_status.setText(message or "Admin 权限抢占失败。")
+        elif action == "释放":
+            self.server_library_status.setText("释放失败；中央 instance.json 仍保持原管理员，请恢复连接后重试。")
+        elif action == "状态" and hasattr(self, "admin_owner_label"):
+            self.admin_owner_label.setText("当前管理员：状态暂不可用")
+        self._refresh_access_controls()
+        self._update_action_state()
+        if not quiet:
+            QMessageBox.warning(self, f"管理员权限{action}失败", message or str(details))
+
+    def _on_admin_lease_worker_finished(self) -> None:
+        self._admin_lease_worker = None
+        self._admin_lease_action = ""
+        self._refresh_access_controls()
+        self._update_action_state()
+
+    def _release_admin_lease_on_shutdown(self) -> None:
+        """End only this process session; central Admin ownership is persistent.
+
+        Matching Distribution Model Manager, closing the application does not
+        release or mutate central ``instance.json``. Admin is changed only by an
+        explicit release or by another workstation taking over.
+        """
+        self._admin_ownership_timer.stop()
+        self._is_admin_mode = False
+        self._admin_lease = None
+
+    def _require_admin_mode(self, action: str) -> bool:
+        if self._is_admin_mode and self._admin_lease is not None and not self._admin_lease.expired:
+            return True
+        QMessageBox.warning(self, "需要管理员权限", f"{action}仅允许当前服务器管理员执行。")
+        return False
+
+    def _apply_classification_item_permissions(self) -> None:
+        if not hasattr(self, "standard_table"):
+            return
+        # Every workstation may maintain its own local classification.  Admin only
+        # controls who may publish the central server copy.
+        for row in range(self.standard_table.rowCount()):
+            item = self.standard_table.item(row, 18)
+            if item is None:
+                continue
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+
+    def _refresh_access_controls(self) -> None:
+        initialized = True
+        lease = self._admin_lease
+        occupied = bool(lease is not None and not lease.expired)
+        occupied_by_other = bool(
+            occupied
+            and lease is not None
+            and lease.machine_id != self._machine_id
+        )
+        busy_admin = self._admin_lease_worker is not None
+
+        if hasattr(self, "admin_owner_label"):
+            if occupied and lease is not None:
+                owner = lease.owner_text
+                if lease.machine_id == self._machine_id:
+                    owner += " · 本机"
+                self.admin_owner_label.setText(f"当前管理员：{owner} · 中央 V{lease.config_version}")
+            else:
+                self.admin_owner_label.setText("当前管理员：未占用")
+
+        if hasattr(self, "access_mode_label"):
+            if self._is_admin_mode:
+                self.access_mode_label.setText("模式：管理员")
+                self.access_mode_button.setText("释放管理员权限")
+                self.access_mode_button.setToolTip("释放中央管理员状态，其他机器随后可以申请管理员。")
+                self.access_mode_button.setEnabled(not busy_admin)
+                self.change_admin_password_button.setVisible(True)
+            else:
+                self.access_mode_label.setText("模式：普通客户端")
+                self.access_mode_button.setText("抢占 Admin 权限")
+                self.access_mode_button.setToolTip(
+                    "任何客户端都可以显式抢占 Admin；抢占只变更所有权，不自动同步或发布业务配置。"
+                )
+                self.access_mode_button.setEnabled(not busy_admin)
+                self.change_admin_password_button.setVisible(False)
+
+        self._apply_classification_item_permissions()
+        if hasattr(self, "standard_table"):
+            self.standard_table.setEditTriggers(
+                QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.SelectedClicked
+            )
+
+        # Local configuration belongs to each workstation and is always editable.
+        for name in ("save_classification_button", "import_classification_button", "export_classification_button"):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setVisible(True)
+        if hasattr(self, "local_classification_label"):
+            self.local_classification_label.setVisible(True)
+        if hasattr(self, "central_publish_button"):
+            self.central_publish_button.setVisible(True)
+            self.central_publish_button.setEnabled(self._is_admin_mode and self._classification_registry_worker is None)
+
+        # The page no longer exposes administrator controls; keep the compatibility
+        # container hidden even when the internal state updater toggles child widgets.
+        if hasattr(self, "_legacy_access_container"):
+            self._legacy_access_container.setVisible(False)
+        self.adminAccessChanged.emit(self.admin_access_state())
+
+    def admin_access_state(self) -> dict[str, object]:
+        """Return the current global central-configuration access state for the sidebar."""
+        lease = self._admin_lease
+        occupied = bool(lease is not None and not lease.expired)
+        occupied_by_other = bool(occupied and lease is not None and lease.machine_id != self._machine_id)
+        initialized = True
+        if self._is_admin_mode:
+            mode = "admin"
+            button_text = "配置权限：管理员模式"
+        else:
+            mode = "ordinary"
+            button_text = "配置权限：普通客户端"
+        return {
+            "mode": mode,
+            "button_text": button_text,
+            "is_admin": bool(self._is_admin_mode),
+            "initialized": bool(initialized),
+            "busy": bool(self._admin_lease_worker is not None),
+            "occupied_by_other": occupied_by_other,
+            "owner_text": lease.owner_text if occupied and lease is not None else "未占用",
+            "config_version": int(lease.config_version if occupied and lease is not None else 0),
+            "admin_epoch": int(lease.admin_epoch if self._is_admin_mode and lease is not None else 0),
+        }
 
     @staticmethod
     def _paired_builtin_row(row: int) -> int:
@@ -846,6 +1603,7 @@ class SiteProfilePage(BasePage):
         defer_selection: bool = False,
         load_catalog: bool = True,
     ) -> None:
+        self._legacy_profile_state_loaded = True
         profiles = self.service.load_profiles()
         if not select_name:
             remembered = self.user_settings.get_value("site_profile/last_profile_name", "").strip()
@@ -853,7 +1611,7 @@ class SiteProfilePage(BasePage):
                 select_name = remembered
                 select_version = profiles[remembered].profile_version
 
-        global_name, global_version = self.service.get_global_profile_selection()
+        global_name, global_version = self.service.get_global_profile_selection(auto_initialize=False)
         self.profile_selector.blockSignals(True)
         self.profile_selector.clear()
         selected_index = -1
@@ -933,7 +1691,7 @@ class SiteProfilePage(BasePage):
         return item
 
     def _classification_marker_changed(self, item: QTableWidgetItem) -> None:
-        """Persist a user-edited marker to the local server-catalog manifest."""
+        """Apply one marker immediately in memory and persist it asynchronously."""
         if (
             item.column() != 18
             or getattr(self, "_classification_marker_write_busy", False)
@@ -942,63 +1700,100 @@ class SiteProfilePage(BasePage):
             return
         remote_path = str(item.data(Qt.ItemDataRole.UserRole + 1) or "").strip()
         if not remote_path:
-            # A non-server draft row will be persisted with the next explicit
-            # standard save through ``_collect_custom_symbols``.
             return
         host = str(item.data(Qt.ItemDataRole.UserRole + 2) or "").strip()
         root = str(item.data(Qt.ItemDataRole.UserRole + 3) or "").strip()
         if not host or not root:
             return
-        try:
-            self._classification_marker_write_busy = True
-            saved = RemoteSymbolLibraryService().update_classification_marker(
-                host=host,
-                root=root,
-                remote_path=remote_path,
-                marker=item.text().strip(),
-            )
-            if not saved:
-                return
-            # Keep the in-memory catalog/profile preview aligned immediately, so
-            # the next downstream operation sees the same marker without a reload.
-            for record in self._server_catalog_records.values():
-                if str(record.get("remote_path", "")).strip() != remote_path:
-                    continue
-                marker = item.text().strip()
-                if marker:
-                    record["classification_marker"] = marker
-                    record["category_marker"] = marker
-                else:
-                    record.pop("classification_marker", None)
-                    record.pop("category_marker", None)
-                break
-            devref = self._standard_file_devref(item.row())
-            if devref and devref in self._symbol_catalog:
-                marker = item.text().strip()
-                if marker:
-                    self._symbol_catalog[devref]["classification_marker"] = marker
-                    self._symbol_catalog[devref]["category_marker"] = marker
-                else:
-                    self._symbol_catalog[devref].pop("classification_marker", None)
-                    self._symbol_catalog[devref].pop("category_marker", None)
-            for record in self._server_file_inventory:
-                if str(record.get("remote_path", "")).strip() != remote_path:
-                    continue
-                marker = item.text().strip()
-                if marker:
-                    record["classification_marker"] = marker
-                    record["category_marker"] = marker
-                else:
-                    record.pop("classification_marker", None)
-                    record.pop("category_marker", None)
-                break
-            self._refresh_standard_table_overview()
-        except Exception:
-            # Marker editing must never interrupt the table or a server read. The
-            # next explicit server read will reconcile the local manifest again.
+
+        marker = item.text().strip()
+        if hasattr(self, "_inventory_natural_widths"):
+            marker_width = self.standard_table.fontMetrics().horizontalAdvance(marker) + 28
+            previous_width = int(self._inventory_natural_widths.get(18, 0) or 0)
+            if marker_width > previous_width:
+                self._inventory_natural_widths[18] = marker_width
+                self._schedule_inventory_width_update()
+        # Keep every in-memory view aligned immediately.  No disk or network I/O is
+        # allowed on this GUI callback.
+        for record in self._server_catalog_records.values():
+            if str(record.get("remote_path", "")).strip() != remote_path:
+                continue
+            if marker:
+                record["classification_marker"] = marker
+                record["category_marker"] = marker
+            else:
+                record.pop("classification_marker", None)
+                record.pop("category_marker", None)
+            break
+        devref = self._standard_file_devref(item.row())
+        if devref and devref in self._symbol_catalog:
+            if marker:
+                self._symbol_catalog[devref]["classification_marker"] = marker
+                self._symbol_catalog[devref]["category_marker"] = marker
+            else:
+                self._symbol_catalog[devref].pop("classification_marker", None)
+                self._symbol_catalog[devref].pop("category_marker", None)
+        for record in self._server_file_inventory:
+            if str(record.get("remote_path", "")).strip() != remote_path:
+                continue
+            if marker:
+                record["classification_marker"] = marker
+                record["category_marker"] = marker
+            else:
+                record.pop("classification_marker", None)
+                record.pop("category_marker", None)
+            break
+        self._refresh_standard_table_overview()
+
+        # Last edit wins for the same physical server file.  The timer coalesces a
+        # burst of edits and the worker performs the JSON rewrites off the GUI thread.
+        self._pending_classification_marker_updates[(host, root, remote_path)] = marker
+        self._classification_marker_save_timer.start()
+
+    def _flush_classification_marker_updates(self) -> None:
+        if self._classification_marker_save_worker is not None:
+            # A worker is already persisting an earlier batch.  Keep the new edits
+            # queued; finished() will schedule the next flush.
             return
-        finally:
-            self._classification_marker_write_busy = False
+        if not self._pending_classification_marker_updates:
+            return
+
+        pending = dict(self._pending_classification_marker_updates)
+        self._pending_classification_marker_updates.clear()
+
+        def persist_local_markers(log, progress):
+            del log
+            groups: dict[tuple[str, str], dict[str, str]] = {}
+            for (host, root, remote_path), marker in pending.items():
+                groups.setdefault((host, root), {})[remote_path] = marker
+            total = max(1, len(groups))
+            saved = 0
+            for index, ((host, root), updates) in enumerate(groups.items(), start=1):
+                saved += RemoteSymbolLibraryService().update_classification_markers_batch(
+                    host=host, root=root, updates=updates
+                )
+                progress(int(index * 100 / total))
+            return saved
+
+        worker = FunctionWorker(persist_local_markers)
+        self._classification_marker_save_worker = worker
+        worker.signals.error.connect(self._on_classification_marker_save_error)
+        worker.signals.finished.connect(self._on_classification_marker_save_finished)
+        self._refresh_catalog_action_state()
+        self._scan_pool.start(worker)
+
+    def _on_classification_marker_save_error(self, details: object) -> None:
+        message = str(details).split("\n\n---TRACEBACK---", 1)[0].strip()
+        if hasattr(self, "central_classification_status"):
+            self.central_classification_status.setText(
+                f"本地分类缓存保存失败：{message or '未知错误'}"
+            )
+
+    def _on_classification_marker_save_finished(self) -> None:
+        self._classification_marker_save_worker = None
+        self._refresh_catalog_action_state()
+        if self._pending_classification_marker_updates:
+            self._classification_marker_save_timer.start(60)
 
     @staticmethod
     def _format_dimension(value: object) -> str:
@@ -1018,6 +1813,13 @@ class SiteProfilePage(BasePage):
         symbol-G filename, so horizontal scrolling is preferred over ellipsis.
         """
         if not hasattr(self, "standard_table"):
+            return
+        # The public catalog-manager workflow never performs content scanning for
+        # column widths.  Keep the expensive legacy fitter only for an explicitly
+        # loaded historical Profile editor.
+        if self._server_inventory_table_enabled and not self._legacy_profile_state_loaded:
+            self._apply_fast_inventory_column_widths()
+            self._refresh_standard_table_overview()
             return
         table = self.standard_table
         header = table.horizontalHeader()
@@ -1082,8 +1884,81 @@ class SiteProfilePage(BasePage):
     def _set_server_inventory_cell(self, row: int, column: int, text: object) -> QTableWidgetItem:
         return self._set_readonly_cell(row, column, str(text or "-"), kind="server_inventory")
 
-    def _append_server_inventory_row(self, inventory: dict[str, object]) -> int:
-        """Append one physical remote file without making it an editable standard."""
+    def _populate_server_inventory_row_fast(
+        self, row: int, inventory: dict[str, object]
+    ) -> None:
+        """Populate only the operator-visible inventory fields.
+
+        The former startup path created 20 QTableWidgetItem objects per row and
+        calculated legacy role/usage fields even though 13 columns are hidden on
+        this page.  For a 200-file local cache that meant thousands of needless Qt
+        objects on the GUI thread.  This fast row keeps the mature 20-column schema
+        allocated, but materializes only the seven visible columns plus a tiny hidden
+        identity marker needed by existing compatibility code.
+        """
+        standard = inventory.get("standard_record", {})
+        standard = dict(standard) if isinstance(standard, dict) else {}
+        file_name = Path(str(inventory.get("name", "") or standard.get("original_name", ""))).name
+        devref = str(standard.get("devref", "")).strip()
+        remote_path = str(inventory.get("remote_path", "")).strip() or "-"
+        relative_path = str(inventory.get("relative_path", "")).strip() or file_name or "-"
+        width = self._format_dimension(standard.get("width", 0))
+        height = self._format_dimension(standard.get("height", 0))
+        dimension = f"{width}×{height}" if width != "-" and height != "-" else "-"
+        align = standard.get("align_center", [])
+        pins = standard.get("pins", [])
+        status = self._server_inventory_status(inventory)
+        server_mtime = self._format_server_mtime(inventory.get("mtime_epoch"))
+        updated_note = "本次同步检测到服务器元数据更新" if inventory.get("server_updated") else ""
+
+        marker = self._set_server_inventory_cell(row, 0, "服务器文件")
+        marker.setData(Qt.ItemDataRole.UserRole, "server_inventory")
+        marker.setData(Qt.ItemDataRole.UserRole + 9, True)
+        marker.setData(Qt.ItemDataRole.UserRole + 10, remote_path)
+        marker.setData(Qt.ItemDataRole.UserRole + 11, str(inventory.get("remote_host", "")).strip())
+        marker.setData(Qt.ItemDataRole.UserRole + 12, str(inventory.get("remote_root", "")).strip())
+
+        file_item = self._set_server_inventory_cell(row, 3, relative_path)
+        file_item.setData(Qt.ItemDataRole.UserRole, devref)
+        tooltip = "\n".join([
+            f"服务器相对路径：{relative_path}",
+            f"服务器完整路径：{remote_path}",
+            f"文件名：{file_name or '-'}",
+            f"devref：{devref or '-'}",
+            f"服务器修改时间：{server_mtime}",
+            f"状态：{status}",
+            updated_note,
+        ]).rstrip()
+        file_item.setToolTip(tooltip)
+        self._set_server_inventory_cell(row, 5, dimension)
+        self._set_server_inventory_cell(row, 6, align)
+        self._set_server_inventory_cell(row, 7, pins)
+        self._set_server_inventory_cell(row, 8, "服务器图元库")
+        status_item = self._set_server_inventory_cell(row, 9, status)
+        status_item.setToolTip(tooltip)
+
+        classification = str(
+            inventory.get("classification_marker", inventory.get("category_marker", "")) or ""
+        ).strip()
+        classification_item = QTableWidgetItem(classification)
+        classification_item.setToolTip("用户维护的分类标记；保存在本地图元缓存，不会写回服务器。")
+        classification_item.setData(Qt.ItemDataRole.UserRole + 1, remote_path if remote_path != "-" else "")
+        classification_item.setData(Qt.ItemDataRole.UserRole + 2, str(inventory.get("remote_host", "")).strip())
+        classification_item.setData(Qt.ItemDataRole.UserRole + 3, str(inventory.get("remote_root", "")).strip())
+        self.standard_table.setItem(row, 18, classification_item)
+
+        # Keep the hidden legacy path cell available to old helper methods without
+        # materializing any of the other retired columns.
+        self._set_server_inventory_cell(row, 19, relative_path)
+
+    def _append_server_inventory_row(
+        self, inventory: dict[str, object], *, row: int | None = None
+    ) -> int:
+        """Populate one physical remote-file row without making it editable.
+
+        ``row`` is supplied by the startup fast path after one bulk ``setRowCount``.
+        Legacy merge callers may omit it and retain the mature append behavior.
+        """
         standard = inventory.get("standard_record", {})
         standard = dict(standard) if isinstance(standard, dict) else {}
         file_name = Path(str(inventory.get("name", "") or standard.get("original_name", ""))).name
@@ -1108,8 +1983,13 @@ class SiteProfilePage(BasePage):
         server_mtime = self._format_server_mtime(inventory.get("mtime_epoch"))
         updated_note = "本次同步检测到服务器元数据更新" if inventory.get("server_updated") else ""
 
-        row = self.standard_table.rowCount()
-        self.standard_table.insertRow(row)
+        if row is None:
+            row = self.standard_table.rowCount()
+            self.standard_table.insertRow(row)
+        elif row < 0:
+            raise ValueError("row must be >= 0")
+        elif row >= self.standard_table.rowCount():
+            self.standard_table.setRowCount(row + 1)
         marker = self._set_server_inventory_cell(row, 0, "服务器文件")
         marker.setData(Qt.ItemDataRole.UserRole, "server_inventory")
         marker.setData(Qt.ItemDataRole.UserRole + 9, True)
@@ -1121,8 +2001,9 @@ class SiteProfilePage(BasePage):
             + (f"\n{updated_note}" if updated_note else "")
         )
         self._set_server_inventory_cell(row, 1, role or "服务器图元")
-        self._set_server_inventory_cell(row, 2, element_tag)
-        file_item = self._set_server_inventory_cell(row, 3, file_name)
+        self._set_server_inventory_cell(row, 2, element_tag)  # internal compatibility only; hidden
+        display_path = relative_path or file_name
+        file_item = self._set_server_inventory_cell(row, 3, display_path)
         file_item.setData(Qt.ItemDataRole.UserRole, devref)
         self._set_server_inventory_cell(row, 4, element_id)
         self._set_server_inventory_cell(row, 5, dimension)
@@ -1170,6 +2051,8 @@ class SiteProfilePage(BasePage):
         return row
 
     def _merge_server_file_inventory_rows(self) -> None:
+        # Called only by legacy auto-bind/business-scan paths in tableless mode.
+        # The widget remains hidden, preserving mature internal row logic.
         previous_suppression = self._suppress_classification_marker_persistence
         self._suppress_classification_marker_persistence = True
         try:
@@ -1231,34 +2114,226 @@ class SiteProfilePage(BasePage):
                 continue
             self._append_server_inventory_row(inventory)
 
+    def _measure_inventory_natural_widths(self) -> dict[int, int]:
+        """Measure only the seven visible operator columns once after population.
+
+        This deliberately avoids Qt content-based auto-sizing.  Measuring
+        seven plain item strings across ~200 rows is cheap, deterministic, and lets
+        us preserve complete filenames, pins, status text and classification labels
+        without re-running a full widget size-hint pass on every resize.
+        """
+        if not hasattr(self, "standard_table"):
+            return {}
+        table = self.standard_table
+        metrics = table.fontMetrics()
+        floors = {3: 220, 5: 72, 6: 118, 7: 180, 8: 110, 9: 130, 18: 180}
+        widths: dict[int, int] = {}
+        for column in self._inventory_visible_columns:
+            header_item = table.horizontalHeaderItem(column)
+            title = header_item.text() if header_item is not None else ""
+            width = max(floors[column], metrics.horizontalAdvance(title) + 28)
+            for row in range(table.rowCount()):
+                item = table.item(row, column)
+                if item is None:
+                    continue
+                text = item.text()
+                if text:
+                    width = max(width, metrics.horizontalAdvance(text) + 28)
+            widths[column] = width
+        return widths
+
+    def _apply_fast_inventory_column_widths(self, *, recompute_content: bool = False) -> None:
+        """Keep every visible field readable and use the complete table viewport.
+
+        The ID-rule table is the presentation reference: columns keep readable
+        natural widths, the table stretches across the available page, and a local
+        horizontal scrollbar exposes the complete schema when the viewport is too
+        narrow.  Content is measured only once after population; resize events reuse
+        cached widths and therefore remain O(visible columns), not O(rows × columns).
+        """
+        if not hasattr(self, "standard_table"):
+            return
+        table = self.standard_table
+        header = table.horizontalHeader()
+        visible = self._inventory_visible_columns
+        for column in range(table.columnCount()):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+
+        if recompute_content or not self._inventory_natural_widths:
+            measured = self._measure_inventory_natural_widths()
+            if measured:
+                self._inventory_natural_widths = measured
+
+        metrics = table.fontMetrics()
+        floors = {3: 220, 5: 72, 6: 118, 7: 180, 8: 110, 9: 130, 18: 180}
+        widths: dict[int, int] = {}
+        for column in visible:
+            header_item = table.horizontalHeaderItem(column)
+            title = header_item.text() if header_item is not None else ""
+            header_width = metrics.horizontalAdvance(title) + 28
+            widths[column] = max(
+                floors[column],
+                header_width,
+                int(self._inventory_natural_widths.get(column, 0) or 0),
+            )
+
+        # If all natural widths fit, distribute the spare area instead of leaving a
+        # large blank block on the right.  Long-text columns receive most of the
+        # extra space. If they do not fit, never shrink below natural width: the
+        # table-local horizontal scrollbar exposes every field completely.
+        available = max(0, int(table.viewport().width() or table.width() or 0) - 4)
+        total = sum(widths.values())
+        if available > total:
+            extra = available - total
+            weights = ((3, 36), (7, 24), (18, 22), (9, 8), (6, 5), (8, 5))
+            distributed = 0
+            for column, percent in weights[:-1]:
+                addition = int(extra * percent / 100)
+                widths[column] += addition
+                distributed += addition
+            widths[weights[-1][0]] += extra - distributed
+
+        for column in visible:
+            table.setColumnWidth(column, max(48, int(widths[column])))
+        table.verticalHeader().setDefaultSectionSize(32)
+
+    def _restore_cached_inventory_table_fast(self, *, atomic_reveal: bool = False) -> None:
+        """Hydrate the operator inventory with no empty-table flash.
+
+        AppData restores use ``atomic_reveal=True``: the table stays hidden while
+        its cached rows are materialized with painting/signals blocked, then appears
+        once with final widths.  Manual refreshes keep the already-visible table and
+        still use event-loop batching for responsiveness.
+        """
+        if not self._server_inventory_table_enabled or not hasattr(self, "standard_table"):
+            return
+        self._inventory_atomic_reveal = bool(atomic_reveal)
+        if self._inventory_atomic_reveal:
+            self._set_local_catalog_loading_state(True, reveal_table=True)
+        self._inventory_render_generation += 1
+        generation = self._inventory_render_generation
+        self._inventory_render_rows = [dict(row) for row in self._server_file_inventory]
+        self._inventory_render_cursor = 0
+
+        table = self.standard_table
+        previous = table.blockSignals(True)
+        try:
+            table.setSortingEnabled(False)
+            table.clearContents()
+            table.setRowCount(len(self._inventory_render_rows))
+        finally:
+            table.blockSignals(previous)
+        if not self._inventory_atomic_reveal:
+            self._apply_fast_inventory_column_widths()
+            self._refresh_standard_table_overview()
+        QTimer.singleShot(0, lambda g=generation: self._render_next_inventory_batch(g))
+
+    def _render_next_inventory_batch(self, generation: int) -> None:
+        if generation != self._inventory_render_generation:
+            return
+        if not hasattr(self, "standard_table"):
+            return
+        rows = self._inventory_render_rows
+        start = self._inventory_render_cursor
+        if start >= len(rows):
+            self._finish_inventory_table_render(generation)
+            return
+        # A normal local cache is ~200 rows; render it in one hidden batch so the
+        # first visible frame is already complete.  Larger/manual inventories retain
+        # bounded batches to keep the GUI responsive.
+        batch_size = max(self._inventory_render_batch_size, len(rows)) if getattr(self, "_inventory_atomic_reveal", False) and len(rows) <= 500 else self._inventory_render_batch_size
+        stop = min(len(rows), start + batch_size)
+        table = self.standard_table
+        previous_signals = table.blockSignals(True)
+        model = table.model()
+        previous_model_signals = model.blockSignals(True) if model is not None else False
+        previous_suppression = self._suppress_classification_marker_persistence
+        self._suppress_classification_marker_persistence = True
+        table.setUpdatesEnabled(False)
+        try:
+            for row in range(start, stop):
+                self._populate_server_inventory_row_fast(row, rows[row])
+            self._inventory_render_cursor = stop
+        finally:
+            table.setUpdatesEnabled(True)
+            if model is not None:
+                model.blockSignals(previous_model_signals)
+            table.blockSignals(previous_signals)
+            self._suppress_classification_marker_persistence = previous_suppression
+        table.viewport().update()
+        if stop < len(rows):
+            QTimer.singleShot(0, lambda g=generation: self._render_next_inventory_batch(g))
+        else:
+            self._finish_inventory_table_render(generation)
+
+    def _finish_inventory_table_render(self, generation: int) -> None:
+        if generation != self._inventory_render_generation:
+            return
+        table = self.standard_table
+        # QTableWidget's default vertical header already renders 1-based row
+        # section numbers.  Do not create 200 QTableWidgetItems just for labels.
+        if self.standard_table_search.text().strip():
+            self._apply_standard_table_filter()
+        else:
+            self._refresh_standard_table_overview()
+        # Calculate the final geometry while the cache-restore table is still hidden,
+        # then swap it in once.  This removes the empty framed-table flash without
+        # introducing any modal/progress dialog.
+        self._apply_fast_inventory_column_widths(recompute_content=True)
+        self._refresh_standard_source_summary()
+        table.setSortingEnabled(False)
+        if getattr(self, "_inventory_atomic_reveal", False):
+            self._set_local_catalog_loading_state(False)
+            self._inventory_atomic_reveal = False
+        table.viewport().update()
+        if hasattr(self, "server_library_status") and self._server_file_inventory:
+            marked = sum(
+                1 for row in self._server_file_inventory
+                if str(row.get("classification_marker", row.get("category_marker", "")) or "").strip()
+            )
+            self.server_library_status.setText(
+                f"已从本机 AppData 缓存恢复：{len(self._server_file_inventory)} 个图元文件，"
+                f"分类标记 {marked} 个；未访问服务器。"
+            )
+
     def _refresh_standard_table_overview(self) -> None:
-        """Refresh row serial numbers and separate standard/instance counts."""
+        """Refresh compact counters for the visible server-symbol inventory."""
+        if not self._server_inventory_table_enabled:
+            marked = sum(
+                1
+                for record in self._server_file_inventory
+                if str(record.get("classification_marker", record.get("category_marker", "")) or "").strip()
+            )
+            if hasattr(self, "standard_table_overview"):
+                self.standard_table_overview.setText(
+                    f"服务器图元目录：本地缓存 {len(self._server_file_inventory)} 个，"
+                    f"信息解析成功 {len(self._server_catalog_records)} 项，已分类 {marked} 个"
+                )
+            return
         if not hasattr(self, "standard_table"):
             return
         table = self.standard_table
         total = table.rowCount()
         visible = 0
         marked = 0
-        labels: list[str] = []
         for row in range(total):
-            labels.append(str(row + 1))
             if not table.isRowHidden(row):
                 visible += 1
-            inventory_row = self._is_server_inventory_row(row)
             marker_item = table.item(row, 18)
             if marker_item is not None and marker_item.text().strip():
                 marked += 1
-        if labels:
-            table.setVerticalHeaderLabels(labels)
-        inventory_count = len(self._server_file_inventory)
         text = f"服务器图元目录（左侧为序号）：共 {total} 个文件 | 当前显示 {visible} 个"
-        if inventory_count:
-            text += f" | 服务器文件 {inventory_count} 个"
+        if self._server_file_inventory:
+            text += f" | 服务器文件 {len(self._server_file_inventory)} 个"
         if self._server_catalog_records:
             text += f" | 信息解析成功 {len(self._server_catalog_records)} 项"
         text += f" | 已分类 {marked} 个"
         if hasattr(self, "standard_table_overview"):
             self.standard_table_overview.setText(text)
+        # Catalog rows create column 18 as editable from the start.  Re-applying
+        # flags to every row on each counter refresh only creates model churn.
+        if self._legacy_profile_state_loaded:
+            self._apply_classification_item_permissions()
 
     @staticmethod
     def _unique_standard_file_count(records: object) -> int:
@@ -1274,12 +2349,20 @@ class SiteProfilePage(BasePage):
         """Show remote-catalog sync metrics without standard-version concepts."""
         if not hasattr(self, "scan_summary"):
             return
-        table_rows = self.standard_table.rowCount() if hasattr(self, "standard_table") else 0
-        marked = sum(
-            1 for row in range(table_rows)
-            if self.standard_table.item(row, 18) is not None
-            and self.standard_table.item(row, 18).text().strip()
-        )
+        if self._server_inventory_table_enabled and hasattr(self, "standard_table"):
+            table_rows = self.standard_table.rowCount()
+            marked = sum(
+                1 for row in range(table_rows)
+                if self.standard_table.item(row, 18) is not None
+                and self.standard_table.item(row, 18).text().strip()
+            )
+        else:
+            table_rows = len(self._server_file_inventory)
+            marked = sum(
+                1
+                for record in self._server_file_inventory
+                if str(record.get("classification_marker", record.get("category_marker", "")) or "").strip()
+            )
 
         payload = self._last_server_sync_payload if isinstance(self._last_server_sync_payload, dict) else {}
         matched = payload.get("matched_records", {})
@@ -1308,7 +2391,7 @@ class SiteProfilePage(BasePage):
             f"修改 {len(changed) if isinstance(changed, list) else 0} 个，"
             f"未变化 {len(unchanged) if isinstance(unchanged, list) else 0} 个，"
             f"服务器更新时间变化 {len(updated) if isinstance(updated, list) else 0} 个；"
-            f"当前表格 {table_rows} 个，已分类 {marked} 个。"
+            f"本地缓存 {table_rows} 个，已分类 {marked} 个。"
         )
         if hasattr(self, "active_profile_summary"):
             self.active_profile_summary.setText(
@@ -1420,7 +2503,7 @@ class SiteProfilePage(BasePage):
         }
 
     def _merge_server_catalog_rows(self) -> None:
-        """Make the parseable server catalog the complete unlocked standard table."""
+        """Compatibility renderer for legacy editor rows."""
         if not self._server_catalog_records or not hasattr(self, "standard_table"):
             return
         name, version, active = self._selected_profile_key()
@@ -2414,10 +3497,13 @@ class SiteProfilePage(BasePage):
     def _refresh_global_connection_settings(self) -> None:
         """Refresh shared environment paths without allowing this business page to edit them."""
         root = self.user_settings.get_value(
-            "site_profile/remote_symbol_library_root", DEFAULT_REMOTE_SYMBOL_ROOT
-        ).strip() or DEFAULT_REMOTE_SYMBOL_ROOT
+            "site_profile/remote_symbol_library_root", ""
+        ).strip()
         self.server_symbol_root.setText(root)
-        if hasattr(self, "discovery_source"):
+        # The public catalog manager reads the shared endpoint directly from the
+        # tiny settings cache.  Do not make the hidden legacy remote-file selector
+        # reload its own (potentially large) file-list cache on every page show.
+        if self._legacy_profile_state_loaded and hasattr(self, "discovery_source"):
             self.discovery_source.remote.refresh_shared_settings()
         self._refresh_local_storage_summary()
 
@@ -2427,7 +3513,7 @@ class SiteProfilePage(BasePage):
             return
         cache_text = "连接配置后确定"
         try:
-            cfg = self._server_library_config() if hasattr(self, "discovery_source") else {}
+            cfg = self._server_library_config()
             host = str(cfg.get("host", "")).strip()
             root = str(cfg.get("root", self.server_symbol_root.text())).strip()
             if host and root:
@@ -2465,6 +3551,19 @@ class SiteProfilePage(BasePage):
                 auto_bind=False,
                 compare_profile=False,
             )
+            # load_cached_sync_snapshot() has already merged the authoritative
+            # classification_markers.json layer into each physical inventory row.
+            # Avoid reading/matching the same cache again during startup.
+            marked = sum(
+                1
+                for row in self._server_file_inventory
+                if str(row.get("classification_marker", row.get("category_marker", "")) or "").strip()
+            )
+            if hasattr(self, "server_library_status"):
+                self.server_library_status.setText(
+                    f"已从本机 AppData 缓存恢复：{len(inventory)} 个图元文件，"
+                    f"分类标记 {marked} 个；未访问服务器。"
+                )
             return True
         except Exception:
             # Opening the page must remain usable even if an old or damaged cache
@@ -2485,18 +3584,17 @@ class SiteProfilePage(BasePage):
         self.server_symbol_root.setEnabled(bool(enabled))
         self.server_sync_button.setEnabled(bool(enabled) and self._server_sync_worker is None and self._scan_worker is None)
         if not enabled:
-            self._server_library_timer.stop()
-            self.server_library_status.setText("服务器图元同步开关不可关闭。")
+                self.server_library_status.setText("服务器图元同步开关不可关闭。")
         elif self.isVisible():
-            self.server_library_status.setText(
-                "服务器图元目录仅由“同步服务器图元信息”按钮读取；同步不会执行图元标准检查。"
-            )
+            self.server_library_status.setText("图元状态：等待同步")
 
     def _server_library_config(self) -> dict[str, object]:
-        # Reuse the application's shared SSH credentials. The symbol library only
-        # has its own root directory; credentials stay centralized in the SSH widget.
-        cfg = dict(self.discovery_source.remote.config())
-        cfg["root"] = self.server_symbol_root.text().strip() or DEFAULT_REMOTE_SYMBOL_ROOT
+        # Reuse the application's shared SSH credentials directly from the local
+        # settings cache.  This is intentionally independent of the retired hidden
+        # discovery widget, so opening/restoring the catalog never needs to build or
+        # traverse a remote-file input panel.
+        cfg = self._shared_ssh_config_from_local_settings()
+        cfg["root"] = self.server_symbol_root.text().strip()
         return cfg
 
     def _expected_server_symbol_names(self) -> list[str]:
@@ -2535,7 +3633,7 @@ class SiteProfilePage(BasePage):
             default_path = Path.home() / "gfile-symbol-classification-markers.json"
             target, _ = QFileDialog.getSaveFileName(
                 self,
-                "导出分类标记 JSON",
+                "导出本地分类 JSON",
                 str(default_path),
                 "JSON 文件 (*.json)",
             )
@@ -2548,67 +3646,313 @@ class SiteProfilePage(BasePage):
             )
             QMessageBox.information(
                 self,
-                "分类标记已导出",
+                "本地分类 JSON 已导出",
                 f"已导出 {int(result.get('count', 0) or 0)} 条分类标记。\n\n{result.get('path', target)}",
             )
         except Exception as exc:
-            QMessageBox.warning(self, "导出分类标记失败", str(exc))
+            QMessageBox.warning(self, "导出本地 JSON 失败", str(exc))
 
-    def _save_classification_markers(self) -> None:
-        """Explicitly persist every visible server-file marker to the local cache."""
-        try:
-            cfg = self._server_library_config()
-            host = str(cfg.get("host", "")).strip()
-            root = str(cfg.get("root", self.server_symbol_root.text())).strip()
-            if not host or not root:
-                raise ValueError("请先在连接设置中配置服务器图元库。")
+    def _persist_visible_classification_markers(self) -> dict[str, object]:
+        """Persist the local classification layer and current local snapshot.
 
-            service = RemoteSymbolLibraryService()
-            saved = 0
-            failed = 0
-            seen_paths: set[str] = set()
+        Since v2.18.194 the server inventory list is not editable/displayed here.
+        Existing classification_markers.json remains authoritative and is never
+        cleared merely because the compatibility table has zero rows.
+        """
+        cfg = self._server_library_config()
+        host = str(cfg.get("host", "")).strip()
+        root = str(cfg.get("root", self.server_symbol_root.text())).strip()
+        if not host or not root:
+            raise ValueError("请先在连接设置中配置服务器图元库。")
+
+        service = RemoteSymbolLibraryService()
+        saved = 0
+        failed = 0
+        if self._server_inventory_table_enabled:
+            updates: dict[str, str] = {}
             for row in range(self.standard_table.rowCount()):
                 item = self.standard_table.item(row, 18)
                 if item is None:
                     continue
                 remote_path = str(item.data(Qt.ItemDataRole.UserRole + 1) or "").strip()
-                if not remote_path or remote_path in seen_paths:
+                if not remote_path:
                     continue
-                seen_paths.add(remote_path)
-                if service.update_classification_marker(
-                    host=host,
-                    root=root,
-                    remote_path=remote_path,
-                    marker=item.text().strip(),
-                ):
-                    saved += 1
-                else:
-                    failed += 1
+                updates[remote_path] = item.text().strip()
+            # One local batch = one manifest write + one marker-file write + one
+            # snapshot write.  The previous implementation performed those writes
+            # once per table row (about 600 JSON writes for a 200-row catalog).
+            saved = service.update_classification_markers_batch(
+                host=host, root=root, updates=updates
+            )
+            failed = max(0, len(updates) - saved)
+        else:
+            saved = len(service.load_classification_markers(host=host, root=root))
 
-            self._refresh_local_classification_markers()
+        self._refresh_local_classification_markers()
+        snapshot_payload = dict(self._last_server_sync_payload)
+        snapshot_payload["server_file_records"] = [dict(row) for row in self._server_file_inventory]
+        if not isinstance(snapshot_payload.get("matched_records"), dict):
+            snapshot_payload["matched_records"] = {
+                Path(str(record.get("original_name", ""))).name: dict(record)
+                for record in self._server_catalog_records.values()
+                if str(record.get("original_name", "")).strip()
+            }
+        snapshot_path = service.save_cached_sync_snapshot_payload(
+            host=host, root=root, payload=snapshot_payload
+        )
+        return {
+            "host": host,
+            "root": root,
+            "saved": saved,
+            "failed": failed,
+            "cache_dir": str(service.library_dir(host, root)),
+            "marker_file": str(service.library_dir(host, root) / "classification_markers.json"),
+            "snapshot_file": str(snapshot_path),
+        }
+
+    def _mark_local_classification_source(self, source: str, *, central_updated_at: str = "") -> None:
+        self.user_settings.set_value("local_cache/classification_source", source)
+        if central_updated_at:
+            self.user_settings.set_value("local_cache/classification_central_updated_at", central_updated_at)
+
+    def _save_classification_markers(self) -> None:
+        """Explicitly persist every visible server-file marker to the local cache."""
+        try:
+            result = self._persist_visible_classification_markers()
+            saved = int(result.get("saved", 0) or 0)
+            failed = int(result.get("failed", 0) or 0)
+            self._mark_local_classification_source("custom")
             self.server_library_status.setText(
-                f"分类标记已保存到本机缓存：{saved} 条。"
+                f"分类标记已保存到本地：{saved} 条。"
                 + (f"另有 {failed} 条未保存，请检查服务器图元是否已完成同步。" if failed else "")
             )
             if failed:
                 QMessageBox.warning(
                     self,
-                    "分类标记保存结果",
+                    "保存到本地结果",
                     f"已保存 {saved} 条；{failed} 条未保存。\n"
                     "请先同步服务器图元信息，再重新保存。",
                 )
             else:
                 QMessageBox.information(
                     self,
-                    "分类标记已保存",
-                    f"已将 {saved} 条分类标记保存到本机缓存。\n\n"
-                    f"缓存目录：{service.library_dir(host, root)}",
+                    "已保存到本地",
+                    f"已将 {saved} 条分类标记和当前图元目录快照保存到本机缓存。\n\n"
+                    f"本地分类文件：{result.get('marker_file', '')}\n"
+                    f"本地图元快照：{result.get('snapshot_file', '')}",
                 )
         except Exception as exc:
-            QMessageBox.warning(self, "保存分类标记失败", str(exc))
+            QMessageBox.warning(self, "保存到本地失败", str(exc))
+
+    def _central_registry_config(self) -> dict[str, object]:
+        cfg = self._server_library_config()
+        cfg["registry_path"] = DEFAULT_CLASSIFICATION_PATH
+        return cfg
+
+    def _open_central_progress(self, title: str, label: str) -> QProgressDialog:
+        dialog = QProgressDialog(label, "", 0, 100, self)
+        dialog.setWindowTitle(title)
+        dialog.setCancelButton(None)
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        # Do not flash a transient progress window for fast local/central operations.
+        # Qt will show it only when the operation actually lasts long enough.
+        dialog.setMinimumDuration(800)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.setValue(0)
+        self._central_progress_dialog = dialog
+        return dialog
+
+    def _close_central_progress(self) -> None:
+        dialog = self._central_progress_dialog
+        self._central_progress_dialog = None
+        if dialog is not None:
+            dialog.setValue(100)
+            dialog.close()
+            dialog.deleteLater()
+
+    def _publish_central_classification(self) -> None:
+        if not self._require_admin_mode("上传到服务器"):
+            return
+        if self._classification_registry_worker is not None:
+            return
+        try:
+            local = self._persist_visible_classification_markers()
+            if int(local.get("failed", 0) or 0):
+                raise ValueError("存在未能保存到本机缓存的分类标记；请先完成服务器图元同步后再上传。")
+            cfg = self._central_registry_config()
+            payload = RemoteSymbolLibraryService().build_classification_marker_payload(
+                host=str(local["host"]), root=str(local["root"])
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "上传到服务器失败", str(exc))
+            return
+
+        marker_count = len(payload.get("markers", [])) if isinstance(payload, dict) else 0
+        lease = self._admin_lease
+        if lease is None:
+            QMessageBox.warning(self, "上传到服务器失败", "当前没有有效的服务器管理员权限。")
+            return
+        if QMessageBox.question(
+            self,
+            "上传到服务器",
+            f"上传 {marker_count} 条分类标记并覆盖服务器正式配置？",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        self.central_classification_status.setText("分类状态：正在上传…")
+        progress_dialog = self._open_central_progress(
+            "上传中央图元分类",
+            "正在上传图元分类配置…",
+        )
+
+        def run_publish(log, progress):
+            progress(10)
+            result = ClassificationRegistryService().publish(
+                host=str(cfg["host"]),
+                port=int(cfg["port"]),
+                username=str(cfg["username"]),
+                password=str(cfg["password"]),
+                payload=payload,
+                publisher_machine=lease.machine_name or self._machine_name,
+                publisher_ip=lease.ip,
+                machine_id=self._machine_id,
+                lease_id=lease.lease_id,
+                expected_admin_epoch=lease.admin_epoch,
+                log=log,
+            )
+            progress(100)
+            return {
+                "remote_path": result.remote_path,
+                "updated_at": result.updated_at,
+                "marker_count": result.marker_count,
+            }
+
+        worker = FunctionWorker(run_publish)
+        self._classification_registry_worker = worker
+        worker.signals.progress.connect(progress_dialog.setValue)
+        worker.signals.result.connect(self._on_central_publish_result)
+        worker.signals.error.connect(lambda details: self._on_central_registry_error(details, action="上传"))
+        worker.signals.finished.connect(self._on_central_registry_finished)
+        self._update_action_state()
+        QTimer.singleShot(0, lambda w=worker: self._scan_pool.start(w))
+
+    def _sync_central_classification(self) -> None:
+        self._start_central_classification_sync()
+
+    def _start_central_classification_sync(self) -> None:
+        """Manual-only central classification download.
+
+        There is deliberately no silent/automatic mode: every central read must be
+        initiated by the operator through the visible sync button.
+        """
+        if self._classification_registry_worker is not None:
+            return
+        try:
+            cfg = self._central_registry_config()
+            host = str(cfg.get("host", "")).strip()
+            root = str(cfg.get("root", self.server_symbol_root.text())).strip()
+            if not host or not root:
+                raise ValueError("请先在连接设置中配置 SSH 服务器。")
+        except Exception as exc:
+            QMessageBox.warning(self, "从服务器同步失败", str(exc))
+            return
+
+        if QMessageBox.question(
+            self,
+            "从服务器同步",
+            "用服务器分类覆盖本机分类标记？",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        self.central_classification_status.setText("分类状态：正在从服务器同步…")
+        progress_dialog = self._open_central_progress(
+            "同步中央图元分类",
+            "正在读取中央图元分类配置…",
+        )
+
+        def run_sync(log, progress):
+            progress(10)
+            snapshot = ClassificationRegistryService().fetch(
+                host=str(cfg["host"]),
+                port=int(cfg["port"]),
+                username=str(cfg["username"]),
+                password=str(cfg["password"]),
+                log=log,
+            )
+            progress(70)
+            imported = RemoteSymbolLibraryService().replace_classification_marker_payload(
+                host=host,
+                root=root,
+                payload=snapshot.payload,
+            )
+            progress(80)
+            return {
+                "remote_path": snapshot.remote_path,
+                "updated_at": snapshot.updated_at,
+                "marker_count": snapshot.marker_count,
+                "imported": int(imported.get("imported", 0) or 0),
+                "matched": int(imported.get("matched", 0) or 0),
+                "pending": int(imported.get("pending", 0) or 0),
+            }
+
+        worker = FunctionWorker(run_sync)
+        self._classification_registry_worker = worker
+        worker.signals.progress.connect(progress_dialog.setValue)
+        worker.signals.result.connect(self._on_central_sync_result)
+        worker.signals.error.connect(lambda details: self._on_central_registry_error(details, action="同步"))
+        worker.signals.finished.connect(self._on_central_registry_finished)
+        self._update_action_state()
+        QTimer.singleShot(0, lambda w=worker: self._scan_pool.start(w))
+
+    def _on_central_publish_result(self, result: object) -> None:
+        self._close_central_progress()
+        payload = dict(result) if isinstance(result, dict) else {}
+        count = int(payload.get("marker_count", 0) or 0)
+        updated_at = str(payload.get("updated_at", "") or "-")
+        path = str(payload.get("remote_path", DEFAULT_CLASSIFICATION_PATH))
+        self.central_classification_status.setText(f"分类状态：已上传 {count} 条 · {updated_at}")
+        QMessageBox.information(
+            self,
+            "已上传到服务器",
+            f"已上传 {count} 条分类标记。\n\n服务器唯一正式文件：\n{path}",
+        )
+
+    def _on_central_sync_result(self, result: object) -> None:
+        if self._central_progress_dialog is not None:
+            self._central_progress_dialog.setLabelText("正在更新本地图元分类缓存…")
+            self._central_progress_dialog.setValue(90)
+        payload = dict(result) if isinstance(result, dict) else {}
+        self._refresh_local_classification_markers()
+        count = int(payload.get("marker_count", 0) or 0)
+        matched = int(payload.get("matched", 0) or 0)
+        pending = int(payload.get("pending", 0) or 0)
+        updated_at = str(payload.get("updated_at", "") or "-")
+        self._mark_local_classification_source("central", central_updated_at=updated_at)
+        self.central_classification_status.setText(
+            f"分类状态：已同步 {count} 条 · 匹配 {matched} · 待匹配 {pending} · {updated_at}"
+        )
+        self._close_central_progress()
+        QMessageBox.information(
+            self,
+            "已从服务器同步",
+            f"已同步 {count} 条分类标记；当前匹配 {matched} 条，待匹配 {pending} 条。\n\n中央配置已覆盖本机分类缓存。",
+        )
+
+    def _on_central_registry_error(self, details: str, *, action: str, quiet: bool = False) -> None:
+        self._close_central_progress()
+        message = str(details).split("\n\n---TRACEBACK---", 1)[0].strip()
+        self.central_classification_status.setText(f"分类状态：{action}失败 · {message or details}")
+        if not quiet:
+            QMessageBox.warning(self, f"服务器分类{action}失败", message or str(details))
+
+    def _on_central_registry_finished(self) -> None:
+        self._classification_registry_worker = None
+        self._close_central_progress()
+        self._update_action_state()
 
     def _refresh_local_classification_markers(self) -> None:
-        """Reload marker values from the local cache into the visible table."""
+        """Reload local markers into the in-memory server catalog/inventory."""
         try:
             cfg = self._server_library_config()
             host = str(cfg.get("host", "")).strip()
@@ -2617,47 +3961,50 @@ class SiteProfilePage(BasePage):
         except Exception:
             return
         marker_by_path = {str(path).strip(): str(value).strip() for path, value in markers.items()}
-        for row in range(self.standard_table.rowCount()):
-            item = self.standard_table.item(row, 18)
-            if item is None:
-                continue
-            remote_path = str(item.data(Qt.ItemDataRole.UserRole + 1) or "").strip()
-            if not remote_path:
-                path_item = self.standard_table.item(row, 19)
-                remote_path = str(path_item.data(Qt.ItemDataRole.UserRole + 1) or "").strip() if path_item else ""
+        catalog_by_path = {
+            str(record.get("remote_path", "")).strip(): record
+            for record in self._server_catalog_records.values()
+            if str(record.get("remote_path", "")).strip()
+        }
+        inventory_by_path = {
+            str(record.get("remote_path", "")).strip(): record
+            for record in self._server_file_inventory
+            if str(record.get("remote_path", "")).strip()
+        }
+        for remote_path, record in {**catalog_by_path, **inventory_by_path}.items():
             value = marker_by_path.get(remote_path, "")
-            self._classification_marker_write_busy = True
-            try:
-                item.setText(value)
-            finally:
-                self._classification_marker_write_busy = False
-            for record in self._server_catalog_records.values():
-                if str(record.get("remote_path", "")).strip() != remote_path:
+            targets = [catalog_by_path.get(remote_path), inventory_by_path.get(remote_path)]
+            for target in targets:
+                if target is None:
                     continue
                 if value:
-                    record["classification_marker"] = value
-                    record["category_marker"] = value
+                    target["classification_marker"] = value
+                    target["category_marker"] = value
                 else:
-                    record.pop("classification_marker", None)
-                    record.pop("category_marker", None)
-                break
-            for record in self._server_file_inventory:
-                if str(record.get("remote_path", "")).strip() != remote_path:
+                    target.pop("classification_marker", None)
+                    target.pop("category_marker", None)
+
+        if self._server_inventory_table_enabled:
+            for row in range(self.standard_table.rowCount()):
+                item = self.standard_table.item(row, 18)
+                if item is None:
                     continue
-                if value:
-                    record["classification_marker"] = value
-                    record["category_marker"] = value
-                else:
-                    record.pop("classification_marker", None)
-                    record.pop("category_marker", None)
-                break
+                remote_path = str(item.data(Qt.ItemDataRole.UserRole + 1) or "").strip()
+                if not remote_path:
+                    path_item = self.standard_table.item(row, 19)
+                    remote_path = str(path_item.data(Qt.ItemDataRole.UserRole + 1) or "").strip() if path_item else ""
+                self._classification_marker_write_busy = True
+                try:
+                    item.setText(marker_by_path.get(remote_path, ""))
+                finally:
+                    self._classification_marker_write_busy = False
         self._refresh_standard_table_overview()
 
     def _import_classification_markers(self) -> None:
-        """Import portable markers and refresh the current server-symbol table."""
+        """Import portable markers and refresh the current local server-symbol cache."""
         source, _ = QFileDialog.getOpenFileName(
             self,
-            "载入分类标记 JSON",
+            "导入本地分类 JSON",
             str(Path.home()),
             "JSON 文件 (*.json)",
         )
@@ -2676,7 +4023,7 @@ class SiteProfilePage(BasePage):
             )
             self._refresh_local_classification_markers()
             self.server_library_status.setText(
-                f"已载入分类标记 {int(result.get('imported', 0) or 0)} 条；"
+                f"已导入本地分类标记 {int(result.get('imported', 0) or 0)} 条；"
                 f"当前匹配 {int(result.get('matched', 0) or 0)} 条；"
                 f"待后续服务器同步匹配 {int(result.get('pending', 0) or 0)} 条。"
             )
@@ -2688,14 +4035,14 @@ class SiteProfilePage(BasePage):
                 f"未匹配的 {int(result.get('pending', 0) or 0)} 条会在后续读取服务器图元时自动尝试匹配。",
             )
         except Exception as exc:
-            QMessageBox.warning(self, "载入分类标记失败", str(exc))
+            QMessageBox.warning(self, "导入本地 JSON 失败", str(exc))
 
     def _server_profile_changed_names(self, payload: dict[str, object]) -> set[str]:
         changed = {str(item) for item in payload.get("changed_names", []) if str(item).strip()} if isinstance(payload.get("changed_names", []), list) else set()
         matched = payload.get("matched_records", {})
         if not isinstance(matched, dict):
             return changed
-        profile = self._current_active_profile()
+        profile = None if catalog_only else self._current_active_profile()
         if profile is None:
             return changed
         current_by_name = {
@@ -2723,7 +4070,11 @@ class SiteProfilePage(BasePage):
         compare_profile: bool = True,
     ) -> None:
         previous_inventory = list(self._server_file_inventory)
-        previous_table_rows = self.standard_table.rowCount() if hasattr(self, "standard_table") else 0
+        previous_table_rows = (
+            self.standard_table.rowCount()
+            if self._server_inventory_table_enabled and hasattr(self, "standard_table")
+            else 0
+        )
 
         def inventory_signature(rows: object) -> tuple[tuple[str, ...], ...]:
             if not isinstance(rows, list):
@@ -2766,7 +4117,16 @@ class SiteProfilePage(BasePage):
             for record in matched.values()
             if str(record.get("devref", "")).strip()
         }
-        self._rebuild_symbol_catalog()
+        catalog_only = bool(not auto_bind and not compare_profile)
+        if catalog_only:
+            # The visible sync/classification page needs only the server catalog.
+            # Do not touch the retired Profile repository during cache restore or
+            # a normal manual server refresh.
+            self._symbol_catalog = self._catalog_from_standard_records(
+                list(self._server_catalog_records.values())
+            )
+        else:
+            self._rebuild_symbol_catalog()
         conflicts = payload.get("conflicts", {}) if isinstance(payload.get("conflicts", {}), dict) else {}
         errors = payload.get("errors", {}) if isinstance(payload.get("errors", {}), dict) else {}
         conflict_keys = {Path(str(name)).name.casefold() for name in conflicts}
@@ -2784,7 +4144,7 @@ class SiteProfilePage(BasePage):
         self._last_server_sync_payload["profile_changed_names"] = sorted(changed, key=str.casefold)
         if not compare_profile:
             self._last_server_sync_payload["profile_compare_skipped"] = True
-        profile = self._current_active_profile()
+        profile = None if catalog_only else self._current_active_profile()
         # A fresh-rescan DRAFT is a new local working copy, not an edit of the
         # locked base version.  Therefore server GET/cache results may bind into
         # the draft while the saved locked ACTIVE remains byte-for-byte untouched.
@@ -2841,19 +4201,36 @@ class SiteProfilePage(BasePage):
                 self._refresh_custom_standard_row(row)
                 bound += 1
 
-        self._rebuild_symbol_catalog()
+        if catalog_only:
+            self._symbol_catalog = self._catalog_from_standard_records(
+                list(self._server_catalog_records.values())
+            )
+        else:
+            self._rebuild_symbol_catalog()
         # An explicit sync with an identical physical inventory only needs to
         # refresh counters/status. Rebuilding a large QTableWidget here was the
         # main source of the visible pause even though no file was downloaded.
         # A first restore, any inventory change, or a business-G auto-bind still
         # takes the full rebuild path.
+        cached_restore = bool(payload.get("cached_restore"))
         should_rebuild_table = bool(
             auto_bind
-            or payload.get("cached_restore")
-            or inventory_changed
-            or previous_table_rows < len(self._server_file_inventory)
+            or (
+                self._server_inventory_table_enabled
+                and (
+                    cached_restore
+                    or inventory_changed
+                    or previous_table_rows < len(self._server_file_inventory)
+                )
+            )
         )
-        if should_rebuild_table:
+        if catalog_only and should_rebuild_table:
+            # Local AppData restore is revealed atomically; a manual server refresh
+            # keeps the current table visible while replacing its rows.
+            self._restore_cached_inventory_table_fast(atomic_reveal=cached_restore)
+        elif cached_restore:
+            self._restore_cached_inventory_table_fast(atomic_reveal=True)
+        elif should_rebuild_table:
             self._merge_server_catalog_rows()
             self._merge_server_file_inventory_rows()
 
@@ -2869,7 +4246,7 @@ class SiteProfilePage(BasePage):
             f"本次下载 {downloaded}",
         ]
         if self._server_file_inventory:
-            parts.append(f"表格显示服务器文件 {len(self._server_file_inventory)} 个")
+            parts.append(f"本地缓存服务器文件 {len(self._server_file_inventory)} 个")
         if added_names:
             parts.append(f"新增文件 {len(added_names)}")
         if changed:
@@ -2925,18 +4302,22 @@ class SiteProfilePage(BasePage):
         if matched:
             text += "。本次只同步服务器图元信息和本地缓存，不执行图元标准检查或纠正。"
         elif conflicts:
-            text += "。同名但内容不同的服务器 G 已保留在表格中，请在表格中查看同步状态。"
+            text += "。同名但内容不同的服务器 G 已记录到本地同步状态。"
         elif errors:
-            text += "。部分服务器 G 无法读取或解析，已保留在表格中并标记同步状态。"
+            text += "。部分服务器 G 无法读取或解析，已记录到本地同步状态。"
         elif unmatched:
-            text += "。服务器目录中未找到的文件未进入同步表。"
+            text += "。服务器目录中未找到的文件未进入本地同步缓存。"
         self.server_library_status.setText(text)
         if hasattr(self, "server_apply_button"):
             self.server_apply_button.setEnabled(False)
         self._refresh_standard_source_summary()
-        if should_rebuild_table:
-            self._fit_standard_table_columns()
-        else:
+        if should_rebuild_table and not cached_restore and not catalog_only:
+            self._apply_standard_table_filter()
+            self._apply_fast_inventory_column_widths()
+            self._refresh_standard_table_overview()
+        elif not cached_restore and not catalog_only:
+            self._refresh_standard_table_overview()
+        elif catalog_only and not should_rebuild_table:
             self._refresh_standard_table_overview()
         self._update_action_state()
 
@@ -3096,56 +4477,17 @@ class SiteProfilePage(BasePage):
     def _on_server_sync_finished(self) -> None:
         self._server_sync_worker = None
         self._update_action_state()
-        self._schedule_daily_server_sync()
+        # v2.18.176: server access is always operator-driven. A completed manual
+        # sync must not arm a later automatic SSH refresh.
         QTimer.singleShot(500, lambda: self.server_library_progress.setVisible(False) if self._server_sync_worker is None else None)
-
-    def _schedule_daily_server_sync(self) -> None:
-        """Schedule one daily remote refresh without loading the catalog at startup."""
-        if not hasattr(self, "server_standard_enabled") or not self.server_standard_enabled.isChecked():
-            self._server_library_timer.stop()
-            return
-        try:
-            cfg = self._server_library_config()
-            host = str(cfg.get("host", "")).strip()
-            root = str(cfg.get("root", self.server_symbol_root.text())).strip()
-            if not host or not root:
-                self._server_library_timer.stop()
-                return
-            age = RemoteSymbolLibraryService().cached_sync_age_seconds(host=host, root=root)
-        except Exception:
-            self._server_library_timer.stop()
-            return
-
-        # The first ever read is always explicit. Once a completed sync exists,
-        # the next automatic read is due 24 hours after that sync.
-        if age is None:
-            self._server_library_timer.stop()
-            return
-        remaining_ms = max(
-            60 * 1000,
-            int((self._daily_server_sync_interval_ms / 1000 - age) * 1000),
-        )
-        self._server_library_timer.start(remaining_ms)
-
-    def _run_daily_server_sync(self) -> None:
-        self._server_library_timer.stop()
-        if self._server_sync_worker is not None or self._scan_worker is not None or self._task_busy:
-            self._server_library_timer.start(60 * 1000)
-            return
-        self._start_server_symbol_sync(
-            background=True,
-            auto_bind=False,
-            compare_profile=False,
-        )
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt API naming
         self._refresh_global_connection_settings()
         super().showEvent(event)
-        self._schedule_daily_server_sync()
+        # Opening this page is strictly local-only. There are deliberately no
+        # automatic remote timers in this module.
 
     def hideEvent(self, event) -> None:  # noqa: N802 - Qt API naming
-        if hasattr(self, "_server_library_timer"):
-            self._server_library_timer.stop()
         super().hideEvent(event)
 
     @staticmethod
@@ -3589,9 +4931,10 @@ class SiteProfilePage(BasePage):
                 widget = self.standard_table.cellWidget(row, column)
                 if widget is not None:
                     widget.setEnabled(enabled)
+        editor_enabled = bool(enabled and self._is_admin_mode)
         self.standard_table.setEditTriggers(
             (QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.SelectedClicked)
-            if enabled else QAbstractItemView.EditTrigger.NoEditTriggers
+            if editor_enabled else QAbstractItemView.EditTrigger.NoEditTriggers
         )
         if hasattr(self, "upload_standard_button"):
             self.upload_standard_button.setEnabled(False)
@@ -3599,7 +4942,7 @@ class SiteProfilePage(BasePage):
             self.share_pair_checkbox.setEnabled(enabled and 0 <= self.standard_table.currentRow() < len(self._standard_specs))
         self.add_custom_button.setEnabled(False)
         self.delete_custom_button.setEnabled(False)
-        self.save_button.setEnabled(enabled)
+        self.save_button.setEnabled(enabled and self._is_admin_mode)
 
     def _current_active_profile(self) -> SiteSmartProfile | None:
         name = self._selected_profile_name()
@@ -3659,8 +5002,16 @@ class SiteProfilePage(BasePage):
         self._discovery_decisions.clear()
         self._server_catalog_ignored.clear()
         self._pending_standard_file_records = []
-        self._clear_custom_standard_rows()
-        self._merge_server_catalog_rows()
+        # The visible server inventory is an independent AppData cache, not a
+        # Profile editor.  Creating/initializing the legacy hidden Profile state must
+        # never wipe the operator's 200-row server-symbol table.  This also closes the
+        # no-profile startup race where the 0-ms profile initializer could erase a
+        # cache that had just been restored.
+        if self._server_inventory_table_enabled and self._server_file_inventory:
+            self._restore_cached_inventory_table_fast()
+        else:
+            self._clear_custom_standard_rows()
+            self._merge_server_catalog_rows()
         self.site_name.clear()
         self.profile_name.clear()
         self.lbs_combo.clear()
@@ -3832,9 +5183,16 @@ class SiteProfilePage(BasePage):
                     self._apply_discovery_to_rows()
                     self._merge_server_catalog_rows()
             else:
-                self._server_catalog_records.clear()
-                self._server_file_inventory.clear()
-                self.standard_table.setRowCount(0)
+                # Startup profile selection intentionally skips legacy Profile catalog
+                # loading.  The server-symbol inventory is an independent local AppData
+                # cache and may already have been restored a few lines earlier in the
+                # constructor.  Do NOT clear it here: _reload_profiles(...,
+                # defer_selection=True, load_catalog=False) completes on a 0-ms timer,
+                # so clearing these objects after the cache restore made the UI report
+                # "200 cached files restored" while the visible table was reset to 0.
+                # Keep the cached server catalog/table exactly as restored; only the
+                # legacy Profile catalog load is skipped by load_catalog=False.
+                pass
             self.site_name.setText(profile.site_name)
             self.profile_name.setText(profile.profile_name)
             # Legacy fixed-role fields are intentionally not rendered as special rows.
@@ -4531,13 +5889,51 @@ class SiteProfilePage(BasePage):
         processor = process_smart_profile_correction if correct else process_smart_profile_consistency
         self.task.start(lambda log, progress: processor(settings, log, progress), run_dir)
 
+    def _refresh_catalog_action_state(self) -> None:
+        """Update only controls used by the public catalog manager.
+
+        This deliberately performs zero Profile repository I/O.  The old generic
+        action-state updater reads global/version repository state
+        and may hydrate historical local snapshots; invoking it before/after every
+        server sync made a background SSH operation *look* as if it froze the GUI.
+        """
+        busy_scan = self._scan_worker is not None
+        busy_server = self._server_sync_worker is not None
+        busy_registry = self._classification_registry_worker is not None
+        busy_admin = self._admin_lease_worker is not None
+        busy_marker = self._classification_marker_save_worker is not None
+        busy = bool(busy_scan or busy_server or busy_registry or busy_admin or busy_marker or self._task_busy)
+        if hasattr(self, "server_sync_button"):
+            enabled = bool(self.server_standard_enabled.isChecked())
+            self.server_sync_button.setEnabled(enabled and not busy)
+            self.server_symbol_root.setEnabled(enabled and not busy_server)
+        if hasattr(self, "server_connection_button"):
+            self.server_connection_button.setEnabled(not busy_server)
+        for name in ("save_classification_button", "import_classification_button", "export_classification_button"):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setEnabled(not busy_registry and not busy_marker)
+        if hasattr(self, "central_sync_button"):
+            self.central_sync_button.setEnabled(not busy_registry and not busy_marker)
+        if hasattr(self, "central_publish_button"):
+            self.central_publish_button.setEnabled(
+                bool(self._is_admin_mode and not busy_registry and not busy_admin and not busy_marker)
+            )
+
     def _update_action_state(self) -> None:
+        # Normal Server Symbol Sync Management never needs the retired standard-
+        # version repository.  Keep all public actions responsive and local-only.
+        if not self._legacy_profile_state_loaded:
+            self._refresh_catalog_action_state()
+            return
         name, version, active = self._selected_profile_key()
         profile = self.service.load_profiles().get(name) if name else None
         busy_scan = self._scan_worker is not None
         busy_server = self._server_sync_worker is not None
         busy_profile = self._profile_operation_worker is not None
-        busy = busy_scan or busy_server or busy_profile or self._task_busy
+        busy_registry = self._classification_registry_worker is not None
+        busy_admin = self._admin_lease_worker is not None
+        busy = busy_scan or busy_server or busy_profile or busy_registry or busy_admin or self._task_busy
         global_name, global_version = self.service.get_global_profile_selection()
         global_profile = self.service.get_profile_version(global_name, global_version) if global_name and global_version is not None else None
         ready = bool(global_profile and global_profile.authoritative_ready)
@@ -4547,7 +5943,7 @@ class SiteProfilePage(BasePage):
             selected_profile = self.service.get_profile_version(name, version) if name and version is not None else None
             selected_ready = bool(selected_profile and selected_profile.authoritative_ready)
             already_global = bool(name == global_name and version == global_version)
-            self.set_global_button.setEnabled(bool(selected_profile and selected_ready and not already_global and not busy))
+            self.set_global_button.setEnabled(bool(self._is_admin_mode and selected_profile and selected_ready and not already_global and not busy))
             self.set_global_button.setText("当前全局版本" if already_global else "设为全局版本")
         # The server element tree is the only standard source. Local upload and
         # discovery actions remain as hidden compatibility objects only.
@@ -4576,7 +5972,7 @@ class SiteProfilePage(BasePage):
             not self._rescan_prepare_mode
             and ((not name) or bool(active and profile is not None and not locked))
         )
-        self.save_button.setEnabled(can_edit and not busy)
+        self.save_button.setEnabled(self._is_admin_mode and can_edit and not busy)
         self.save_button.setText("手动更新当前标准")
         self.add_custom_button.setEnabled(False)
         if hasattr(self, "confirm_server_button"):
@@ -4585,7 +5981,7 @@ class SiteProfilePage(BasePage):
         self.delete_custom_button.setEnabled(False)
         if hasattr(self, "share_pair_checkbox"):
             self.share_pair_checkbox.setEnabled(
-                can_edit and not busy and 0 <= selected_standard_row < len(self._standard_specs)
+                self._is_admin_mode and can_edit and not busy and 0 <= selected_standard_row < len(self._standard_specs)
             )
         if hasattr(self, "server_sync_button"):
             server_enabled = bool(self.server_standard_enabled.isChecked())
@@ -4594,7 +5990,7 @@ class SiteProfilePage(BasePage):
                 matched_records = self._last_server_sync_payload.get("matched_records", {})
                 has_server_snapshot = isinstance(matched_records, dict) and bool(matched_records)
                 self.server_apply_button.setEnabled(
-                    bool(server_enabled and has_server_snapshot and not locked and not busy)
+                    bool(self._is_admin_mode and server_enabled and has_server_snapshot and not locked and not busy)
                 )
             self.server_symbol_root.setEnabled(server_enabled and not busy_server)
             if hasattr(self, "server_connection_button"):
@@ -4611,9 +6007,9 @@ class SiteProfilePage(BasePage):
                     and any(Path(str(name)).name.casefold() in changed_keys and isinstance(record, dict) for name, record in matched_records.items())
                 )
                 self.server_new_version_button.setVisible(has_replacements)
-                self.server_new_version_button.setEnabled(has_replacements and not busy)
+                self.server_new_version_button.setEnabled(self._is_admin_mode and has_replacements and not busy)
         if hasattr(self, "rescan_new_version_button"):
-            can_start_fresh = bool(name and profile and active and not busy and not self._rescan_draft_mode)
+            can_start_fresh = bool(self._is_admin_mode and name and profile and active and not busy and not self._rescan_draft_mode)
             self.rescan_new_version_button.setEnabled(can_start_fresh)
             self.rescan_new_version_button.setText(
                 f"开始重新扫描 V{self._rescan_draft_target_version or '?'} 草稿"
@@ -4622,7 +6018,7 @@ class SiteProfilePage(BasePage):
             self.cancel_rescan_draft_button.setVisible(bool(self._rescan_prepare_mode or self._rescan_draft_mode))
             self.cancel_rescan_draft_button.setEnabled(not busy)
         if hasattr(self, "lock_standard_button"):
-            self.lock_standard_button.setEnabled(bool(name and profile and active and not busy and not rescan_working))
+            self.lock_standard_button.setEnabled(bool(self._is_admin_mode and name and profile and active and not busy and not rescan_working))
             self.lock_standard_button.setText("解锁当前版本" if locked else "锁定当前版本")
         current_profile = self.service.load_profiles().get(name) if name else None
         current_locked = bool(current_profile.locked) if current_profile is not None else False
@@ -4632,10 +6028,20 @@ class SiteProfilePage(BasePage):
             self.verify_version_action.setEnabled(has_saved_version and not busy)
             self.export_version_action.setEnabled(has_saved_version and not busy)
             self.export_version_zip_action.setEnabled(has_saved_version and not busy)
-        self.restore_action.setEnabled(bool(name and profile and not active and not busy and not current_locked))
-        self.delete_action.setEnabled(bool(name and profile and active and not busy and not locked))
-        self.new_action.setEnabled(not busy)
+        self.restore_action.setEnabled(bool(self._is_admin_mode and name and profile and not active and not busy and not current_locked))
+        self.delete_history_action.setEnabled(bool(self._is_admin_mode and has_saved_version and not busy))
+        self.delete_action.setEnabled(bool(self._is_admin_mode and name and profile and active and not busy and not locked))
+        self.new_action.setEnabled(self._is_admin_mode and not busy)
+        if hasattr(self, "save_classification_button"):
+            self.save_classification_button.setEnabled(not busy)
+        if hasattr(self, "import_classification_button"):
+            self.import_classification_button.setEnabled(not busy)
+        if hasattr(self, "central_sync_button"):
+            self.central_sync_button.setEnabled(not busy)
+        if hasattr(self, "central_publish_button"):
+            self.central_publish_button.setEnabled(self._is_admin_mode and not busy)
         self._refresh_standard_table_overview()
+        self._refresh_access_controls()
 
     def _task_busy_changed(self, busy: bool) -> None:
         self._task_busy = bool(busy)
@@ -4714,7 +6120,12 @@ class SiteProfilePage(BasePage):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve())))
 
     def save_state(self) -> None:
-        self.source.persist_all_text()
+        # Public catalog-manager instances deliberately do not construct the retired
+        # business-G source/task widgets.  Local classification edits are persisted
+        # independently by their debounce worker.
+        if hasattr(self, "source"):
+            self.source.persist_all_text()
         if hasattr(self, "discovery_source"):
             self.discovery_source.persist_all_text()
-        self.output_path.persist_current_text()
+        if hasattr(self, "output_path"):
+            self.output_path.persist_current_text()

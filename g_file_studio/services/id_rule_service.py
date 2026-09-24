@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
-from platformdirs import user_config_dir
+from g_file_studio.services.paths import app_config_root
 
 
 @dataclass(frozen=True)
@@ -83,11 +83,8 @@ class IdRuleService:
     """持久化元素 ID 模板。只管理 ``id``，完全不处理 Alias。"""
 
     def __init__(self, json_path: str | Path | None = None) -> None:
-        base = Path(user_config_dir("GFileStudio", "NARI")) / "Config"
+        base = app_config_root()
         self.json_path = Path(json_path) if json_path is not None else base / "id_rules.json"
-        self.json_path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.json_path.exists():
-            self.save_rules(DEFAULT_RULES)
 
     def load_rules(self) -> dict[str, IdRule]:
         if not self.json_path.exists():
@@ -155,8 +152,9 @@ class IdRuleService:
                     result[tag] = default
                     changed = True
 
-        if changed:
-            self.save_rules(result.values(), deleted_tags=deleted_tags)
+        # Normal reads are side-effect free.  Migrations/default completion are
+        # applied in memory only; the file changes only after an explicit user save
+        # or explicit server-standard scan/confirmation.
         return result
 
     def _deleted_tags(self) -> set[str]:
@@ -179,6 +177,75 @@ class IdRuleService:
         snapshot = data.get("server_snapshot")
         return dict(snapshot) if isinstance(snapshot, dict) else {}
 
+
+    @staticmethod
+    def _rule_payload(rule: IdRule) -> dict[str, object]:
+        """Serialize one ID rule including a concrete legal example for humans/tools."""
+        payload: dict[str, object] = dict(asdict(rule))
+        try:
+            payload["valid_example"] = rule.build(1)
+        except ValueError:
+            payload["valid_example"] = ""
+        return payload
+
+    def export_payload(self) -> dict[str, object]:
+        """Return the effective local rule set for explicit central publishing."""
+        payload: dict[str, object] = {
+            "version": 7,
+            "allocation": "per_type_full_id_increment",
+            "match": "prefix_and_total_length",
+            "deleted_tags": sorted(self._deleted_tags()),
+            "rules": [self._rule_payload(rule) for rule in sorted(self.load_rules().values(), key=lambda r: r.tag.lower())],
+        }
+        snapshot = self.load_server_snapshot()
+        if snapshot:
+            payload["server_snapshot"] = snapshot
+        return payload
+
+    def replace_from_payload(self, payload: object) -> dict[str, int]:
+        """Replace the local rule cache from an explicitly downloaded central payload."""
+        if not isinstance(payload, dict):
+            raise ValueError("中央 ID 规则必须是 JSON 对象。")
+        raw_rules = payload.get("rules")
+        if not isinstance(raw_rules, list):
+            raise ValueError("中央 ID 规则缺少 rules 数组。")
+
+        rules: list[IdRule] = []
+        for raw in raw_rules:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                rule = IdRule(
+                    tag=str(raw.get("tag", "") or "").strip(),
+                    prefix=str(raw.get("prefix", "") or "").strip(),
+                    total_length=int(raw.get("total_length", 0) or 0),
+                    enabled=bool(raw.get("enabled", True)),
+                    verified=bool(raw.get("verified", True)),
+                    note=str(raw.get("note", "") or ""),
+                )
+            except (TypeError, ValueError):
+                continue
+            if rule.tag and rule.prefix.isdigit() and rule.total_length > len(rule.prefix):
+                rules.append(rule)
+
+        if not rules:
+            raise ValueError("中央 ID 规则没有有效规则。")
+        deleted_tags = {
+            str(tag).strip()
+            for tag in payload.get("deleted_tags", [])
+            if str(tag).strip()
+        }
+        server_snapshot = payload.get("server_snapshot")
+        self.save_rules(
+            rules,
+            deleted_tags=deleted_tags,
+            server_snapshot=dict(server_snapshot) if isinstance(server_snapshot, dict) else {},
+        )
+        return {
+            "rules": len(rules),
+            "deleted_tags": len(deleted_tags),
+        }
+
     def save_rules(
         self,
         rules: Iterable[IdRule],
@@ -189,15 +256,16 @@ class IdRuleService:
         ordered = sorted(rules, key=lambda r: r.tag.lower())
         deleted = self._deleted_tags() if deleted_tags is None else set(deleted_tags)
         payload = {
-            "version": 6,
+            "version": 7,
             "allocation": "per_type_full_id_increment",
             "match": "prefix_and_total_length",
             "deleted_tags": sorted(deleted),
-            "rules": [asdict(rule) for rule in ordered],
+            "rules": [self._rule_payload(rule) for rule in ordered],
         }
         snapshot = server_snapshot if server_snapshot is not None else self.load_server_snapshot()
         if snapshot:
             payload["server_snapshot"] = snapshot
+        self.json_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.json_path.with_suffix(self.json_path.suffix + ".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self.json_path)

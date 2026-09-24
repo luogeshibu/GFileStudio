@@ -45,5 +45,7 @@ def test_legacy_saved_fields_are_treated_as_user_config(tmp_path):
 
 
 def test_release_version_21888():
-    assert '__version__ = "2.18.148"' in Path("g_file_studio/__init__.py").read_text(encoding="utf-8")
-    assert 'version = "2.18.148"' in Path("pyproject.toml").read_text(encoding="utf-8")
+    init_text = Path("g_file_studio/__init__.py").read_text(encoding="utf-8")
+    project_text = Path("pyproject.toml").read_text(encoding="utf-8")
+    version = init_text.split('"')[1]
+    assert f'version = "{version}"' in project_text

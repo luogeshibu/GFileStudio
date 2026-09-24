@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
+from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShowEvent
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QToolButton,
     QSizePolicy,
@@ -20,20 +21,15 @@ from PySide6.QtWidgets import (
 
 from g_file_studio import __version__
 from g_file_studio.services.user_settings_service import UserSettingsService
-from g_file_studio.services.run_history import cleanup_expired_runs
 from g_file_studio.i18n import LANG_EN, LANG_ZH, LanguageManager
-from g_file_studio.ui.pages import BasicPage, FramePage, HelpPage, IdPage, MarginPage, MergePage, RmuPage, SmallElementPage
-from g_file_studio.ui.pages.poke_page import PokePage
-from g_file_studio.ui.pages.database_page import DatabasePage
-from g_file_studio.ui.pages.site_profile_page import SiteProfilePage
-from g_file_studio.ui.pages.jeddah_batch_page import JeddahBatchPage
-from g_file_studio.ui.pages.orthogonalize_page import OrthogonalizePage
 from g_file_studio.ui.theme import build_app_style
-from g_file_studio.ui.widgets import WheelSafeComboBox
-from g_file_studio.ui.widgets.remote_g_source import RemoteGSourceWidget
+from g_file_studio.ui.widgets.wheel_safe_combo_box import WheelSafeComboBox
 
 
 class MainWindow(QMainWindow):
+    PAGE_COUNT = 13
+    HELP_PAGE_INDEX = 12
+
     def __init__(
         self,
         user_settings: UserSettingsService,
@@ -41,8 +37,18 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.user_settings = user_settings
         self.language_manager = LanguageManager(user_settings, self)
-        cleanup_expired_runs()
-        self._clear_legacy_managed_output_paths()
+        # v2.18.200 startup contract:
+        # - construct and paint the lightweight window shell first;
+        # - create ONLY the remembered landing page during startup;
+        # - every other business page is true lazy-load and is constructed only when
+        #   the operator opens it; this prevents hidden modules from freezing the GUI;
+        # - each page restores only its own LOCAL AppData cache when it is opened;
+        # - never contact SSH, Oracle or the central configuration repository unless
+        #   the operator explicitly invokes the corresponding action.
+        self._legacy_paths_cleared = False
+        self.pages: list[QWidget | None] = [None] * self.PAGE_COUNT
+        self.page_hosts: list[QWidget] = []
+
         self.setWindowTitle("G File Studio · 吉达现场")
         self.resize(1280, 860)
         self.setMinimumSize(1040, 720)
@@ -56,71 +62,155 @@ class MainWindow(QMainWindow):
         sidebar = self._build_sidebar()
         self.stack = QStackedWidget()
         self.stack.setObjectName("contentRoot")
-        self.database_page = DatabasePage(self.user_settings)
-        self.site_profile_page = SiteProfilePage(self.user_settings)
-        self.jeddah_batch_page = JeddahBatchPage(self.user_settings)
-        self.orthogonalize_page = OrthogonalizePage(self.user_settings)
-        self.pages = [
-            self.database_page,
-            SmallElementPage(self.user_settings),
-            IdPage(self.user_settings),
-            self.site_profile_page,
-            RmuPage(self.user_settings),
-            PokePage(self.user_settings),
-            BasicPage(self.user_settings),
-            MergePage(self.user_settings),
-            MarginPage(self.user_settings),
-            FramePage(self.user_settings),
-            self.jeddah_batch_page,
-            self.orthogonalize_page,
-            HelpPage(),
-        ]
-        # Presentation-only rename: keep the protected BasicPage implementation and
-        # all settings/processor keys unchanged while exposing the clearer module name.
-        basic_title = self.pages[6].findChild(QLabel, "pageTitle")
-        if basic_title is not None:
-            basic_title.setText("通用基础处理")
-        # Symbol standards are shared state.  Saving/restoring/deleting an ACTIVE
-        # standard must update the already-created Jeddah page immediately instead
-        # of leaving the profile combo with startup-time cached contents.
-        self.site_profile_page.activeProfileChanged.connect(self.jeddah_batch_page.refresh_profiles)
-        self.site_profile_page.orthogonalizeRequested.connect(lambda: self._select_page(11))
-        self.site_profile_page.connectionSettingsRequested.connect(lambda: self._select_page(0))
-        for page in self.pages:
-            self.stack.addWidget(page)
-        # All business-page SSH sources consume the same global connection environment.
-        # Their compact “连接设置” buttons jump to page 0; environment changes refresh
-        # already-created widgets without duplicating credentials across modules.
-        remote_widgets: list[RemoteGSourceWidget] = []
-        for page in self.pages:
-            remote_widgets.extend(page.findChildren(RemoteGSourceWidget))
-        for remote_widget in remote_widgets:
-            remote_widget.connectionSettingsRequested.connect(lambda: self._select_page(0))
-            self.database_page.environmentChanged.connect(lambda _uid, w=remote_widget: w.refresh_shared_settings())
-        self.database_page.environmentChanged.connect(lambda _uid: self.site_profile_page._refresh_global_connection_settings())
+        for index in range(self.PAGE_COUNT):
+            host = QWidget()
+            host.setObjectName(f"lazyPageHost{index}")
+            layout = QVBoxLayout(host)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+            loading = QLabel("正在载入模块…")
+            loading.setObjectName("mutedText")
+            loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(loading, 1)
+            self.page_hosts.append(host)
+            self.stack.addWidget(host)
 
+        self.config_access_button.clicked.connect(self._show_global_admin_access)
+        self._update_global_admin_access({"mode": "ordinary", "button_text": "配置权限：普通模式"})
         self.nav.currentRowChanged.connect(self._change_page)
-        # Restore the last business module the operator actually used. Utility pages
-        # such as Connections/Help do not overwrite this preference; on first launch
-        # 服务器图元同步管理 remains the safe default business landing page.
-        self._restore_last_business_page()
 
         root.addWidget(sidebar)
         root.addWidget(self.stack, 1)
         self.setCentralWidget(central)
         self.setStyleSheet(build_app_style())
+
         from PySide6.QtWidgets import QApplication
         qt_app = QApplication.instance()
         if qt_app is not None:
             qt_app.installEventFilter(self.language_manager)
         self.language_manager.languageChanged.connect(self._apply_language)
-        # English runtime translation is event-driven. Do not periodically walk the
-        # entire application tree: pages may contain thousands of table cells, and a
-        # 300 ms full-tree refresh causes visible lag when switching modules.
-        self.statusBar().showMessage("NARI 国际业务部 · 吉达现场 · G 文件处理工具已就绪。鼠标停留在控件上可查看提示，按 F1 打开帮助中心。")
+        self.statusBar().showMessage(
+            "NARI 国际业务部 · 吉达现场 · G 文件处理工具已就绪。"
+            "启动阶段只读取本机轻量设置；远程连接与中央配置仅在手动操作时访问。"
+        )
         self._apply_language(self.language_manager.language)
         self._install_help_shortcut()
 
+        # MainWindow construction stops at the lightweight shell.  After the native
+        # window gets its first paint, only the remembered landing page is created.
+        # Hidden pages are never pre-created in the background: constructing a heavy
+        # hidden page on the GUI thread can still starve Windows painting and produce
+        # an all-white / "Not Responding" window even though no network I/O occurs.
+        self._startup_target_page = self._resolved_last_business_page_index()
+        self._startup_pages_initialized = False
+        self._startup_initialization_scheduled = False
+        self._startup_loading = True
+        # True lazy loading: startup owns exactly one page construction.  All other
+        # modules are created by _select_page() on first use.
+        self._startup_page_order = [self._startup_target_page]
+        self._startup_page_cursor = 0
+
+        self.nav.setCurrentRow(-1)
+        self.connection_button.setChecked(False)
+        self.help_button.setChecked(False)
+        self.stack.setCurrentIndex(0)
+
+        first_layout = self.page_hosts[0].layout()
+        if first_layout is not None and first_layout.count():
+            first_widget = first_layout.itemAt(0).widget()
+            if isinstance(first_widget, QLabel):
+                first_widget.setText("正在加载本地页面…")
+        self.statusBar().showMessage(
+            "正在打开本地页面；其他模块将在首次进入时按需加载，不访问 SSH、Oracle 或中央配置。"
+        )
+
+
+    def _resolved_last_business_page_index(self) -> int:
+        """Resolve the locally remembered landing page without any remote access."""
+        page_id = self.user_settings.get_value(self.LAST_BUSINESS_PAGE_KEY, "").strip()
+        return next(
+            (index for index, stable_id in self.BUSINESS_PAGE_IDS.items() if stable_id == page_id),
+            3,
+        )
+
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802 - Qt API
+        """Render the native shell first, then create only the remembered page."""
+        super().showEvent(event)
+        if self._startup_pages_initialized or self._startup_initialization_scheduled:
+            return
+        self._startup_initialization_scheduled = True
+        # Give Windows one full native paint cycle before the first business page
+        # is constructed.  A short 150 ms delay is imperceptible to the operator but
+        # prevents a large QWidget tree from starving the very first WM_PAINT.
+        QTimer.singleShot(150, self._load_next_startup_page)
+
+    def _load_next_startup_page(self) -> None:
+        """Create the remembered landing page after the native shell has painted.
+
+        Qt widgets must be constructed on the GUI thread.  v2.18.200 deliberately
+        does not preload hidden modules: they are constructed only when selected.
+        """
+        if self._startup_page_cursor >= len(self._startup_page_order):
+            self._finish_startup_page_loading()
+            return
+
+        page_index = self._startup_page_order[self._startup_page_cursor]
+        self.statusBar().showMessage(
+            "正在载入当前模块的本地状态；不会访问中央服务器"
+        )
+
+        # Startup page construction is read-only for persistent local settings.
+        self.user_settings.set_writes_enabled(False)
+        try:
+            try:
+                page = self._ensure_page(page_index)
+            except Exception as exc:
+                host = self.page_hosts[page_index]
+                layout = host.layout()
+                if layout is not None:
+                    while layout.count():
+                        item = layout.takeAt(0)
+                        widget = item.widget()
+                        if widget is not None:
+                            widget.deleteLater()
+                    label = QLabel(
+                        f"模块加载失败（页面 {page_index}）\n\n{type(exc).__name__}: {exc}"
+                    )
+                    label.setObjectName("mutedText")
+                    label.setWordWrap(True)
+                    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    layout.addWidget(label, 1)
+                page = None
+        finally:
+            self.user_settings.set_writes_enabled(True)
+
+        # Make the remembered landing page usable as soon as it exists. Remaining
+        # pages continue loading automatically in the background of the event loop.
+        if page_index == self._startup_target_page and page is not None:
+            self._select_page(page_index)
+
+        self._startup_page_cursor += 1
+        QTimer.singleShot(0, self._load_next_startup_page)
+
+    def _finish_startup_page_loading(self) -> None:
+        self._startup_pages_initialized = True
+        self._startup_loading = False
+
+        # If the target failed to load, fall back to the first available business page.
+        if self.pages[self._startup_target_page] is None:
+            fallback = next(
+                (index for index in self.BUSINESS_PAGE_IDS if self.pages[index] is not None),
+                0,
+            )
+            self._select_page(fallback)
+
+        # Server Symbol Sync Management restores its LOCAL AppData cache only after
+        # the page has painted; JSON loading runs in a worker and table rows are
+        # hydrated in small batches. No network access is part of startup.
+
+        self.statusBar().showMessage(
+            "当前模块已就绪；其他模块首次进入时加载本机缓存。中央配置仅在手工同步/发布时访问。"
+        )
 
     def _clear_legacy_managed_output_paths(self) -> None:
         """清除旧版本保存的 workspace 托管输出路径。
@@ -155,9 +245,9 @@ class MainWindow(QMainWindow):
             "orthogonalize/output_directory",
             "recent_paths/orthogonalize/output_directory",
         )
-        for key in managed_keys:
-            if self.user_settings.get_value(key).strip():
-                self.user_settings.clear(key)
+        # These are disposable workspace output locations, not persistent user
+        # configuration. Remove legacy values with a single AppData INI write.
+        self.user_settings.clear_many(managed_keys)
 
     NAV_PAGE_ROLE = int(Qt.ItemDataRole.UserRole) + 20
     NAV_SECTION_ROLE = int(Qt.ItemDataRole.UserRole) + 21
@@ -176,17 +266,163 @@ class MainWindow(QMainWindow):
         11: "orthogonalize",
     }
 
-    def _restore_last_business_page(self) -> None:
-        page_id = self.user_settings.get_value(self.LAST_BUSINESS_PAGE_KEY).strip()
-        page_index = next(
-            (index for index, stable_id in self.BUSINESS_PAGE_IDS.items() if stable_id == page_id),
-            3,
-        )
-        if page_index == 3 and page_id not in self.BUSINESS_PAGE_IDS.values():
-            # First launch / stale setting: 服务器图元同步管理 remains the default.
-            self._select_page(3)
-            return
-        self._select_page(page_index)
+    def _create_page(self, page_index: int) -> QWidget:
+        """Import and construct one page.
+
+        During normal startup this is called automatically for every page after the
+        shell is visible. Imports stay local so MainWindow construction itself remains
+        lightweight. No remote connection is opened here.
+        """
+        if page_index == 0:
+            from g_file_studio.ui.pages.database_page import DatabasePage
+            return DatabasePage(self.user_settings)
+        if page_index == 1:
+            from g_file_studio.ui.pages.small_element_page import SmallElementPage
+            return SmallElementPage(self.user_settings)
+        if page_index == 2:
+            from g_file_studio.ui.pages.id_page import IdPage
+            return IdPage(self.user_settings)
+        if page_index == 3:
+            from g_file_studio.ui.pages.site_profile_page import SiteProfilePage
+            # Construct the page first and let the native window paint before the
+            # cached 200-row symbol inventory is rendered.  The deferred restore is
+            # still AppData-only and never opens SSH/Oracle/central configuration.
+            return SiteProfilePage(self.user_settings, defer_catalog_restore=True)
+        if page_index == 4:
+            from g_file_studio.ui.pages.rmu_page import RmuPage
+            return RmuPage(self.user_settings)
+        if page_index == 5:
+            from g_file_studio.ui.pages.poke_page import PokePage
+            return PokePage(self.user_settings)
+        if page_index == 6:
+            from g_file_studio.ui.pages.basic_page import BasicPage
+            return BasicPage(self.user_settings)
+        if page_index == 7:
+            from g_file_studio.ui.pages.merge_page import MergePage
+            return MergePage(self.user_settings)
+        if page_index == 8:
+            from g_file_studio.ui.pages.margin_page import MarginPage
+            return MarginPage(self.user_settings)
+        if page_index == 9:
+            from g_file_studio.ui.pages.frame_page import FramePage
+            return FramePage(self.user_settings)
+        if page_index == 10:
+            from g_file_studio.ui.pages.jeddah_batch_page import JeddahBatchPage
+            return JeddahBatchPage(self.user_settings)
+        if page_index == 11:
+            from g_file_studio.ui.pages.orthogonalize_page import OrthogonalizePage
+            return OrthogonalizePage(self.user_settings)
+        if page_index == self.HELP_PAGE_INDEX:
+            from g_file_studio.ui.pages.help_page import HelpPage
+            return HelpPage()
+        raise IndexError(f"Unknown page index: {page_index}")
+
+    def _ensure_page(self, page_index: int) -> QWidget:
+        page = self.pages[page_index]
+        if page is not None:
+            return page
+        if not self._legacy_paths_cleared and page_index not in {0, self.HELP_PAGE_INDEX}:
+            self._clear_legacy_managed_output_paths()
+            self._legacy_paths_cleared = True
+        host = self.page_hosts[page_index]
+        layout = host.layout()
+
+        # v2.18.203: keep the already-painted lazy placeholder alive while the
+        # requested page is being constructed.  Older builds removed the placeholder
+        # first, leaving an empty native child window for one paint cycle; on Windows
+        # this looked like a white/blank rectangle flashing before the real page (and
+        # was especially noticeable just before the server-symbol table appeared).
+        # Construct first, then swap the widgets atomically on the GUI thread.
+        page = self._create_page(page_index)
+        self.pages[page_index] = page
+        if layout is not None:
+            old_widgets: list[QWidget] = []
+            while layout.count():
+                item = layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    old_widgets.append(widget)
+            layout.addWidget(page)
+            for widget in old_widgets:
+                widget.hide()
+                widget.deleteLater()
+        self._wire_page(page_index, page)
+        if page_index == 6:
+            basic_title = page.findChild(QLabel, "pageTitle")
+            if basic_title is not None:
+                basic_title.setText("通用基础处理")
+        # Chinese is the canonical source language.  Walking every child widget and
+        # installing table-model translation hooks while a heavy page is being
+        # constructed is pure overhead in Chinese mode and used to noticeably delay
+        # first paint.  If the operator later switches to English, _apply_language()
+        # translates all already-created pages at that moment and captures the same
+        # source strings safely.
+        if self.language_manager.is_english:
+            self.language_manager.translate_widget_tree(page)
+        return page
+
+    def _wire_page(self, page_index: int, page: QWidget) -> None:
+        """Connect shared-state signals only among pages that already exist."""
+        from g_file_studio.ui.widgets.remote_g_source import RemoteGSourceWidget
+
+        if page_index == 0:
+            self.database_page = page
+        elif page_index == 3:
+            self.site_profile_page = page
+            self.site_profile_page.adminAccessChanged.connect(self._update_global_admin_access)
+            self.site_profile_page.orthogonalizeRequested.connect(lambda: self._select_page(11))
+            self.site_profile_page.connectionSettingsRequested.connect(lambda: self._select_page(0))
+            self._update_global_admin_access(self.site_profile_page.admin_access_state())
+        elif page_index == 10:
+            self.jeddah_batch_page = page
+        elif page_index == 11:
+            self.orthogonalize_page = page
+
+        # Compact SSH widgets only open the local connection-settings page. They
+        # never test the server while a page is being created.
+        for remote_widget in page.findChildren(RemoteGSourceWidget):
+            remote_widget.connectionSettingsRequested.connect(lambda: self._select_page(0))
+
+        database_page = self.pages[0]
+        site_profile_page = self.pages[3]
+        jeddah_page = self.pages[10]
+        admin_state = site_profile_page.admin_access_state() if site_profile_page is not None else {}
+        set_admin_mode = getattr(page, "set_admin_mode", None)
+        if callable(set_admin_mode):
+            set_admin_mode(
+                bool(admin_state.get("is_admin", False)),
+                int(admin_state.get("admin_epoch", 0) or 0) or None,
+            )
+        if database_page is not None:
+            if page_index == 0:
+                # The connection page may be created after business pages. Wire all
+                # already-created SSH widgets at that moment.
+                existing_remote_widgets = []
+                for existing_page in self.pages:
+                    if existing_page is None or existing_page is database_page:
+                        continue
+                    existing_remote_widgets.extend(existing_page.findChildren(RemoteGSourceWidget))
+                for remote_widget in existing_remote_widgets:
+                    database_page.environmentChanged.connect(
+                        lambda _uid, w=remote_widget: w.refresh_shared_settings()
+                    )
+            else:
+                for remote_widget in page.findChildren(RemoteGSourceWidget):
+                    database_page.environmentChanged.connect(
+                        lambda _uid, w=remote_widget: w.refresh_shared_settings()
+                    )
+        if database_page is not None and site_profile_page is not None:
+            # The signal may be wired more than once as lazy pages appear. Qt safely
+            # calls duplicate slots, but avoid duplication with a per-window flag.
+            if not getattr(self, "_database_site_profile_wired", False):
+                database_page.environmentChanged.connect(
+                    lambda _uid: site_profile_page._refresh_global_connection_settings()
+                )
+                self._database_site_profile_wired = True
+        if site_profile_page is not None and jeddah_page is not None:
+            if not getattr(self, "_site_jeddah_wired", False):
+                site_profile_page.activeProfileChanged.connect(jeddah_page.refresh_profiles)
+                self._site_jeddah_wired = True
 
     def _remember_business_page(self, page_index: int) -> None:
         stable_id = self.BUSINESS_PAGE_IDS.get(int(page_index))
@@ -235,6 +471,21 @@ class MainWindow(QMainWindow):
         grid_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         grid_badge.setFixedHeight(32)
         grid_badge.setStyleSheet("font-size: 11px; font-weight: 700;")
+
+        # v2.18.171: central configuration administrator is a global application
+        # permission, so its entry belongs in the persistent sidebar rather than in
+        # the server-symbol page. The page still owns the mature SSH/admin workflow;
+        # this button is only the global presentation/control surface.
+        self.config_access_button = QPushButton("配置权限：普通客户端")
+        self.config_access_button.setObjectName("sidebarConfigAccessButton")
+        self.config_access_button.setFixedHeight(36)
+        self.config_access_button.setToolTip("查看或切换中央配置管理员权限")
+        self.config_access_button.setStyleSheet(
+            "QPushButton { background: #0e2a34; color: #d4e2e2; border: 1px solid #1c4a56; "
+            "border-radius: 8px; padding: 8px 12px; text-align: left; font-size: 12px; font-weight: 700; }"
+            "QPushButton:hover { background: #123b45; color: #ffffff; border-color: #2f736f; }"
+            "QPushButton:disabled { color: #8aa3a3; background: #102932; border-color: #24434a; }"
+        )
 
         self.nav = QListWidget()
         self.nav.setObjectName("navigation")
@@ -359,8 +610,8 @@ class MainWindow(QMainWindow):
             "QPushButton:hover { background: #123440; color: #ffffff; border-left-color: #2fa889; }"
             "QPushButton:checked { background: #0b7a5a; color: #ffffff; border-left-color: #84e2c3; }"
         )
-        self.connection_button.setToolTip("统一管理当前环境的只读文件服务器、资源目录和 Oracle 数据库连接")
-        self.connection_button.setStatusTip("统一管理当前环境的只读文件服务器、资源目录和 Oracle 数据库连接")
+        self.connection_button.setToolTip("统一管理本机共享的只读文件服务器、资源目录和 Oracle 数据库连接")
+        self.connection_button.setStatusTip("统一管理本机共享的只读文件服务器、资源目录和 Oracle 数据库连接")
         self.connection_button.clicked.connect(lambda: self._select_page(0))
 
         self.help_button = QPushButton("帮助中心")
@@ -398,6 +649,8 @@ class MainWindow(QMainWindow):
         side_layout.addLayout(brand_row)
         side_layout.addSpacing(14)
         side_layout.addWidget(grid_badge)
+        side_layout.addSpacing(8)
+        side_layout.addWidget(self.config_access_button)
         side_layout.addSpacing(10)
         side_layout.addWidget(self.nav, 1)
         side_layout.addSpacing(8)
@@ -411,6 +664,84 @@ class MainWindow(QMainWindow):
         side_layout.addSpacing(10)
         side_layout.addWidget(version)
         return sidebar
+
+    def _update_global_admin_access(self, state: object) -> None:
+        if not hasattr(self, "config_access_button"):
+            return
+        data = state if isinstance(state, dict) else {}
+        mode = str(data.get("mode", "ordinary"))
+        text = str(data.get("button_text", "配置权限：普通模式"))
+        owner = str(data.get("owner_text", "未占用"))
+        version = int(data.get("config_version", 0) or 0)
+        busy = bool(data.get("busy", False))
+        self.config_access_button.setText(text)
+        if mode == "admin":
+            tip = f"本机持有中央配置管理员权限。当前管理员：{owner}"
+        else:
+            tip = (
+                f"当前为普通客户端。当前已知 Admin：{owner}。"
+                "本机可修改保存本地配置并手动同步中央配置；发布中央仓库需要抢占 Admin。"
+            )
+        if version > 0:
+            tip += f" 中央配置版本：V{version}。"
+        self.config_access_button.setToolTip(tip)
+        self.config_access_button.setStatusTip(tip)
+        self.config_access_button.setEnabled(not busy)
+        admin_epoch = int(data.get("admin_epoch", 0) or 0) or None
+        for page in getattr(self, "pages", []):
+            if page is None:
+                continue
+            setter = getattr(page, "set_admin_mode", None)
+            if callable(setter):
+                setter(bool(data.get("is_admin", False)), admin_epoch)
+        self._adjust_sidebar_width()
+
+    def _show_global_admin_access(self) -> None:
+        # Explicit operator action only. Startup remains strictly local-only.
+        site_profile_page = self._ensure_page(3)
+        self.site_profile_page = site_profile_page
+        self.site_profile_page._refresh_admin_lease_status()
+        state = self.site_profile_page.admin_access_state()
+        mode = str(state.get("mode", "ordinary"))
+        owner = str(state.get("owner_text", "未占用"))
+        version = int(state.get("config_version", 0) or 0)
+        version_text = f"V{version}" if version > 0 else "尚未发布"
+
+        if mode == "admin":
+            box = QMessageBox(self)
+            box.setWindowTitle("中央配置权限")
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setText(
+                f"当前模式：Admin\n当前 Admin：{owner}\n中央配置版本：{version_text}\n\n"
+                "本机可修改并保存本地配置，也可以发布到中央仓库。后台仅每 10 秒检查一次很小的 instance.json，"
+                "不会自动同步数据库、文件服务器、ID 规则或图元分类配置。"
+            )
+            release_button = box.addButton("释放 Admin 权限", QMessageBox.ButtonRole.DestructiveRole)
+            box.addButton("关闭", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is release_button:
+                if QMessageBox.question(
+                    self,
+                    "释放 Admin 权限",
+                    "释放后本机不再拥有中央发布权限，其他机器可以重新抢占 Admin。是否继续？",
+                ) == QMessageBox.StandardButton.Yes:
+                    self.site_profile_page._release_admin_mode()
+            return
+
+        box = QMessageBox(self)
+        box.setWindowTitle("中央配置权限")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(
+            f"当前模式：普通客户端\n当前已知 Admin：{owner}\n中央配置版本：{version_text}\n\n"
+            "普通客户端可以修改并保存本机配置，也可以手动从中央仓库同步配置；只有上传/发布到中央仓库需要 Admin。"
+            "任何机器都可以手动抢占 Admin。\n\n"
+            "抢占只变更 Admin 所有权，不会自动同步或发布任何业务配置。"
+        )
+        takeover_button = box.addButton("抢占 Admin 权限", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("关闭", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is takeover_button:
+            self.site_profile_page._toggle_admin_mode()
 
     def _set_navigation_section_expanded(self, section_key: str, expanded: bool) -> None:
         button = self._nav_section_buttons.get(section_key)
@@ -427,26 +758,26 @@ class MainWindow(QMainWindow):
         )
 
     def _select_page(self, page_index: int) -> None:
-        if not hasattr(self, "pages"):
+        if not (0 <= page_index < self.PAGE_COUNT):
             return
-        help_index = next((i for i, page in enumerate(self.pages) if isinstance(page, HelpPage)), -1)
+        page = self._ensure_page(page_index)
         if page_index == 0:
             self.nav.setCurrentRow(-1)
             self.stack.setCurrentIndex(0)
             self.connection_button.setChecked(True)
             self.help_button.setChecked(False)
-            page = self.pages[0]
             on_page_activated = getattr(page, "on_page_activated", None)
             if callable(on_page_activated):
                 on_page_activated()
-            self.statusBar().showMessage(self.connection_button.statusTip() or self.connection_button.toolTip())
+            self.statusBar().showMessage(
+                self.connection_button.statusTip() or self.connection_button.toolTip()
+            )
             return
-        if page_index == help_index:
+        if page_index == self.HELP_PAGE_INDEX:
             self.nav.setCurrentRow(-1)
-            self.stack.setCurrentIndex(help_index)
+            self.stack.setCurrentIndex(self.HELP_PAGE_INDEX)
             self.connection_button.setChecked(False)
             self.help_button.setChecked(True)
-            page = self.pages[help_index]
             on_page_activated = getattr(page, "on_page_activated", None)
             if callable(on_page_activated):
                 on_page_activated()
@@ -520,6 +851,8 @@ class MainWindow(QMainWindow):
                 widest = max(widest, metrics.horizontalAdvance(display_text))
         for button in getattr(self, "_nav_section_buttons", {}).values():
             widest = max(widest, button.fontMetrics().horizontalAdvance(button.text()) + 22)
+        if hasattr(self, "config_access_button"):
+            widest = max(widest, self.config_access_button.fontMetrics().horizontalAdvance(self.config_access_button.text()))
         if hasattr(self, "connection_button"):
             widest = max(widest, self.connection_button.fontMetrics().horizontalAdvance(self.connection_button.text()))
         if hasattr(self, "help_button"):
@@ -535,13 +868,13 @@ class MainWindow(QMainWindow):
         if item is None:
             return
         page_index = item.data(self.NAV_PAGE_ROLE)
-        if not isinstance(page_index, int) or not (0 <= page_index < self.stack.count()):
+        if not isinstance(page_index, int) or not (0 <= page_index < self.PAGE_COUNT):
             return
+        page = self._ensure_page(page_index)
         self.connection_button.setChecked(False)
         self.help_button.setChecked(False)
         self.stack.setCurrentIndex(page_index)
         self._remember_business_page(page_index)
-        page = self.pages[page_index]
         on_page_activated = getattr(page, "on_page_activated", None)
         if callable(on_page_activated):
             on_page_activated()
@@ -550,6 +883,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
         for page in self.pages:
+            if page is None:
+                continue
             save_state = getattr(page, "save_state", None)
             if callable(save_state):
                 save_state()
@@ -558,6 +893,5 @@ class MainWindow(QMainWindow):
     def _install_help_shortcut(self) -> None:
         action = QAction(self)
         action.setShortcut(QKeySequence.StandardKey.HelpContents)
-        help_index = next((i for i, page in enumerate(self.pages) if isinstance(page, HelpPage)), 0)
-        action.triggered.connect(lambda: self._select_page(help_index))
+        action.triggered.connect(lambda: self._select_page(self.HELP_PAGE_INDEX))
         self.addAction(action)

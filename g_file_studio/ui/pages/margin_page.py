@@ -171,8 +171,7 @@ class MarginPage(BasePage):
     def run(self) -> None:
         if not validate_input_source(self, self.source, display_name="图形边距调整输入"):
             return
-        if not validate_existing_directory(self, self.output_path.path(), "图形边距调整输出目录"):
-            return
+        # Managed workspace output is disposable and recreated on demand.
         self.source.persist_current()
         run_dir = begin_managed_run(self.output_path, "margin", "adjust")
         settings = self._confirm_existing_outputs(self.settings())

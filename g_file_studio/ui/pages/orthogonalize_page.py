@@ -84,10 +84,9 @@ class OrthogonalizePage(BasePage):
             log=self.task.append_log,
         ):
             return
-        if not validate_existing_directory(self, self.output_path.path(), "线路正交化输出目录"):
-            return
         self.source.persist_current()
-        self.output_path.persist_current_text()
+        # Managed workspace output is recreated automatically if the whole workspace
+        # was deleted between runs.
         output_dir = begin_managed_run(self.output_path, "orthogonalize", "normalize")
         prepared_source = self.source.prepare_for_processing(log=self.task.append_log)
         input_mode = self.source.mode()

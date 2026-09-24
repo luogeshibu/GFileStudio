@@ -12,7 +12,15 @@ from PySide6.QtWidgets import (
 
 from g_file_studio.jeddah import JeddahBatchSettings, process_jeddah_batch
 from g_file_studio.services.id_rule_service import IdRuleService
-from g_file_studio.services.site_profile_service import SiteProfileService, jeddah_role_issues
+from g_file_studio.services.remote_symbol_library import (
+    DEFAULT_REMOTE_SYMBOL_ROOT,
+    RemoteSymbolLibraryService,
+)
+from g_file_studio.services.site_profile_service import (
+    SiteProfileService,
+    authoritative_standard_catalog,
+    resolve_jeddah_classification_marker_roles,
+)
 from g_file_studio.services.paths import default_workspace
 from g_file_studio.services.run_history import begin_managed_run, configure_managed_output
 from g_file_studio.services.user_settings_service import UserSettingsService
@@ -93,12 +101,12 @@ class JeddahBatchPage(BasePage):
             "✓ 1. 彻底取消图形组合（删除全部 <Merge>，并将 RMU 外框置底）",
             "✓ 2. 删除异常小尺寸元素",
             "✓ 3. 已识别 RMU 名称统一改白、字号 50，并在环网柜上边框上方 10 距离处水平居中",
-            "✓ 4. SMART 环网柜外框统一刷成红色",
-            "✓ 5. SMART 图元检查：凡柜内已有 SMART，Y1/Y2/Y3 的 LBS 与 Q1 Circuit Breaker 必须使用 SMART devref",
+            "✓ 4. RMU 外框最终一致性：柜内有 SMART = 红色；柜内无 SMART = 白色",
+            "✓ 5. RMU 图元类型先看原图元 devref/文件名：Circuit_Breaker → Circuit Breaker，Load_Breaker_Switch → LBS；柜内 SMART 文字只决定换 SMART 还是 NO-SMART",
             "✓ 6. SMR 环网柜外框统一刷成红色",
             "✓ 7. SMR 条件转换 SMART：已有 SMART 时删除外部 SMR并保持原 SMART；没有 SMART 时生成顶部居中 SMART（字号 20）；外框强制红色",
             "✓ 8. SMR 转换后再次执行 SMART 图元检查，确保 LBS / Circuit Breaker devref 正确",
-            "✓ 9. 使用当前服务器标准，仅纠正环网柜内部 LBS/Circuit Breaker 的 SMART 与非 SMART 变体错误；<ZhaiWaiJieDiDaoZha> 接地刀闸完全不换。服务器缺失的图元只告警不替换；标准图元名称不固定，只按 SMART、NO-SMART、NON-SMART 等类别判断。替换图元时仅保持其原有连接端点锚点，不执行独立的连接线、拓扑或线路级修复",
+            "✓ 9. 使用已保存的四个分类标记严格纠正 RMU 图元：原图元名称含 Circuit_Breaker 就按 Circuit Breaker 处理，含 Load_Breaker_Switch 就按 LBS 处理；柜内有 SMART 时分别换成 CIRCUIT_BREAKER_SMART / LOAD_BREAKER_SWITCH_SMART，无 SMART 时分别换成 CIRCUIT_BREAKER_NO_SMART / LOAD_BREAKER_SWITCH_NO_SMART；Y/Q 名称不覆盖原图元类型，且不再参考同图其他柜猜版本；<ZhaiWaiJieDiDaoZha> 接地刀闸保持不换。",
             "✓ 10. 删除 RMU 红色状态点（channel_status），沿用现有状态点识别/归属规则",
             "✓ 11. 删除带 Bus 的环网柜矩形框、上移标题，并将有效配网 BusDis 母线统一刷为蓝色（无关联时 keyid 兜底）",
             "✓ 12. 将馈线名称移动到母线上方",
@@ -157,7 +165,7 @@ class JeddahBatchPage(BasePage):
         settings_layout.addLayout(exclusion_row)
 
         color_note = QLabel(
-            "吉达固定样式：SMART/SMR 外框 = 红色 #FF0000；只要 SMART Text 的中心位于 RMU 框内，就检查并校正 Y1/Y2/Y3 的 Load_Breaker_Switch 与 Q1 Circuit_Breaker 的 CBreakerDis devref（兼容 Circuit_Breaker_NO-SMART 与 Circuit_Breaker_NON-SMART 两种源图元）；若 SMR 柜内已有 SMART，只删除外部 SMR并保留原 SMART；若柜内没有 SMART，则生成顶部居中 SMART（字号 20）；SMR 处理后再次执行 SMART 图元复检；已识别 RMU 柜名 Text = 白色 #FFFFFF、字号 50，并与环网柜上边框保持 10 距离且水平居中；RMU channel_status 红色状态点直接删除；有效配网 BusDis 母线 = 蓝色 #0000FF（link/node_area 无关联时以非空 keyid 兜底）；所有 FeedLine 馈线 = 实线 ls=1；精确 H.T Text = 删除；所有已识别配网 RMU 都检查重复 SMART，同柜多个时保留 XML 中原有第一个并删除后续重复；2000.00 与 UPDATED_MEASURMENT 只有在同行且相邻（水平间距不超过 10）时才成对删除。"
+            "吉达固定样式：最终 RMU 外框按柜内 SMART 文字决定——有 SMART = 红色 #FF0000，无 SMART = 白色 #FFFFFF；原图元名称含 Load_Breaker_Switch 的设备按 LBS 处理、含 Circuit_Breaker 的设备按 Circuit Breaker 处理（Y/Q 名称不覆盖原图元类型）；有 SMART 的柜必须使用分类标记 LOAD_BREAKER_SWITCH_SMART / CIRCUIT_BREAKER_SMART 指向的智能图元，无 SMART 的柜必须使用分类标记 CIRCUIT_BREAKER_NO_SMART / LOAD_BREAKER_SWITCH_NO_SMART 指向的非智能图元；若 SMR 柜内已有 SMART，只删除外部 SMR并保留原 SMART；若柜内没有 SMART，则生成顶部居中 SMART（字号 20）；SMR 处理后再次复检；接地刀闸保持现有吉达规则不替换；已识别 RMU 柜名 Text = 白色 #FFFFFF、字号 50，并与环网柜上边框保持 10 距离且水平居中；RMU channel_status 红色状态点直接删除；有效配网 BusDis 母线 = 蓝色 #0000FF；所有 FeedLine 馈线 = 实线 ls=1；精确 H.T Text = 删除；同柜多个 SMART 时保留原有第一个并删除后续重复；2000.00 与 UPDATED_MEASURMENT 只有在同行且相邻时才成对删除。"
         )
         color_note.setObjectName("mutedText")
         color_note.setWordWrap(True)
@@ -232,6 +240,38 @@ class JeddahBatchPage(BasePage):
         """Page-navigation hook: always show the shared current server standard."""
         self.refresh_profiles()
 
+    def _classification_marker_entries(self) -> tuple[tuple[str, str, str], ...]:
+        """Read the locally saved server-symbol classification markers.
+
+        Jeddah target selection is intentionally offline/read-only at run time: the
+        operator first saves the four target markers in Server Symbol Sync Management;
+        this page then consumes that local cache without reconnecting to the server.
+        """
+        try:
+            cfg = self.source.remote.config()
+            host = str(cfg.get("host", "")).strip()
+            root = self.user_settings.get_value(
+                "site_profile/remote_symbol_library_root", ""
+            ).strip()
+            if not host or not root:
+                return ()
+            entries = RemoteSymbolLibraryService().load_classification_marker_entries(
+                host=host,
+                root=root,
+            )
+            return tuple(
+                (
+                    str(entry.get("file_name", "") or ""),
+                    str(entry.get("devref", "") or ""),
+                    str(entry.get("classification_marker", "") or ""),
+                )
+                for entry in entries
+                if str(entry.get("classification_marker", "") or "").strip()
+            )
+        except Exception:
+            return ()
+
+
     def _persist(self) -> None:
         self.source.persist_all_text()
         # Global standard selection is owned by “服务器图元更新检查”; this page never overrides it.
@@ -273,15 +313,42 @@ class JeddahBatchPage(BasePage):
             return
         profile_name = active_profile.profile_name
         profile_version = active_profile.profile_version
-        missing_roles = jeddah_role_issues(active_profile)
-        if missing_roles:
+
+        classification_marker_entries = self._classification_marker_entries()
+        marker_roles, marker_issues = resolve_jeddah_classification_marker_roles(
+            classification_marker_entries
+        )
+        if marker_issues:
             QMessageBox.warning(
                 self,
-                "吉达所需图元标准不完整",
-                f"当前服务器标准 {active_profile.profile_name}（版本 {active_profile.server_standard_label} UTC）已应用，"
-                "但吉达固定流程仍缺少：\n"
-                + "\n".join(f"- {item}" for item in missing_roles)
-                + "\n\n请在图元标准表中确认这些图元的检查范围（SMART/NORMAL/ANY）和设备类型后保存。",
+                "吉达图元分类标记不完整",
+                "吉达馈线批处理现在只认服务器图元同步管理中保存的以下四个分类标记：\n"
+                "- CIRCUIT_BREAKER_SMART\n"
+                "- LOAD_BREAKER_SWITCH_SMART\n"
+                "- CIRCUIT_BREAKER_NO_SMART\n"
+                "- LOAD_BREAKER_SWITCH_NO_SMART\n\n"
+                + "当前问题：\n"
+                + "\n".join(f"- {item}" for item in marker_issues)
+                + "\n\n请先将分类标记保存到本地，再执行吉达批处理。",
+            )
+            return
+
+        standard_catalog = authoritative_standard_catalog(active_profile)
+        standard_keys = {str(key).strip().casefold() for key in standard_catalog if str(key).strip()}
+        missing_targets = [
+            target
+            for key, target in marker_roles.items()
+            if key in {"smart_lbs", "smart_breaker", "normal_lbs", "normal_breaker"}
+            and target
+            and target.casefold() not in standard_keys
+        ]
+        if missing_targets:
+            QMessageBox.warning(
+                self,
+                "分类标记目标不在当前服务器标准",
+                "以下已标记图元不在当前已应用的服务器标准版本中：\n"
+                + "\n".join(f"- {item}" for item in missing_targets)
+                + "\n\n请先在服务器图元同步管理中更新/应用当前标准后再执行。",
             )
             return
 
@@ -302,6 +369,7 @@ class JeddahBatchPage(BasePage):
             frame_builtin_template_id=self.template_selector.builtin_template_id(),
             rmu_profile_name=profile_name,
             rmu_profile_version=profile_version,
+            classification_marker_entries=classification_marker_entries,
         )
         self.task.start(
             lambda log, progress: process_jeddah_batch(settings, log, progress),

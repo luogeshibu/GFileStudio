@@ -71,7 +71,7 @@ def test_user_approved_infrastructure_exceptions_are_exactly_locked():
     root = Path(__file__).resolve().parents[1]
     data = json.loads((root / "config/golden_v21760_logic_sha256.json").read_text(encoding="utf-8"))
     exceptions = data.get("approved_infrastructure_exceptions", {})
-    assert set(exceptions) == {"requirements.txt"}
+    assert set(exceptions) == {"requirements.txt", "build_exe.ps1"}
     for relative, meta in exceptions.items():
         actual = hashlib.sha256((root / relative).read_bytes()).hexdigest()
         assert actual == meta["release_sha256"], f"Approved infrastructure exception changed unexpectedly: {relative}"

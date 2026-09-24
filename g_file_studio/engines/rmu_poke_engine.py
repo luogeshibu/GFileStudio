@@ -540,6 +540,8 @@ def _candidate_related_pokes(
     for element in layer:
         if local_name(element.tag) != 'poke':
             continue
+        if (element.get('gfs_device_poke') or '') == '1' or (element.get('gfs_station_poke') or '') == '1':
+            continue
         if (element.get('ahref') or '').strip().casefold() == target_key:
             add_candidate(element)
             continue

@@ -1,3 +1,308 @@
+# Changelog
+
+## 2.18.205
+
+- 服务器图元同步管理表格参考“ID 检查与修复”表格重新做响应式列宽：7 个可见字段在有空间时自动铺满整个表格，不再在右侧留下大块空白。
+- 本地图元缓存完成后只对 7 个可见字段做一次轻量文本宽度测量；文件名、w×h、AlignCenter、Pins、标准来源、状态、分类标记按实际内容保留自然宽度，窗口不足时使用表格自己的横向滚动条，不再压缩到看不全。
+- 增加 table viewport Resize/Show 监听；Qt 布局后二次改变表格 viewport 宽度时会复用已缓存的自然列宽重新铺满，不扫描 200 行数据，避免恢复启动卡顿。
+- 分类标记编辑为更长文本时仅增量扩展该列宽，不触发整表重测；业务解析、同步、分类和中央仓库逻辑不变。
+
+## 2.18.204
+
+- 删除 Poke 页面冗余的“仅处理 AR/LBS/SEC Poke”按钮。
+- AR/LBS/SEC Poke 继续通过“跳转类型”中的独立勾选项控制；处理逻辑、红色名称/上方或右侧/300 距离约束、数据库与 ahref 逻辑均不变。
+
+## 2.18.202 — 2026-09-24
+
+- 将 AR/LBS/SEC 设备 Poke 从 RMU Poke 开关中独立抽离，新增独立勾选项和“仅处理 AR/LBS/SEC Poke”执行按钮。
+- AR/LBS/SEC 名称识别改为硬约束：名称 Text 必须为红色（lc=255,0,0 或 lcc=#FF0000），并且只能位于设备上方或右侧，距离不得超过 300。
+- 保留原有设备识别来源、Text ID 一对一分配、Oracle 所属馈线查询、目标 ahref 命名和 Poke 写入逻辑；只改变 AR/LBS/SEC 名称候选规则。
+- 仅运行 AR/LBS/SEC 时不再执行 RMU identify_rmus() 扫描，真正与 RMU 分支解耦。
+- 使用用户提供的 JED-STH-ADEL-06 样本验证：正确识别 AR2240、LBS1115、LBS1197、SEC2369，并排除白色 96566 误匹配。
+
+## 2.18.201 — 2026-09-24
+
+- 连接与环境页明确标注中央同步/发布同时包含 Oracle 数据库与文件服务器（SSH/SFTP）配置。
+- `id_rules.json` 升级为 schema v7，每条规则写入 `valid_example` 合法示例；中央校验/发布同样保留该字段。
+
+## 2.18.200 — 2026-09-24
+
+- Startup/performance: true lazy page construction; only the remembered page is built at startup, and the native shell paints first.
+- Server Symbol Sync Management: public mode no longer constructs the retired business-G discovery/source/task panels.
+- Local cache restore: removed legacy Profile repository reads from the public catalog action-state path; local snapshot parsing stays off the GUI thread and visible rows render in 100-row batches.
+- Table performance: only the seven visible inventory columns are materialized; no whole-table content auto-sizing or synthetic 200-row vertical-header item creation. Column widths are calculated from the viewport and header text so all fields, including 分类标记, remain visible.
+- Server interaction: start/result/finish action-state refresh no longer hydrates historical Profile data, eliminating UI stalls around otherwise-background SSH operations.
+- Classification cache: cell edits update memory instantly and are debounced to a background worker; multiple edits are persisted with one manifest/marker/snapshot batch instead of rewriting three JSON files per row.
+- Local/central contract unchanged: normal work is local-first; explicit central pull overwrites local cache; only Admin may publish central configuration.
+- JSON schema 2 remains in force: `element_id` is preserved; XML element-tag fields stay excluded.
+
+## 2.18.199
+
+- 深入修复 SSH/服务器交互导致 GUI 卡死：通用远程 G 文件列表刷新、连接测试、手工下载全部移入 `FunctionWorker/QThreadPool`，不再在主线程执行 Paramiko/SFTP。
+- 所有使用 `RemoteGSourceWidget` 的业务模块新增“模块独立、本地优先”服务器文件列表缓存；启动只读本机 AppData，手动刷新服务器成功后原子覆盖该模块本地缓存，服务器失败时保留原缓存。
+- 远程处理快照增加本地版本清单；所选文件的路径、size、mtime 未变化时直接复用本地快照，不再重复访问 SSH。确需下载时在工作线程执行，并通过 Qt 事件循环保持窗口绘制和响应。
+- 服务器文件表取消 `resizeColumnsToContents()` 全表扫描，改为固定/可调列宽与批量填充，降低大列表刷新后的 UI 开销。
+- 启动阶段给原生窗口完整首帧绘制时间，并拉开各页面构造间隔，减少启动时整窗白屏/假死。
+- 中央配置/ID/图元分类的短操作不再强制立即弹出 `QProgressDialog`；超过 800ms 才显示，修复“一闪而过的框”。
+- 分类 JSON schema 2 新增 `element_id`（主体 ID），继续彻底排除 `element_tag/xml_tag/target_xml`；旧 schema 1 本地分类缓存会从图元 manifest 自动补齐 ID。
+- 手工导入分类 JSON 改为权威覆盖本地分类缓存，不再与旧数据静默合并；中央拉取仍保持覆盖语义。
+
+## 2.18.197
+
+- 修复“服务器图元同步管理”启动后状态显示已从本机 AppData 恢复约 200 个图元，但图元信息表仍为 0 行的问题。
+- 根因：启动时本地图元缓存先恢复，随后 0ms 延迟执行的 Profile 选择逻辑在 `load_catalog=False` 分支又清空了独立的服务器图元缓存和表格。
+- 现在 `load_catalog=False` 只表示跳过旧 Profile catalog 装载，不再清空独立的服务器图元目录、解析记录和已恢复的可见表格。
+- 不改变服务器同步、分类 JSON、Admin/中央仓库及其他图形处理业务逻辑。
+
+## 2.18.196
+
+- 恢复“服务器图元同步管理”的图元信息表格；v2.18.194/195 误删的是整张表，本版改为只移除用户要求的 XML 元素标签字段。
+- 表格参考 Distribution Model Manager v4.1.52 的紧凑设计，显示图元定义文件（服务器相对路径）、w×h、AlignCenter、Pins、标准来源、分类标记和状态；XML 元素类型仅保留为内部兼容数据，不再展示。
+- 启动从本地缓存恢复时继续使用轻量 QTableWidgetItem 批量渲染和固定列宽，不恢复旧的 Profile/ComboBox 重型行，避免 200 行左右图元表再次造成明显卡顿。
+- “导出 JSON”及中央 `symbol_classification.json` 升级为 schema 2，只保存相对路径、文件名、devref 和分类标记；不导出/传播 `element_tag`、`xml_tag`、`target_xml` 等 XML 元素标签字段。
+- Admin、中央仓库、服务器只读同步、图元解析及其他内部业务处理逻辑保持不变。
+
+## 2.18.195
+
+- 修复“服务器图元同步管理”在移除服务器图元大列表后出现的大面积纵向空白。
+- 仅调整该页面布局：页面头和“服务器图元与分类”区域按内容高度顶端紧凑排列，剩余空间留在页面底部。
+- 不修改服务器图元同步、图元解析、分类、Admin/中央仓库或其他业务处理逻辑。
+
+## 2.18.194
+
+- Removed the large server-symbol inventory/search table from the visible Server Symbol Sync Management page.
+- Local cache restore and normal manual symbol sync no longer build the 200-row QTableWidget; the parsed server catalog and physical inventory remain in memory/cache for downstream logic.
+- Existing local classification marker JSON is preserved in tableless mode and is never cleared because the compatibility table is empty.
+- Central Admin behavior now follows Distribution Model Manager v4.1.52: any client may explicitly take over Admin without an application-level Admin password; takeover changes only Admin ownership and never auto-syncs/publishes business configuration.
+- Added `admin_epoch` ownership generation to prevent stale Admin sessions from publishing after another takeover.
+- While this process is Admin, it checks only the tiny central `instance.json` every 10 seconds and automatically downgrades if ownership changes; no database/file-server/ID/symbol configuration is auto-synced.
+- Closing G File Studio no longer releases central Admin ownership; release is explicit, or another client can take over. Startup remains strictly local-only.
+- Ordinary clients remain free to edit/save local configuration and manually pull central configuration; central publish operations still require the current Admin.
+
+## 2.18.193
+
+- Reworked local server-symbol cache rendering for startup performance.
+- Reading the local JSON was not the bottleneck; the old code rebuilt hidden legacy
+  Profile/editor rows, created many QComboBox widgets, and repeatedly auto-sized the
+  complete QTableWidget.
+- Cached restore now renders one lightweight physical-file inventory row per cached G
+  file using QTableWidgetItem only.
+- Table updates/signals are suspended during the batch render and fixed operator
+  column widths are used instead of resizeColumnsToContents scans.
+- Cached classification markers are consumed from the already-merged snapshot and
+  are not read/matched a second time.
+- Status now explicitly states that data came from local AppData and the server was
+  not accessed.
+
+## 2.18.192
+
+- Server Symbol Sync Management now restores existing local AppData cache immediately
+  when the page is constructed; local cache is the default source.
+- Removed the extra end-of-startup delayed catalog restore from MainWindow.
+- Added compatibility discovery for older local SymbolLibrary cache directories by
+  reading cached host/root metadata from sync_snapshot.json or manifest.json.
+- If no local cache exists, the page stays empty and explicitly does not contact SSH
+  or the central repository.
+- Existing classification-marker restore and Admin fixes from v2.18.191 are retained.
+
+## 2.18.191
+
+- Restored the missing `_admin_lease_config()` helper used by explicit Admin password/lease operations.
+- Admin actions now read the already-saved local SSH configuration and no longer fail with an AttributeError.
+- Fixed local classification markers disappearing after restart even though the server-symbol catalog snapshot was restored.
+- `classification_markers.json` is now treated as the authoritative local classification layer and merged with `manifest.json`.
+- Local server-symbol snapshot restore explicitly reapplies the local classification layer after the table is rebuilt.
+- Startup remains local-only and does not read central configuration, SSH or Oracle automatically.
+
+## 2.18.190
+
+- Fixed Windows "Not Responding" during startup caused by constructing all 13 Qt pages
+  synchronously in one GUI-thread loop.
+- All pages are still created automatically without user clicks, but page construction
+  now yields to the Qt event loop after each page.
+- The last-used business page is created first so the operator can use it immediately
+  while the remaining pages continue automatic local initialization.
+- Central configuration, SSH and Oracle remain completely excluded from startup.
+- Existing AppData caches are still local-first; server-symbol cache restore remains local-only.
+
+## 2.18.189
+
+- Fixed local server-symbol cache restore being incorrectly gated by legacy Site/Profile selection.
+- Server Symbol Sync Management now automatically restores the existing local AppData catalog even when no Profile exists.
+- `保存到本地` now persists both classification markers and the current visible server-symbol catalog snapshot.
+- Local-cache restore remains strictly local-only and never contacts SSH or the central configuration repository.
+- Added explicit status text when a cached server-symbol inventory is restored.
+
+## 2.18.188
+
+- Added non-blocking progress dialogs for manual central connection-config and symbol-classification synchronization/publishing.
+- Central network operations remain on FunctionWorker/QThreadPool background workers.
+- Optimized classification-table refresh by indexing cached server records by remote path.
+- Added `id_rules.json` to the central configuration repository.
+- ID page now provides manual `从中央同步规则` (ordinary users) and `发布规则到中央` (current admin) actions.
+- Manual central ID-rule sync overwrites the local AppData ID-rule cache.
+- Central `instance.json.files` now records `id_rules.json`; publishing ID rules increments `config_version`.
+- Startup remains local-only and never reads any central file.
+
+## 2.18.187
+
+- Missing paths under the disposable `workspace` tree no longer show startup/browse warnings.
+- Stale remembered workspace run paths are silently ignored and pages fall back to their managed runtime path.
+- Managed output modules no longer require an old workspace output directory to exist before execution.
+- `begin_managed_run()` recreates `workspace/runs/<module>` automatically when the workspace was deleted.
+- Missing non-workspace user/business paths still keep their normal warning behavior.
+
+## 2.18.186
+
+- Startup/read paths are now side-effect free for local persistent state.
+- Missing local configuration/cache stays missing; startup does not manufacture empty/default cache files.
+- User settings writes are temporarily disabled while all pages are automatically constructed.
+- ID rules use built-in defaults in memory when no local `id_rules.json` exists, without creating the file.
+- Remote symbol-library reads no longer create `Cache/SymbolLibrary/...` directories; directories are created only by explicit sync/save/import operations.
+- Site profile and symbol repository constructors no longer create AppData directories just by opening the application.
+- SSH/Oracle fields no longer pretend unsaved factory values are a local configuration.
+- Machine ID is created only when an explicit administrator/publish action actually needs it.
+- Central configuration remains manual-only and is never pulled because local state is missing.
+
+## 2.18.185
+
+- Changed startup page construction from timer-per-page staging to one-shot full page creation.
+- The lightweight main window is shown first; one startup callback then constructs all 13 pages.
+- No user click is required and all pages exist after that single initialization pass.
+- Heavy local server-symbol catalog/table hydration remains deferred until after page creation.
+- Startup remains strictly local-only: no central repository, SSH, or Oracle access.
+- Persistent configuration/cache remains under AppData; workspace remains disposable runtime data.
+
+## 2.18.184
+
+- Reworked startup to eliminate the native white-window stall while still automatically
+  loading every business page on every launch.
+- MainWindow now renders the shell first, then eagerly constructs all 13 pages one per
+  event-loop turn; no user click is required.
+- Server-symbol local catalog restore remains automatic but runs after the shell/pages
+  exist and reads only the local AppData cache.
+- Central configuration, SSH and Oracle remain strictly manual/no-network during startup.
+- UserSettingsService no longer rewrites the INI when values are unchanged and batches
+  legacy disposable-workspace key cleanup into one disk write.
+- Persistent configuration/cache remains under AppData; workspace remains disposable.
+
+## 2.18.183
+
+- Restored the original eager page lifecycle: every business page is created at startup and restores its local cached state immediately.
+- Central configuration is strictly manual-only on every launch, including first initialization and missing-local-config cases.
+- Startup/page construction never reads central `instance.json`, `symbol_classification.json`, `database.json`, or `file_server.json`, and never tests SSH/Oracle connectivity.
+- Local workstation configuration remains authoritative until the operator explicitly chooses central sync; central sync overwrites the corresponding local caches.
+- Persistent local state (database/file-server settings, symbol classifications, ID rules, symbol standards, user/navigation habits and other settings) remains under per-user AppData roots, never under `workspace`.
+- `workspace` remains disposable runtime/business input, intermediate and output data only.
+
+## 2.18.182
+
+- Fixed the startup white-screen bottleneck without reintroducing lazy business pages.
+- MainWindow still creates the established business pages and restores the last-used page.
+- The heavy local server-symbol table is no longer rebuilt inside MainWindow construction.
+  Its AppData snapshot is restored after the selected page has painted.
+- Removed `workspace/runs` retention scanning from MainWindow startup; run cleanup remains
+  available when run records are actually created/listed.
+- Central configuration, SSH and Oracle remain strictly manual/on-demand.
+
+## 2.18.181
+
+- Hardened `DatabasePage` initialization against stale/early status refresh calls.
+- `central_config_status` is now accessed through a defensive `getattr` guard.
+- Added regression coverage that forbids `_refresh_local_cache_source_status()` before the status widget exists.
+- No central configuration is read automatically at startup.
+
+## 2.18.180
+
+- Fixed `连接与环境` page construction failure caused by refreshing local-cache
+  source status before `central_config_status` was created.
+- The page now builds all widgets first, restores local SSH/Oracle settings, and
+  only then refreshes local cache provenance.
+- Added a defensive initialization guard so status refresh can never blank the page.
+- Keeps v2.18.179 normal page startup behavior and manual-only central configuration access.
+
+## 2.18.179
+
+- Restored the established pre-v2.18.176 main-window startup/page-loading lifecycle.
+- Business pages are created normally at startup again and the last-used business page is restored.
+- Kept the manual-only central-configuration rule: startup never pulls central configuration.
+- Kept all persistent configuration/cache/state under the per-user AppData roots, outside `workspace`.
+- `workspace` remains disposable business input/intermediate/output data only.
+
+## 2.18.178
+- Consolidated per-version UPDATE_NOTES files into CHANGELOG.md; future releases no longer create one UPDATE_NOTES file per version.
+- Formalized workspace as disposable business/runtime data only. Persistent configuration, symbol cache/classification markers, and standard repositories live under the user AppData directories.
+- Added centralized persistent path helpers and regression guards preventing persistent configuration/cache services from using workspace.
+
+## 2.18.177
+- Enforce local-first configuration caches; central configuration is never auto-pulled, including when local configuration is missing. Manual sync overwrites local cache.
+
+
+## 2.18.176
+- Fast local-only startup: lazy-load business pages, defer local symbol-catalog restoration, and remove automatic SSH/Oracle/central/server-symbol checks.
+
+## 2.18.175
+- Fix station Poke recognition: station Text + colored background only; remove device-classification exclusion; adjacent RMU locateLabel <= 300.
+## 2.18.174 - 2026-09-22
+
+- Central configuration is now strictly manual: application startup and opening the server-symbol page never read remote `instance.json`, `symbol_classification.json`, `database.json`, or `file_server.json`.
+- Removed the dormant automatic central-classification sync helpers so future startup code cannot accidentally re-enable silent remote synchronization.
+- Central reads now happen only after explicit operator actions such as **从中央同步**, central publish/admin operations, or the global configuration-access dialog.
+
+## v2.18.172
+
+- Simplified Connection & Environment by removing the redundant multi-environment Profile UI.
+- Workstations now directly edit one shared local SSH/Oracle configuration while retaining central sync/publish.
+
+## v2.18.171
+
+- Moved central configuration administrator control to a persistent sidebar entry.
+- Simplified Server Symbol Sync Management by removing its visible admin controls.
+- Kept central `instance.json` ownership semantics and local-workstation configuration behavior unchanged.
+
+## 2.18.170
+
+- Central configuration moved to `/home/up8000/nari-international/gfilestudio/config/` with `instance.json`, `symbol_classification.json`, `database.json`, and `file_server.json`.
+- `instance.json` now owns the single Admin machine/IP and global config version; Admin persists until explicitly released.
+- Ordinary workstations can keep local custom configuration and explicitly sync from central to overwrite it.
+- Database/file-server configuration now supports central publish/sync.
+- Server-symbol page wording/layout simplified.
+
+## 2.18.169
+
+- Added a server-wide single-administrator lease (`classification_registry/admin_lock.json`) recording workstation name and SSH source IP.
+- Ordinary workstations auto-sync the administrator-published `symbol_classification.json` and cannot edit while another workstation owns admin mode.
+- Added explicit administrator release plus heartbeat/expiry recovery, and simplified the Server Symbol Sync page.
+
+## v2.18.168
+- Renamed the single server classification file to `/home/up8000/nari-international/gfilestudio/classification_registry/symbol_classification.json`.
+- Redesigned classification actions into explicit local/server operations: `保存到本地`, `导出本地 JSON`, `导入本地 JSON`, `从服务器同步`, and `上传到服务器`.
+- Upload always saves the visible classification table locally first, then atomically replaces the one server `symbol_classification.json`.
+- Server synchronization warns before overwriting local classification markers and treats the server file as authoritative.
+- No numbered history files are created; the server keeps only the single `symbol_classification.json`.
+
+## v2.18.167
+- Added a single SSH/SFTP central classification configuration at `/home/up8000/nari-international/gfilestudio/classification_registry/admin.json`.
+- `admin.json` is the only authoritative central file; no numbered classification history files are created.
+- Ordinary mode can synchronize from the central file; administrator mode can publish/replace it.
+- The server element symbol tree remains read-only.
+
+# v2.18.166
+
+- 服务器图元同步管理新增“普通模式 / 管理员模式”；程序每次启动固定从普通模式开始。
+- 普通模式允许连接设置、服务器图元同步/查看、本地缓存查看和分类 JSON 导出；分类标记为只读，禁止载入和保存分类修改。
+- 首次部署没有管理员密码时仍可完成环境配置与首次同步；维护人员可在页面执行一次“初始化管理员”。
+- 管理员密码使用 PBKDF2-SHA256 + 随机盐保存校验值，不保存明文；管理员模式可修改、载入、保存分类标记，并可修改管理员密码。
+- 分类标记的写入入口增加权限二次校验，避免仅依赖按钮禁用。
+
+# v2.18.165
+
+- 吉达馈线批处理严格使用服务器图元同步管理中本地保存的四个分类标记作为目标图元：`CIRCUIT_BREAKER_SMART`、`LOAD_BREAKER_SWITCH_SMART`、`CIRCUIT_BREAKER_NO_SMART`、`LOAD_BREAKER_SWITCH_NO_SMART`。
+- RMU 内设备类型以当前元素原始 `devref` / 图元文件名为准：包含 `Circuit_Breaker` 按 Circuit Breaker，包含 `Load_Breaker_Switch` 按 LBS；Y/Q 显示名称不覆盖原图元类型。
+- 柜内存在 `SMART` 文字时使用两个 SMART 标记目标；不存在 `SMART` 时使用两个 NO_SMART 标记目标，RMU 外框继续分别强制红色/白色。
+- 取消 v2.18.164 的“参考同图其他 NORMAL 柜选择图元版本”行为；同图其他柜不会覆盖人工分类标记。
+- 吉达运行时只读取本地已保存分类标记，不因批处理重新连接或修改服务器图元库。
+
 # v2.18.162
 
 - Poke 站点跳转读取服务器图元同步管理的本地分类标记；FUSE、LBS、AR、SEC、Transformer_OH 图元周边 300 以内的站点名称直接排除。
@@ -199,6 +504,11 @@
 
 # Changelog
 
+## 2.18.201 — 2026-09-24
+
+- 连接与环境页明确标注中央同步/发布同时包含 Oracle 数据库与文件服务器（SSH/SFTP）配置。
+- `id_rules.json` 升级为 schema v7，每条规则写入 `valid_example` 合法示例；中央校验/发布同样保留该字段。
+
 ## v2.17.44
 
 - 馈线合并：主网母线 keyid 排序阻断告警增加具体 G 文件名、合并顺序、上/下母线、Bus XML ID、Y 坐标和中间阻断文件，便于快速定位。
@@ -228,6 +538,11 @@
 - 未修改既有 RMU 组合/取消组合、SMART/SMR 外框处理、台账对比和其他模块逻辑。
 
 # Changelog
+
+## 2.18.201 — 2026-09-24
+
+- 连接与环境页明确标注中央同步/发布同时包含 Oracle 数据库与文件服务器（SSH/SFTP）配置。
+- `id_rules.json` 升级为 schema v7，每条规则写入 `valid_example` 合法示例；中央校验/发布同样保留该字段。
 
 
 ## v2.17.40
@@ -292,6 +607,11 @@
 
 # Changelog
 
+## 2.18.201 — 2026-09-24
+
+- 连接与环境页明确标注中央同步/发布同时包含 Oracle 数据库与文件服务器（SSH/SFTP）配置。
+- `id_rules.json` 升级为 schema v7，每条规则写入 `valid_example` 合法示例；中央校验/发布同样保留该字段。
+
 ## v2.17.31
 - 异常短线图元结果表改为普通表格单元格/区域选择，可直接复制单个 XML ID 或任意选中区域。
 - 结果表第一列新增“处理”复选框，支持单选、多选及“全选处理”；移除“删除选中异常图元 / 删除全部异常图元”按钮。
@@ -313,6 +633,11 @@
 - 其他业务逻辑不变。
 
 # Changelog
+
+## 2.18.201 — 2026-09-24
+
+- 连接与环境页明确标注中央同步/发布同时包含 Oracle 数据库与文件服务器（SSH/SFTP）配置。
+- `id_rules.json` 升级为 schema v7，每条规则写入 `valid_example` 合法示例；中央校验/发布同样保留该字段。
 
 ## 2.17.29
 
@@ -436,6 +761,11 @@
 - 未选方向永不参与兜底搜索。
 
 # Changelog
+
+## 2.18.201 — 2026-09-24
+
+- 连接与环境页明确标注中央同步/发布同时包含 Oracle 数据库与文件服务器（SSH/SFTP）配置。
+- `id_rules.json` 升级为 schema v7，每条规则写入 `valid_example` 合法示例；中央校验/发布同样保留该字段。
 
 ## 2.17.8
 
@@ -653,6 +983,11 @@
 
 # Changelog
 
+## 2.18.201 — 2026-09-24
+
+- 连接与环境页明确标注中央同步/发布同时包含 Oracle 数据库与文件服务器（SSH/SFTP）配置。
+- `id_rules.json` 升级为 schema v7，每条规则写入 `valid_example` 合法示例；中央校验/发布同样保留该字段。
+
 ## v2.9.0
 
 - 基于 v2.8.0 更新，保留严格四边距、环网柜框内组合、重复 ID 处理及既有业务功能。
@@ -816,3 +1151,289 @@
 - 单母线/双母线识别规则保留；双母线分别按上母线、下母线独立合并，禁止互相折叠。
 - 同组母线在合并前自动按多数/中位 Y 对齐，少数母线同步拉伸直接连接线端点。
 - 保留 Bus 的原有属性；keyid 仅作为普通属性保留，不参与分组决策。
+
+# Consolidated detailed release notes
+
+The following detailed notes were consolidated from the former per-version `UPDATE_NOTES_v*.md` files. New releases are recorded directly in this single changelog.
+
+<!-- consolidated from UPDATE_NOTES_v2.18.163.md -->
+# G File Studio v2.18.163
+
+Base: GitHub `master` v2.18.162, commit `f79ab1ee61ec4e7906cdaec530753b283c597fd4`.
+
+Changes in v2.18.163:
+
+- Fix Windows packaging flow where `Compress-Archive` could fail on a locked `dist\\GFileStudio\\_internal\\base_library.zip` while the script still printed a share-package success message.
+- Detect a running `GFileStudio.exe` before build/package and fail with a clear instruction instead of creating a broken/incomplete ZIP.
+- Wait for files under `dist\\GFileStudio` to become exclusively readable before starting ZIP creation.
+- Use `Compress-Archive -ErrorAction Stop`, remove any partial ZIP on failure, and verify the resulting ZIP can be opened and contains entries before reporting success.
+- Add `-PackageOnly` mode. When the EXE was already built successfully and only ZIP creation failed, close GFileStudio and run `./build_exe.ps1 -PackageOnly` to recreate the package without rebuilding the EXE.
+- Version bumped from 2.18.162 to 2.18.163.
+
+No GitHub branch/ref was modified by this local update package.
+
+---
+
+<!-- consolidated from UPDATE_NOTES_v2.18.164.md -->
+# G File Studio v2.18.164
+
+## Jeddah feeder batch: NORMAL RMU enforcement
+
+- A recognized RMU whose cabinet contains no `SMART` Text is treated as NORMAL in the final Jeddah visual pass.
+- NORMAL RMU frame line color is forced to white (`lc=255,255,255`, `lcc=#FFFFFF`).
+- SMART RMU frame line color remains red (`lc=255,0,0`, `lcc=#FF0000`).
+- Jeddah SMART/NORMAL profile correction continues to normalize Y/LBS and Q/Circuit Breaker symbols.
+- NORMAL target selection can learn the unique dominant NORMAL devref from peer NORMAL RMUs in the same drawing, but only when that devref exists in the authoritative server standard catalog. A tie keeps the explicit GLOBAL role binding.
+- Ground-disconnector replacement behavior is unchanged: Jeddah batch does not replace `ZhaiWaiJieDiDaoZha`.
+- No GitHub push is included in this delivery.
+
+---
+
+<!-- consolidated from UPDATE_NOTES_v2.18.165.md -->
+# G File Studio v2.18.165
+
+本版本收紧“吉达馈线批处理”的 RMU 图元标准化规则。
+
+## 最终规则
+
+1. 先识别有效 RMU。
+2. 设备类别以原图元 `devref` / 图元文件名为准：
+   - 名称含 `Circuit_Breaker` -> Circuit Breaker。
+   - 名称含 `Load_Breaker_Switch` -> Load Breaker Switch。
+   - 其他图元不参与本次替换。
+3. Y/Q (`p_NameString` / `key_name`) 不再覆盖上述原图元类别。
+4. 柜内存在 `SMART` Text：
+   - Circuit Breaker -> 分类标记 `CIRCUIT_BREAKER_SMART` 对应图元。
+   - Load Breaker Switch -> 分类标记 `LOAD_BREAKER_SWITCH_SMART` 对应图元。
+   - RMU 外框 -> 红色。
+5. 柜内不存在 `SMART` Text：
+   - Circuit Breaker -> 分类标记 `CIRCUIT_BREAKER_NO_SMART` 对应图元。
+   - Load Breaker Switch -> 分类标记 `LOAD_BREAKER_SWITCH_NO_SMART` 对应图元。
+   - RMU 外框 -> 白色。
+6. 四个目标只读取“服务器图元同步管理”中本地保存的分类标记，不再从同图其他 RMU 学习/猜测目标版本。
+7. 如果同一必需分类标记对应多个图元、缺失、没有 devref，或目标不在当前已应用服务器标准中，UI 会阻止执行并提示用户修正。
+8. `ZhaiWaiJieDiDaoZha` 接地刀闸继续不替换。
+
+GitHub 默认不推送；等待用户明确要求后再推送 master。
+
+---
+
+<!-- consolidated from UPDATE_NOTES_v2.18.166.md -->
+# G File Studio v2.18.166
+
+## 新增：普通模式 / 管理员模式
+
+- 应用每次启动默认普通模式。
+- 普通模式：可做连接设置、同步/查看服务器图元、打开本地缓存、导出分类标记；不能编辑、载入或保存分类标记。
+- 首次部署：无需先初始化管理员即可配置环境和完成首次同步；需要维护分类时点击“初始化管理员”，两次输入密码完成初始化。
+- 管理员模式：可编辑、载入、保存分类标记，并可修改管理员密码。
+- 管理员密码使用 PBKDF2-SHA256 + 32 字节随机盐，仅保存校验值；不保存明文。
+- 退出管理员模式或重启程序后恢复普通模式。
+
+> 当前访问控制针对本机 GFileStudio 管理界面。未来中央分类库落到 SSH 服务器后，可在此基础上进一步做中央管理员身份/发布权限。
+
+---
+
+<!-- consolidated from UPDATE_NOTES_v2.18.167.md -->
+# GFileStudio v2.18.167
+
+## Central administrator classification configuration
+
+- Added one SSH/SFTP central classification source of truth:
+  `/home/up8000/nari-international/gfilestudio/classification_registry/admin.json`
+- No numbered `V000001` / `V000002` history files are created. `admin.json` is the only persistent authoritative central classification file.
+- Ordinary mode may read/synchronize `admin.json` into the local classification cache.
+- Administrator mode may publish the current locally saved classifications to `admin.json`.
+- Publishing writes a temporary file, verifies it, then replaces `admin.json`; the temporary file is removed and is not a second persistent version.
+- First deployment is supported: if `admin.json` does not exist, synchronization reports that an administrator must publish it once.
+- Central synchronization is authoritative: classifications removed from `admin.json` are removed from the local classification layer as well.
+- The server `element` symbol directory remains strictly read-only; the only remote write path introduced by this feature is the dedicated `classification_registry/admin.json` file.
+- Admin mode/session/password behavior from v2.18.166 is unchanged.
+
+---
+
+<!-- consolidated from UPDATE_NOTES_v2.18.168.md -->
+# G File Studio v2.18.168
+
+- Central SSH classification filename changed from `admin.json` to `symbol_classification.json`.
+- The only authoritative server file is:
+  `/home/up8000/nari-international/gfilestudio/classification_registry/symbol_classification.json`
+- UI actions now clearly separate local and server destinations.
+- `保存到本地` writes the current classification markers to the local `classification_markers.json` cache only.
+- `上传到服务器` is administrator-only, saves locally first, then uploads the one authoritative server JSON.
+- `从服务器同步` is available in ordinary/admin mode and warns that the server configuration will overwrite the local classification layer.
+- Local JSON export/import remain explicit migration tools and do not implicitly upload to the server.
+- The server `element` directory remains read-only.
+
+---
+
+<!-- consolidated from UPDATE_NOTES_v2.18.169.md -->
+# G File Studio v2.18.169
+
+## Server-wide single administrator
+
+- Added a server-side administrator lease at `classification_registry/admin_lock.json`.
+- Only one workstation can own administrator mode at a time.
+- The lease records machine name, the workstation IP used for the SSH connection, SSH user, acquire time, heartbeat time and expiry time.
+- Administrator lease heartbeat: every 45 seconds; lease timeout: 180 seconds.
+- Explicit **Release administrator** removes the lock. A crash/network loss falls back to lease expiry so the lock cannot remain forever.
+- `symbol_classification.json` upload is accepted only while the publishing workstation still owns the matching administrator lease.
+- Published classification metadata records the publishing machine name and IP.
+
+## Ordinary workstation synchronization
+
+- Every process still starts in ordinary mode.
+- Ordinary workstations automatically attempt to sync `symbol_classification.json` on page startup and again after server-symbol synchronization.
+- Ordinary mode is read/sync only; classification maintenance buttons are hidden until this workstation owns administrator mode.
+
+## UI simplification
+
+- Removed the repeated multi-line explanations from the main server-symbol page.
+- Main page now emphasizes only current mode, current administrator machine/IP, symbol sync, classification sync and administrator actions.
+- Detailed behavior remains in Page Help.
+
+---
+
+<!-- consolidated from UPDATE_NOTES_v2.18.170.md -->
+# GFileStudio v2.18.170
+
+## Central configuration model
+
+- Replaced the temporary `classification_registry/admin_lock.json` model with the same server-side configuration pattern used by Distribution Model Manager.
+- Central directory is now:
+  `/home/up8000/nari-international/gfilestudio/config/`
+- Central files:
+  - `instance.json` — current Admin machine ID/name/IP and global `config_version`
+  - `symbol_classification.json` — authoritative published symbol classification
+  - `database.json` — authoritative published Oracle connection configuration
+  - `file_server.json` — authoritative published SSH/file-server configuration
+- Only the machine recorded as active Admin in `instance.json` may publish central files.
+- Admin ownership is persistent until explicitly released; closing GFileStudio does not silently release it.
+
+## Local configuration remains independent
+
+- Every workstation may edit and save its own local symbol classifications, database configuration and file-server configuration.
+- Central configuration is never forced over local settings at application startup.
+- “从服务器同步 / 从中央同步” explicitly replaces the corresponding local settings only after user confirmation.
+- Local symbol classification editing/import/export remains available in ordinary mode; Admin only controls central publishing.
+
+## UI
+
+- Simplified the server-symbol page and moved detailed explanations into Page Help.
+- Added concise central configuration controls to the “连接与环境” page:
+  - `从中央同步`
+  - `发布到中央`
+
+## Validation
+
+- Added v2.18.170 central configuration regression coverage.
+- Relevant connection/admin/classification/Jeddah regression set: 46 passed.
+
+---
+
+<!-- consolidated from UPDATE_NOTES_v2.18.171.md -->
+# GFileStudio v2.18.171
+
+## Global configuration-access entry
+
+- Move the central configuration administrator entry from the Server Symbol Sync page to the persistent left sidebar.
+- The sidebar button shows Standard / Admin / Admin In Use status.
+- Clicking the global button shows the current administrator machine/IP and allows initialize, enter, change password, or release according to the current state.
+- Remove the visible administrator control row from Server Symbol Sync Management; the existing SSH/instance.json administrator workflow remains unchanged.
+- Keep administrator scope limited to publishing central configuration. Every workstation may still maintain local classification/database/file-server settings.
+- Update Connections & Environment guidance to point users to the left-side Configuration Access entry.
+
+---
+
+<!-- consolidated from UPDATE_NOTES_v2.18.172.md -->
+# GFileStudio v2.18.172
+
+- Removed the obsolete multi-environment Profile selector from Connection & Environment.
+- The page now directly manages one workstation shared SSH/SFTP + Oracle configuration.
+- Central config sync/publish remains unchanged.
+- Business modules now label the source as “共享连接配置” instead of “当前环境”.
+- Existing legacy connection-environment service is retained only for backward compatibility and is no longer exposed in the UI.
+
+---
+
+<!-- consolidated from UPDATE_NOTES_v2.18.173.md -->
+# GFileStudio v2.18.173 Update Notes
+
+## Central configuration administrator
+
+- No periodic administrator heartbeat or polling is used.
+- `config/instance.json` stores the central administrator password only as PBKDF2-SHA256 metadata (`salt`, `password_hash`, `iterations`); plaintext is never written.
+- A workstation that knows the central password can take over the central Admin role.
+- If the password is forgotten, `强制设置管理员密码` uses the already configured SSH/SFTP write credentials as recovery authority, sets a new central password, and makes the current workstation Admin.
+- Central publish operations re-read/validate `instance.json`; an old Admin loses write authority after another workstation takes over.
+- Local workstation classification editing/saving/import/export stays available without Admin.
+
+## AR / LBS / SEC Poke
+
+- The Poke module reads only exact saved classification markers `AR`, `LBS`, and `SEC` to locate target graphic elements.
+- Only those classified device instances participate; the rest of the drawing is not treated as a target-device search space.
+- Device-name Text candidates must be in the same Layer and within 300 graphic units of the target device.
+- Each target device gets at most one name. Each concrete Text ID/instance can be assigned to at most one device.
+- Two Text elements with the same `ts` content remain separate candidates when their XML Text IDs differ, so identical displayed names can be assigned to different device instances.
+- The detail jump reuses the RMU database lookup and target naming rule: `{area}-{substation}-{feeder}-{device}.com.pic.g`.
+- RMU Pokes, station Pokes and AR/LBS/SEC device Pokes are protected from cross-conversion during existing-Poke repair.
+
+## Version
+
+- Package version: `2.18.173`.
+- GitHub is not changed by this local delivery.
+
+---
+
+<!-- consolidated from UPDATE_NOTES_v2.18.174.md -->
+# GFileStudio v2.18.174
+
+## Central configuration startup rule
+
+- Startup uses local configuration only.
+- Opening the server-symbol page does not read central configuration.
+- No automatic `instance.json` / `symbol_classification.json` / `database.json` / `file_server.json` fetch is allowed.
+- Remote central configuration is accessed only after an explicit user action.
+- Existing local settings remain untouched until the user chooses a central synchronization action.
+
+---
+
+<!-- consolidated from UPDATE_NOTES_v2.18.175.md -->
+# GFileStudio v2.18.175
+
+- Corrected station-jump Poke recognition.
+- Station-jump candidates are identified only from station Text format + explicit colored background.
+- AR/LBS/SEC/FUSE/Transformer_OH classification markers no longer exclude station-jump candidates.
+- Adjacent parenthesized RMU locateLabel distance increased from 200 to 300 G units.
+- AR/LBS/SEC device Poke classification logic remains unchanged.
+- Poke report no longer shows the obsolete station-classification-exclusion column/card.
+
+---
+
+<!-- consolidated from UPDATE_NOTES_v2.18.176.md -->
+# GFileStudio v2.18.176
+
+- Startup is now strictly local and lightweight: no central configuration, SSH/SFTP, Oracle, administrator status, or remote symbol-library request is made automatically.
+- MainWindow no longer imports or constructs all business pages at startup. Pages are imported and created only when the operator clicks them.
+- Startup no longer scans/cleans run-history directories; cleanup remains on-demand when run-history functionality is used.
+- The server-symbol page defers rebuilding its local cached catalog/table until that page is actually opened.
+- Removed the automatic daily server-symbol refresh scheduling. Server symbol synchronization is manual only.
+- Oracle and SSH connectivity are tested only by explicit user actions or when a business operation actually requires them.
+
+---
+
+<!-- consolidated from UPDATE_NOTES_v2.18.177.md -->
+# GFileStudio v2.18.177
+
+- Enforces local-first configuration behavior.
+- Startup, repeat launch, page opening, and missing local configuration never trigger central configuration downloads.
+- Local symbol classifications, file-server settings, and Oracle settings remain persistent local caches.
+- User edits save locally only.
+- Manual central sync explicitly overwrites the corresponding local cache and records its local provenance.
+- Central publish remains an explicit administrator action.
+
+## 2.18.203 - 2026-09-24
+- 修复服务器图元同步管理首次打开/恢复本地缓存时短暂闪现空白框的问题：懒加载页保留已绘制占位内容直到真实页面构造完成，再原子替换。
+- 本地图元缓存恢复期间不再先显示空 QTableWidget；使用无边框状态文本，200 条常规缓存隐藏完成填充和列宽计算后一次显示。
+- 自动本地缓存恢复路径明确不创建 QMessageBox / QProgressDialog，也不会显示服务器同步进度控件；仍然只读 AppData，不访问 SSH/Oracle/中央仓库。
+- 200 条级别缓存一次隐藏批量渲染；超大清单继续分批，避免 GUI 长时间阻塞。

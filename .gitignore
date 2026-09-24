@@ -88,7 +88,8 @@ workspace/tmp/
 workspace/cache/
 workspace/downloads/
 
-# Legacy/other managed runtime folders. Preserve optional .gitkeep only.
+# Disposable workspace only. Persistent configuration/cache must live under AppData.
+# Preserve optional .gitkeep only for business/runtime folders.
 workspace/input/*
 !workspace/input/.gitkeep
 
@@ -106,9 +107,6 @@ workspace/work/**
 
 workspace/output/*
 !workspace/output/.gitkeep
-
-workspace/logs/*
-!workspace/logs/.gitkeep
 
 # Defense in depth for generated reports, even if output location changes.
 **/g-content-analysis-report.html
